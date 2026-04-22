@@ -6,10 +6,8 @@ from datetime import datetime
 from collections import defaultdict
 from typing import Optional
 
-from rich.table import Table
-from rich.panel import Panel
 from rich.live import Live
-from rich import box
+from rich.text import Text
 
 import typer
 
@@ -97,10 +95,10 @@ def init():
 
     if errors:
         for err in errors:
-            console.print(f"[red]❌ {err}[/red]")
+            console.print(f"❌ {err}")
         sys.exit(1)
     else:
-        console.print(Panel("[bold green]初始化完成 🎉[/bold green]", expand=False))
+        console.print("\n✅ 初始化完成")
 
 
 # ─── 注册 ────────────────────────────────────────────
@@ -119,19 +117,14 @@ def register(
         sys.exit(1)
     os.environ["AGTALK_AGENT_NAME"] = agent_name
 
-    table = Table(box=box.ROUNDED, show_header=False, padding=(0, 1))
-    table.add_column("Key", style="dim")
-    table.add_column("Value", style="bold")
-    table.add_row("Agent", agent_name)
-    table.add_row("Session", info["session"])
-    table.add_row("Pane", str(info["pane_id"]))
+    console.print(f"\n✅ 注册成功: {agent_name}")
+    console.print(f"  Session: {info['session']} | Pane: {info['pane_id']}")
     if role:
-        table.add_row("Role", role)
+        console.print(f"  Role: {role}")
     if capabilities:
-        table.add_row("Capabilities", capabilities)
+        console.print(f"  Capabilities: {capabilities}")
     if bio:
-        table.add_row("Bio", bio)
-    console.print(Panel(table, title="[green]✅ 注册成功[/green]", expand=False))
+        console.print(f"  Bio: {bio}")
 
 
 @app.command()
@@ -162,29 +155,17 @@ def list_agents(
         return
 
     if not rows:
-        console.print("[dim]暂无注册的 Agent[/dim]")
+        console.print("暂无注册的 Agent")
         return
 
-    table = Table(box=box.ROUNDED, show_header=True, header_style="bold cyan")
-    table.add_column("Agent", style="bold")
-    table.add_column("Role", style="yellow")
-    table.add_column("Session")
-    table.add_column("Pane", justify="center")
-    if capabilities:
-        table.add_column("Capabilities", style="dim")
-
+    console.print(f"{'Agent':<25} {'Role':<12} {'Session':<10} {'Pane':<5}")
+    console.print("-" * 55)
     for r in rows:
-        row_data = [
-            r["agent_name"],
-            r["role"] or "—",
-            r["session"],
-            str(r["pane_id"]),
-        ]
-        if capabilities:
-            row_data.append(r["capabilities"] or "—")
-        table.add_row(*row_data)
-
-    console.print(table)
+        cap = f" | {r['capabilities']}" if capabilities and r["capabilities"] else ""
+        console.print(
+            f"{r['agent_name']:<25} {r['role'] or '-':<12} "
+            f"{r['session']:<10} {r['pane_id']:<5}{cap}"
+        )
 
 
 # ─── 发消息 ──────────────────────────────────────────
@@ -376,7 +357,7 @@ def key_enter(agent_name: str):
 @app.command()
 def inbox(
     agent_name: str,
-    show_all: bool = False,
+    show_all: bool = typer.Option(False, "--all", "--show-all", help="包含已读消息"),
     as_json: bool = False,
 ):
     """查看 inbox。"""
@@ -400,34 +381,18 @@ def inbox(
         "[FILE]":  "bold magenta",
     }
 
-    console.print(f"\n[bold]📬 {agent_name} 的收件箱[/bold]\n")
+    console.print(f"\n📬 {agent_name} 的收件箱 ({len(messages)} 条)\n")
     if not messages:
-        console.print("  [dim](empty)[/dim]")
+        console.print("  (empty)")
         return
 
-    table = Table(
-        box=box.ROUNDED, show_header=True, header_style="bold cyan",
-        expand=True, padding=(0, 1),
-    )
-    table.add_column("ID", style="dim", width=10)
-    table.add_column("发件方", style="bold", width=25)
-    table.add_column("状态", justify="center", width=8)
-    table.add_column("消息摘要")
-
     for m in messages:
-        emoji, color = _status_style(m["status"])
-        body_preview = m["body"][:60] + ("..." if len(m["body"]) > 60 else "")
-        for prefix, style in prefix_style.items():
-            if body_preview.startswith(prefix):
-                body_preview = f"[{style}]{prefix}[/{style}]" + body_preview[len(prefix):]
-                break
-        table.add_row(
-            m["msg_id"][:8],
-            m["from_agent"],
-            f"[{color}]{emoji}[/{color}]",
-            body_preview,
-        )
-    console.print(table)
+        emoji, _color = _status_style(m["status"])
+        body_preview = m["body"].replace("\n", " ")[:40]
+        if len(m["body"]) > 40:
+            body_preview += "..."
+        line = f"  [{m['msg_id'][:8]}] {emoji} {m['from_agent']:<25} | {body_preview}"
+        console.print(line, no_wrap=True, overflow="ellipsis")
 
 
 @app.command()
@@ -512,10 +477,7 @@ def _build_progress_table():
             "SELECT name FROM sqlite_master WHERE type='table' AND name='task_progress'"
         ).fetchone()
         if not exists:
-            return Panel(
-                "[dim]暂无进度数据，请先使用 agtalk progress <msg_id> <percent>[/dim]",
-                title="📋 任务进度", expand=False,
-            )
+            return "暂无进度数据，请先使用 agtalk progress <msg_id> <percent>"
 
         rows = conn.execute("""
             SELECT tp.msg_id, tp.percent, tp.note, tp.created_at,
@@ -529,36 +491,23 @@ def _build_progress_table():
         """).fetchall()
 
     if not rows:
-        return "[dim](暂无进度记录)[/dim]"
+        return "暂无进度记录"
 
-    table = Table(
-        box=box.SIMPLE_HEAD, header_style="bold cyan",
-        show_header=True, expand=True, padding=(0, 1),
-        row_styles=["", "dim"],
-    )
-    table.add_column("消息 ID", style="dim", width=8, no_wrap=True)
-    table.add_column("发起方 → 执行方", width=24, no_wrap=True, overflow="ellipsis")
-    table.add_column("进度", width=20, no_wrap=True)
-    table.add_column("%", justify="right", width=4, no_wrap=True)
-    table.add_column("备注", overflow="ellipsis", no_wrap=True)
-
+    lines = ["📋 任务进度\n"]
     for r in rows:
         pct = r["percent"]
         bar_filled = int(pct / 5)
         bar = "█" * bar_filled + "░" * (20 - bar_filled)
-        color = "green" if pct == 100 else "yellow" if pct >= 50 else "cyan"
-        body_preview = (r["body"] or "")[:20] + ("..." if r["body"] and len(r["body"]) > 20 else "")
         from_to = f"{r['from_agent'] or '?'} → {r['to_agent'] or '?'}"
-
-        table.add_row(
-            r["msg_id"][:8],
-            from_to,
-            f"[{color}]{bar}[/{color}]",
-            f"[bold {color}]{pct}%[/bold {color}]",
-            r["note"] or body_preview or "—",
+        body_preview = (r["body"] or "").replace("\n", " ")[:30]
+        if r["body"] and len(r["body"]) > 30:
+            body_preview += "..."
+        note = r["note"] or body_preview or "—"
+        lines.append(
+            f"  {r['msg_id'][:8]}  {bar}  {pct:3d}%  {from_to:<30} | {note}"
         )
 
-    return table
+    return "\n".join(lines)
 
 
 def _watch_all_progress():
@@ -635,47 +584,17 @@ def memory(
 
 
 def _render_memory_timeline(rows):
-    """时间线视角：Rich Table。"""
-    console.print(f"\n[bold]📜 消息历史[/bold] [dim](最近 {len(rows)} 条)[/dim]\n")
-
-    table = Table(
-        box=box.ROUNDED, header_style="bold cyan",
-        show_header=True, padding=(0, 0),
-        row_styles=["", "dim"],
-    )
-    table.add_column("时间", style="dim", width=8, no_wrap=True)
-    table.add_column("", justify="center", width=2, no_wrap=True)
-    table.add_column("发件方 → 收件方", width=22, no_wrap=True, overflow="ellipsis")
-    table.add_column("消息摘要", width=40, overflow="ellipsis", no_wrap=True)
-
-    prefix_style = {
-        "[TASK]": "bold yellow", "[REPLY]": "bold green",
-        "[DONE]": "bold green",  "[ACK]": "bold blue",
-        "[INFO]": "bold white",  "[FILE]": "bold magenta",
-    }
+    """时间线视角：简洁列表。"""
+    console.print(f"\n📜 消息历史 (最近 {len(rows)} 条)\n")
 
     for r in rows:
-        emoji, color = _status_style(r["event"])
+        emoji, _color = _status_style(r["event"])
         from_to = f"{r['from_agent'] or '?'} → {r['to_agent'] or r['agent']}"
-        # 将换行符替换为空格，防止表格行内换行
-        body_text = (r["body"] or r["note"] or "").replace("\n", " ")
-        body_preview = body_text[:35]
-        if len(body_text) > 35:
-            body_preview += "..."
-
-        for prefix, style in prefix_style.items():
-            if body_preview.startswith(prefix):
-                body_preview = f"[{style}]{prefix}[/{style}]" + body_preview[len(prefix):]
-                break
-
-        table.add_row(
-            _fmt_time(r["created_at"]),
-            f"[{color}]{emoji}[/{color}]",
-            from_to,
-            body_preview or "[dim]—[/dim]",
-        )
-
-    console.print(table)
+        body_text = (r["body"] or r["note"] or "").replace("\n", " ")[:40]
+        if len(r["body"] or "") > 40:
+            body_text += "..."
+        line = f"  [{_fmt_time(r['created_at'])}] {emoji} {from_to:<30} | {body_text}"
+        console.print(line, no_wrap=True, overflow="ellipsis")
 
 
 def _render_memory_task_view(rows):
@@ -684,17 +603,7 @@ def _render_memory_task_view(rows):
     for r in rows:
         tasks[r["msg_id"]].append(r)
 
-    console.print(f"\n[bold]📋 任务视图[/bold] [dim]({len(tasks)} 个任务)[/dim]\n")
-
-    table = Table(
-        box=box.SIMPLE_HEAD, header_style="bold cyan",
-        show_header=True, expand=True, padding=(0, 1),
-        row_styles=["", "dim"],
-    )
-    table.add_column("消息 ID", style="dim", width=8, no_wrap=True)
-    table.add_column("发起方 → 执行方", width=24, no_wrap=True, overflow="ellipsis")
-    table.add_column("事件流", width=20, no_wrap=True, overflow="ellipsis")
-    table.add_column("耗时", justify="right", width=6, no_wrap=True)
+    console.print(f"\n📋 任务视图 ({len(tasks)} 个任务)\n")
 
     for msg_id, events in tasks.items():
         events_sorted = sorted(events, key=lambda x: x["created_at"])
@@ -704,24 +613,19 @@ def _render_memory_task_view(rows):
         elapsed = last_event["created_at"] - first["created_at"]
         elapsed_str = f"{elapsed:.0f}s" if elapsed < 60 else f"{elapsed/60:.1f}m"
 
-        body_preview = (first["body"] or "")[:30] + ("..." if len(first["body"] or "") > 30 else "")
+        body_preview = (first["body"] or "").replace("\n", " ")[:40]
+        if len(first["body"] or "") > 40:
+            body_preview += "..."
         from_to = f"{first['from_agent'] or '?'} → {first['to_agent'] or '?'}"
 
-        # 事件流：用 emoji 串联
-        event_chain = " ".join(
+        event_chain = " → ".join(
             _status_style(e["event"])[0] for e in events_sorted
         )
 
-        _, color = _status_style(last_event["event"])
-
-        table.add_row(
-            msg_id[:8],
-            from_to,
-            f"[{color}]{body_preview}[/{color}]  {event_chain}",
-            f"[bold]{elapsed_str}[/bold]",
-        )
-
-    console.print(table)
+        console.print(f"  {msg_id[:8]}  {body_preview}", no_wrap=True, overflow="ellipsis")
+        console.print(f"    发起: {from_to} | {_fmt_time(first['created_at'])}", no_wrap=True, overflow="ellipsis")
+        console.print(f"    流程: {event_chain} | 耗时 {elapsed_str}", no_wrap=True, overflow="ellipsis")
+        console.print()
 
 
 @app.command()
@@ -738,16 +642,12 @@ def whoami():
         console.print(f"Agent: [bold]{name}[/bold]\n状态: [red]未注册[/red]")
         return
 
-    table = Table(box=box.ROUNDED, show_header=False, padding=(0, 1))
-    table.add_column("Key", style="dim")
-    table.add_column("Value", style="bold")
-    table.add_row("Agent", name)
-    table.add_row("Role", info.get("role") or "—")
-    table.add_row("Bio", info.get("bio") or "—")
-    table.add_row("Capabilities", info.get("capabilities") or "—")
-    table.add_row("Session", info["session"])
-    table.add_row("Pane", str(info["pane_id"]))
-    console.print(Panel(table, title="[bold]👤 当前 Agent[/bold]", expand=False))
+    console.print(f"\n👤 当前 Agent: {name}")
+    console.print(f"  Role:         {info.get('role') or '-'}")
+    console.print(f"  Bio:          {info.get('bio') or '-'}")
+    console.print(f"  Capabilities: {info.get('capabilities') or '-'}")
+    console.print(f"  Session:      {info['session']}")
+    console.print(f"  Pane:         {info['pane_id']}")
 
 
 @app.command()
@@ -783,29 +683,20 @@ def health(agent_name: str = ""):
         else:
             checks.append(("Agent 检查", None, "未指定"))
 
-    table = Table(box=box.ROUNDED, show_header=False, padding=(0, 1))
-    table.add_column("", width=3)
-    table.add_column("检查项", style="bold")
-    table.add_column("详情", style="dim")
-
+    console.print("\n🏥 健康检查")
     passed = 0
     total = 0
     for name_str, ok, detail in checks:
         if ok is None:
-            icon = "[dim]—[/dim]"
+            icon = "—"
         elif ok:
-            icon = "[green]✅[/green]"
+            icon = "✅"
             passed += 1
             total += 1
         else:
-            icon = "[red]❌[/red]"
+            icon = "❌"
             total += 1
-        table.add_row(icon, name_str, detail)
+        detail_str = f" ({detail})" if detail else ""
+        console.print(f"  {icon} {name_str}{detail_str}")
 
-    score_color = "green" if passed == total else "yellow" if passed > 0 else "red"
-    console.print(Panel(
-        table,
-        title="[bold]🏥 健康检查[/bold]",
-        subtitle=f"[{score_color}]健康分数: {passed}/{total}[/{score_color}]",
-        expand=False,
-    ))
+    console.print(f"\n健康分数: {passed}/{total}")
