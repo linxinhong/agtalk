@@ -14,6 +14,9 @@ def get_db_path() -> Path:
     return Path.home() / ".config" / "agtalk" / "talk.db"
 
 
+DB_PATH = get_db_path()
+
+
 @contextmanager
 def get_conn():
     db_path = get_db_path()
