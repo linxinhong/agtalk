@@ -9,6 +9,8 @@ description: |
   - Agent 编排、工作流自动化
   - 需要在多个终端 pane 之间协调任务
   此 skill 帮助用户在 agtalk 环境中高效地进行多 Agent 协作开发。
+
+  扩展机制：当 Agent 需要执行高风险决策二次确认或完成后经验沉淀时，加载 REVIEW.md（agtalk-review）。
 ---
 
 # agtalk-assistant
@@ -309,3 +311,14 @@ export AGTALK_DB_PATH=/path/to/custom.db
 ```
 
 > ⚠️ **禁止在任务未处理前执行 done**。done 由 Agent 自己决定何时调用，不应由发送方控制。
+
+---
+
+## 扩展：agtalk-review
+
+当 Agent 遇到以下场景时，加载同目录下的 `REVIEW.md`（agtalk-review skill）：
+
+- **高风险/模糊决策** — 需要阻塞等待其他 Agent 二次确认后再继续
+- **完成后反思** — `agtalk done` 前自检沟通质量，将通用经验沉淀回 `REVIEW.md`
+
+`agtalk-review` 是 `agtalk-assistant` 的可选扩展，Agent 基于自身判断自主决定是否发起 Review。
