@@ -618,13 +618,35 @@ def _render_memory_task_view(rows):
             body_preview += "..."
         from_to = f"{first['from_agent'] or '?'} → {first['to_agent'] or '?'}"
 
-        event_chain = " → ".join(
-            _status_style(e["event"])[0] for e in events_sorted
+        final_emoji, final_color = _status_style(last_event["event"])
+
+        # 树形头
+        console.print(
+            f"[cyan]┌─[/cyan] [bold]{msg_id[:8]}[/bold]  [yellow]{body_preview}[/yellow]",
+            no_wrap=True, overflow="ellipsis",
+        )
+        console.print(
+            f"[cyan]│[/cyan]  发起: [green]{from_to}[/green]  "
+            f"[dim]{_fmt_time(first['created_at'])}[/dim]",
+            no_wrap=True, overflow="ellipsis",
         )
 
-        console.print(f"  {msg_id[:8]}  {body_preview}", no_wrap=True, overflow="ellipsis")
-        console.print(f"    发起: {from_to} | {_fmt_time(first['created_at'])}", no_wrap=True, overflow="ellipsis")
-        console.print(f"    流程: {event_chain} | 耗时 {elapsed_str}", no_wrap=True, overflow="ellipsis")
+        for e in events_sorted:
+            e_emoji, e_color = _status_style(e["event"])
+            note = e["note"] or ""
+            line = (
+                f"[cyan]│[/cyan]  [{e_color}]{e_emoji} {e['event']:<10}[/{e_color}] "
+                f"[dim]{_fmt_time(e['created_at'])}[/dim]"
+            )
+            if note:
+                line += f"  [dim]{note}[/dim]"
+            console.print(line, no_wrap=True, overflow="ellipsis")
+
+        console.print(
+            f"[cyan]└─[/cyan] [{final_color}]{final_emoji} {last_event['event']}[/{final_color}]  "
+            f"耗时 [bold]{elapsed_str}[/bold]",
+            no_wrap=True, overflow="ellipsis",
+        )
         console.print()
 
 
