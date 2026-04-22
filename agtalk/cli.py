@@ -529,25 +529,25 @@ def _build_progress_table():
         """).fetchall()
 
     if not rows:
-        return Panel("[dim](暂无进度记录)[/dim]", title="📋 任务进度", expand=False)
+        return "[dim](暂无进度记录)[/dim]"
 
     table = Table(
-        box=box.ROUNDED, header_style="bold cyan",
+        box=box.SIMPLE_HEAD, header_style="bold cyan",
         show_header=True, expand=True, padding=(0, 1),
+        row_styles=["", "dim"],
     )
-    table.add_column("消息 ID", style="dim", width=10)
-    table.add_column("发起方 → 执行方", width=30)
-    table.add_column("进度", width=28)
-    table.add_column("%", justify="right", width=5)
-    table.add_column("备注")
-    table.add_column("更新时间", style="dim", width=10)
+    table.add_column("消息 ID", style="dim", width=8, no_wrap=True)
+    table.add_column("发起方 → 执行方", width=24, no_wrap=True, overflow="ellipsis")
+    table.add_column("进度", width=20, no_wrap=True)
+    table.add_column("%", justify="right", width=4, no_wrap=True)
+    table.add_column("备注", overflow="ellipsis", no_wrap=True)
 
     for r in rows:
         pct = r["percent"]
         bar_filled = int(pct / 5)
         bar = "█" * bar_filled + "░" * (20 - bar_filled)
         color = "green" if pct == 100 else "yellow" if pct >= 50 else "cyan"
-        body_preview = (r["body"] or "")[:30] + ("..." if r["body"] and len(r["body"]) > 30 else "")
+        body_preview = (r["body"] or "")[:20] + ("..." if r["body"] and len(r["body"]) > 20 else "")
         from_to = f"{r['from_agent'] or '?'} → {r['to_agent'] or '?'}"
 
         table.add_row(
@@ -556,14 +556,9 @@ def _build_progress_table():
             f"[{color}]{bar}[/{color}]",
             f"[bold {color}]{pct}%[/bold {color}]",
             r["note"] or body_preview or "—",
-            _fmt_time(r["created_at"]) if r["created_at"] else "—",
         )
 
-    return Panel(
-        table,
-        title="[bold]📋 任务进度总览[/bold]",
-        subtitle=f"[dim]{datetime.now().strftime('%H:%M:%S')}[/dim]",
-    )
+    return table
 
 
 def _watch_all_progress():
@@ -641,14 +636,17 @@ def memory(
 
 def _render_memory_timeline(rows):
     """时间线视角：Rich Table。"""
+    console.print(f"\n[bold]📜 消息历史[/bold] [dim](最近 {len(rows)} 条)[/dim]\n")
+
     table = Table(
         box=box.ROUNDED, header_style="bold cyan",
-        show_header=True, expand=True, padding=(0, 1),
+        show_header=True, padding=(0, 0),
+        row_styles=["", "dim"],
     )
-    table.add_column("时间", style="dim", width=10)
-    table.add_column("状态", justify="center", width=8)
-    table.add_column("发件方 → 收件方", width=35)
-    table.add_column("消息摘要")
+    table.add_column("时间", style="dim", width=8, no_wrap=True)
+    table.add_column("", justify="center", width=2, no_wrap=True)
+    table.add_column("发件方 → 收件方", width=22, no_wrap=True, overflow="ellipsis")
+    table.add_column("消息摘要", width=40, overflow="ellipsis", no_wrap=True)
 
     prefix_style = {
         "[TASK]": "bold yellow", "[REPLY]": "bold green",
@@ -659,8 +657,10 @@ def _render_memory_timeline(rows):
     for r in rows:
         emoji, color = _status_style(r["event"])
         from_to = f"{r['from_agent'] or '?'} → {r['to_agent'] or r['agent']}"
-        body_preview = (r["body"] or r["note"] or "")[:50]
-        if len(r["body"] or "") > 50:
+        # 将换行符替换为空格，防止表格行内换行
+        body_text = (r["body"] or r["note"] or "").replace("\n", " ")
+        body_preview = body_text[:35]
+        if len(body_text) > 35:
             body_preview += "..."
 
         for prefix, style in prefix_style.items():
@@ -675,11 +675,7 @@ def _render_memory_timeline(rows):
             body_preview or "[dim]—[/dim]",
         )
 
-    console.print(Panel(
-        table,
-        title="[bold]📜 消息历史[/bold]",
-        subtitle=f"[dim]最近 {len(rows)} 条[/dim]",
-    ))
+    console.print(table)
 
 
 def _render_memory_task_view(rows):
@@ -690,6 +686,16 @@ def _render_memory_task_view(rows):
 
     console.print(f"\n[bold]📋 任务视图[/bold] [dim]({len(tasks)} 个任务)[/dim]\n")
 
+    table = Table(
+        box=box.SIMPLE_HEAD, header_style="bold cyan",
+        show_header=True, expand=True, padding=(0, 1),
+        row_styles=["", "dim"],
+    )
+    table.add_column("消息 ID", style="dim", width=8, no_wrap=True)
+    table.add_column("发起方 → 执行方", width=24, no_wrap=True, overflow="ellipsis")
+    table.add_column("事件流", width=20, no_wrap=True, overflow="ellipsis")
+    table.add_column("耗时", justify="right", width=6, no_wrap=True)
+
     for msg_id, events in tasks.items():
         events_sorted = sorted(events, key=lambda x: x["created_at"])
         first = events_sorted[0]
@@ -698,24 +704,24 @@ def _render_memory_task_view(rows):
         elapsed = last_event["created_at"] - first["created_at"]
         elapsed_str = f"{elapsed:.0f}s" if elapsed < 60 else f"{elapsed/60:.1f}m"
 
-        body_preview = (first["body"] or "")[:50] + ("..." if len(first["body"] or "") > 50 else "")
+        body_preview = (first["body"] or "")[:30] + ("..." if len(first["body"] or "") > 30 else "")
         from_to = f"{first['from_agent'] or '?'} → {first['to_agent'] or '?'}"
 
-        final_status = last_event["event"]
-        _, color = _status_style(final_status)
+        # 事件流：用 emoji 串联
+        event_chain = " ".join(
+            _status_style(e["event"])[0] for e in events_sorted
+        )
 
-        console.print(f"[dim]┌─[/dim] [bold]{msg_id[:8]}[/bold]  {body_preview}")
-        console.print(f"[dim]│[/dim]  发起: [cyan]{from_to}[/cyan]  {_fmt_time(first['created_at'])}")
+        _, color = _status_style(last_event["event"])
 
-        for e in events_sorted:
-            emoji, ecolor = _status_style(e["event"])
-            note = e["note"] or ""
-            console.print(
-                f"[dim]│[/dim]  [{ecolor}]{emoji} {e['event']:<10}[/{ecolor}] "
-                f"{_fmt_time(e['created_at'])}  [dim]{note}[/dim]"
-            )
+        table.add_row(
+            msg_id[:8],
+            from_to,
+            f"[{color}]{body_preview}[/{color}]  {event_chain}",
+            f"[bold]{elapsed_str}[/bold]",
+        )
 
-        console.print(f"[dim]└─[/dim] [{color}]{final_status}[/{color}]  耗时 [bold]{elapsed_str}[/bold]\n")
+    console.print(table)
 
 
 @app.command()
