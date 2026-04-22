@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agtalk"
+version = "0.1.0"
+description = "Agent Talk — 多 Agent 通信框架"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.0",
+]
+
+[project.scripts]
+agtalk = "agtalk.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agtalk*"]
