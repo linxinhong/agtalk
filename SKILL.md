@@ -1,0 +1,311 @@
+---
+name: agtalk-assistant
+description: |
+  当用户提到以下场景时使用此 skill：
+  - 多 Agent 协作、Agent 间通信
+  - Zellij/Tmux 多路复用器环境下的 Agent 消息传递
+  - 使用 agtalk 进行任务分发和结果收集
+  - 注册 Agent、查看 inbox、发送消息
+  - Agent 编排、工作流自动化
+  - 需要在多个终端 pane 之间协调任务
+  此 skill 帮助用户在 agtalk 环境中高效地进行多 Agent 协作开发。
+---
+
+# agtalk-assistant
+
+agtalk 是一个运行在 Zellij/Tmux 终端多路复用器环境中的多 Agent 通信框架。它让多个 Agent（运行在不同 pane 中）可以通过消息 inbox、FIFO 通知和 pane 间直接通信来协作完成任务。
+
+## 核心概念
+
+### 核心设计理念
+
+> ⚠️ **Agent 自主处置**：此 skill 的核心理念是**让 Agent 自由工作**。
+> - 发送方只负责发消息 + notify 通知，**不控制** done
+> - 接收方自主查收 inbox、自由处置任务，**自己决定**何时调用 `done`
+> - 禁止发送方在消息中强制要求接收方何时完成
+
+### Agent 命名规范
+格式：`{agent_tool}_{main_role}_{可记忆英文名}`
+
+- `agent_tool`: AI 工具名（claude / kimi / opencode / gemini）
+- `main_role`: 主要职责（coder / reviewer / planner / tester / reporter）
+- `可记忆英文名`: 从预设列表选取
+
+**预设名字列表（按字母顺序）**：
+Alex / Bob / Chris / David / Emma / Frank / Grace / Henry / Iris / Jack / Kate / Liam / Mary / Nick / Olivia / Paul / Quinn / Rose / Sam / Tom / Uma / Victor / Wendy / Xin / Yale / Zoe
+
+> ⚠️ **名字冲突检测**：注册前必须先执行 `agtalk list` 查看已有名字，**选择未使用的名字**。
+
+### 消息状态
+- `pending` → `delivered` → `read` → `done`
+- `failed` 表示投递失败
+
+### 消息格式前缀
+`[TASK]`、`[REPLY]`、`[DONE]`、`[ACK]`、`[INFO]`、`[FILE]`
+
+### 收到消息后的处置流程
+
+> ⚠️ **收到 `[TASK]` 消息后**：处置完任务后，**自行执行** `agtalk done <msg_id>` 标记完成，无需等待发送方显式说明。发送方使用 `--wait-done` 时会通过 FIFO 自动感知完成状态。
+
+---
+
+## 常用命令
+
+### 环境初始化
+```bash
+agtalk init
+```
+检查终端环境、初始化数据库、确保 FIFO 存在。
+
+### Agent 注册
+```bash
+# 注册当前 pane 为 Agent
+agtalk register <agent_name> --role <role> --capabilities <capabilities> --bio <bio>
+
+# 示例
+agtalk register claude_coder_Alice --role coder --capabilities "python,frontend,refactor" --bio "主攻前端重构"
+```
+
+### 查看 Agent 列表
+```bash
+agtalk list
+agtalk list --capabilities  # 显示能力列表
+agtalk list --json          # JSON 格式输出
+```
+
+### 发送消息
+```bash
+# 基本发送（仅写入 inbox）
+agtalk send <agent_name> "<消息内容>"
+
+# 发送并提醒对方
+agtalk send <agent_name> "<消息内容>" --notify
+
+# 等待对方完成（必须设置超时）
+agtalk send <agent_name> "<消息内容>" --wait-done --timeout 120
+
+> ⚠️ **必须设置超时**：建议 `--timeout 60` 或 `--timeout 120`，避免无限等待。若超时可重新发送消息。
+
+# 带主题和优先级
+agtalk send <agent_name> "<消息内容>" --subject "重构任务" --priority 3
+```
+
+### 广播和多播
+```bash
+# 广播给所有 Agent
+agtalk broadcast "<消息内容>"
+
+# 排除某些 Agent
+agtalk broadcast "<消息内容>" --exclude "agent1,agent2"
+
+# 多播给指定 Agent
+agtalk multicast "agent1,agent2" "<消息内容>"
+```
+
+### 提醒通知（仅触发 inbox 查收）
+```bash
+# 向对方 pane 发送提醒，通知格式：
+# [agtalk:<msg_id>] | exec: agtalk inbox <your_name>
+agtalk notify <agent_name>
+
+# 自定义提醒内容
+agtalk notify <agent_name> "请查收任务"
+
+# 不自动发送 Enter（让对方手动触发）
+agtalk notify <agent_name> --no-enter
+```
+
+> ⚠️ **注意**：notify 只负责通知对方查收 inbox，done 由 Agent 自己处理完任务后决定何时调用。
+
+### 查看 Inbox
+```bash
+# 查看当前 Agent 的收件箱
+agtalk inbox <your_name>
+
+# 包含已读消息
+agtalk inbox <your_name> --all
+
+# JSON 格式
+agtalk inbox <your_name> --json
+```
+
+### 标记完成
+```bash
+# 标记消息已完成
+agtalk done <msg_id>
+```
+
+### 健康检查
+```bash
+# 系统健康检查
+agtalk health
+
+# 指定 Agent 健康检查
+agtalk health --agent <agent_name>
+```
+
+### 清理工具
+```bash
+# 清理僵尸 Agent
+agtalk prune
+
+# 干跑模式（不实际删除）
+agtalk prune --dry-run
+
+# 检查卡死消息
+agtalk check-stuck
+
+# 查看消息历史
+agtalk memory --last 50
+agtalk memory --agent <agent_name> --json
+```
+
+---
+
+## 典型工作流
+
+### 1. 任务分发与收集
+```bash
+# Agent A 分发任务给 B 和 C
+agtalk send claude_coder_Bob "[TASK] 请重构 auth 模块" --priority 3 --notify
+agtalk send claude_coder_Chris "[TASK] 请审查 PR #42" --priority 5 --notify
+
+# B 和 C 完成后执行
+agtalk done <msg_id>
+```
+
+### 2. 多 Agent 流水线
+```bash
+# 流水线：coder → reviewer → tester
+agtalk send claude_coder_Alice "[TASK] 实现登录功能" --notify
+# Alice 完成后
+agtalk send claude_reviewer_Bob "[TASK] 审查 Alice 的 PR" --notify
+# Bob 完成后
+agtalk send claude_tester_Chris "[TASK] 测试登录流程" --notify
+```
+
+### 3. 并行任务收集
+```bash
+# 并行分发给 3 个 coder
+agtalk multicast "alice,bob,charlie" "[TASK] 各自实现一个 API endpoint" --notify
+
+# 等待结果
+agtalk inbox me --all --json | jq '.[] | select(.status=="done")'
+```
+
+### 4. 团队广播
+```bash
+# 广播部署通知
+agtalk broadcast "[INFO] 即将部署到 staging 环境" --exclude "ci_bot" --notify
+
+# 广播紧急停止
+agtalk broadcast "[TASK] 紧急：停止当前所有操作" --notify
+```
+
+---
+
+## 与 Claude Code 集成
+
+当你在 Zellij/Tmux 环境中使用 Claude Code 作为 Agent 时，agtalk 可以实现：
+
+1. **并行开发**：在多个 pane 启动不同的 Claude Code Agent，分别负责任务的不同部分
+2. **专业分工**：coder、reviewer、tester Agent 各司其职
+3. **结果汇总**：通过 inbox 收集各 Agent 的工作结果
+
+### 在 Zellij 中设置多 Agent
+```bash
+#Pane 1: 注册为 coder
+cd /path/to/project
+agtalk register claude_coder_Alice --role coder
+claude
+
+#Pane 2: 注册为 reviewer
+cd /path/to/project
+agtalk register claude_reviewer_Bob --role reviewer
+claude
+
+#Pane 3: 架构师/主控
+agtalk register claude_architect_Charlie --role architect
+# 分发任务
+agtalk send claude_coder_Alice "[TASK] 实现用户模块"
+agtalk send claude_reviewer_Bob "[TASK] 审查 Alice 的代码"
+```
+
+---
+
+## 故障排除
+
+### "不在 Zellij 环境中"
+确保在 Zellij session 内运行，Zellij 会设置 `ZELLIJ_SESSION_NAME` 环境变量。
+
+### "Agent 未找到或已离线"
+- 检查对方是否已注册：`agtalk list`
+- 对方 pane 是否还活着
+- 尝试重新注册
+
+### 消息未送达
+- 检查 FIFO 是否存在：`ls -la ~/.config/agtalk/`
+- 重新初始化：`agtalk init`
+
+### 僵尸 Agent
+```bash
+# 查看并清理
+agtalk prune --dry-run
+agtalk prune
+```
+
+---
+
+## 数据存储
+
+所有数据存放在 `~/.config/agtalk/` 目录下：
+
+| 文件/目录 | 说明 |
+|-----------|------|
+| `~/.config/agtalk/talk.db` | SQLite 数据库（消息、Agent 注册、日志） |
+| `~/.config/agtalk/notify.fifo` | FIFO 管道（pane 间通知） |
+
+### 数据库结构
+- `agents` 表：已注册的 Agent 信息
+- `messages` 表：消息 inbox
+- `message_log` 表：消息事件日志
+- `offline_queue` 表：离线消息队列
+
+### 手动访问数据库
+```bash
+# 查看数据库内容
+sqlite3 ~/.config/agtalk/talk.db ".tables"
+sqlite3 ~/.config/agtalk/talk.db "SELECT * FROM agents;"
+
+# 自定义数据库路径（覆盖默认）
+export AGTALK_DB_PATH=/path/to/custom.db
+```
+
+---
+
+## 环境变量
+
+| 变量 | 说明 |
+|------|------|
+| `AGTALK_AGENT_NAME` | 当前 Agent 名称 |
+| `ZELLIJ_SESSION_NAME` | Zellij session 名 |
+| `ZELLIJ_PANE_ID` | 当前 pane ID |
+| `TMUX` | Tmux 环境标志 |
+| `AGTALK_DB_PATH` | 自定义数据库路径（默认 `~/.config/agtalk/talk.db`） |
+
+---
+
+## agtalk 消息处理流程（System Prompt 定义）
+
+当收到 `[agtalk:*]` 通知时，按以下流程处理：
+
+```
+1. 收到 [agtalk:<msg_id>] 通知后，执行 exec 里的命令查收 inbox
+   agtalk inbox <your_name>
+
+2. 读取消息内容，执行消息要求的任务
+
+3. 任务完成后，执行 agtalk done <msg_id> 标记完成
+```
+
+> ⚠️ **禁止在任务未处理前执行 done**。done 由 Agent 自己决定何时调用，不应由发送方控制。
