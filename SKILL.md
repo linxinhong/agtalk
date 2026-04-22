@@ -29,9 +29,9 @@ agtalk 是一个运行在 Zellij/Tmux 终端多路复用器环境中的多 Agent
 ### Agent 命名规范
 格式：`{agent_tool}_{main_role}_{可记忆英文名}`
 
-- `agent_tool`: AI 工具名（claude / kimi / opencode / gemini）
-- `main_role`: 主要职责（coder / reviewer / planner / tester / reporter）
-- `可记忆英文名`: 从预设列表选取
+- `agent_tool`: AI 工具名（claude / kimi / opencode / gemini 等）
+- `main_role`: **用户自定义角色标识**，如 `coder`、`reviewer`、`planner`、`writer`、`analyst`、`ops`、`designer` 等，不限定固定值
+- `可记忆英文名`: 从预设列表选取，确保不冲突
 
 **预设名字列表（按字母顺序）**：
 Alex / Bob / Chris / David / Emma / Frank / Grace / Henry / Iris / Jack / Kate / Liam / Mary / Nick / Olivia / Paul / Quinn / Rose / Sam / Tom / Uma / Victor / Wendy / Xin / Yale / Zoe
@@ -48,6 +48,53 @@ Alex / Bob / Chris / David / Emma / Frank / Grace / Henry / Iris / Jack / Kate /
 ### 收到消息后的处置流程
 
 > ⚠️ **收到 `[TASK]` 消息后**：处置完任务后，**自行执行** `agtalk done <msg_id>` 标记完成，无需等待发送方显式说明。发送方使用 `--wait-done` 时会通过 FIFO 自动感知完成状态。
+
+---
+
+## 通用协作原则（角色无关）
+
+agtalk 不预设固定角色体系，`role` 和 `capabilities` 完全由用户自定义。无论你的 Agent 是 `writer`、`analyst`、`ops`、`designer` 还是其他任何角色，以下原则通用：
+
+### 1. 任意 Agent 之间可直接沟通
+不需要所有消息都经过某个"中心节点"。发现 bug 的 Agent 可以直接通知负责修复的 Agent，审查完成的 Agent 可以直接通知部署的 Agent。
+
+### 2. 单线程任务规则
+一个 Agent 同时只应处理 **1 条 active `[TASK]`**。Sender 应在收到 `done` 后再发下一条，避免 inbox 堆积。
+
+### 3. 所有 `[TASK]` 必须带 `--notify`
+```bash
+# ✅ 正确
+agtalk send claude_writer_Bob "[TASK] 撰写文档" --notify
+
+# ❌ 错误 — 对方可能收不到
+agtalk send claude_writer_Bob "[TASK] 撰写文档"
+```
+
+### 4. `[INFO]` / `[REMINDER]` 应使用 `notify`
+非任务类消息不应占用 inbox 的 pending 状态：
+```bash
+# ✅ 正确 — 仅提醒，不占用 inbox
+agtalk notify claude_writer_Bob "[INFO] 会议 10 分钟后开始"
+
+# ❌ 错误 — 对方需要手动 done 一条纯信息
+agtalk send claude_writer_Bob "[INFO] 会议 10 分钟后开始"
+```
+
+### 5. 合理使用优先级
+| priority | 适用场景 |
+|----------|----------|
+| 1-2 | 紧急/阻塞性任务 |
+| 3-4 | 重要但不紧急 |
+| 5 | 默认，常规任务 |
+| 6-9 | 低优先级/可延后 |
+
+### 6. 使用 `reply_to` 建立对话线程
+```bash
+# 先发送任务
+agtalk send claude_analyst_Bob "[TASK] 分析数据集 A" --notify
+# 回复时带上 msg_id（从 inbox 获取）
+agtalk send claude_planner_Alice "[REPLY] 分析完成，关键发现..." --reply-to <msg_id>
+```
 
 ---
 
@@ -170,7 +217,7 @@ agtalk memory --agent <agent_name> --json
 ```bash
 # Agent A 分发任务给 B 和 C
 agtalk send claude_coder_Bob "[TASK] 请重构 auth 模块" --priority 3 --notify
-agtalk send claude_coder_Chris "[TASK] 请审查 PR #42" --priority 5 --notify
+agtalk send claude_writer_Chris "[TASK] 请撰写技术文档" --priority 5 --notify
 
 # B 和 C 完成后执行
 agtalk done <msg_id>
@@ -178,18 +225,18 @@ agtalk done <msg_id>
 
 ### 2. 多 Agent 流水线
 ```bash
-# 流水线：coder → reviewer → tester
+# 流水线：coder → reviewer → deployer
 agtalk send claude_coder_Alice "[TASK] 实现登录功能" --notify
 # Alice 完成后
-agtalk send claude_reviewer_Bob "[TASK] 审查 Alice 的 PR" --notify
+agtalk send claude_reviewer_Bob "[TASK] 审查 Alice 的代码" --notify
 # Bob 完成后
-agtalk send claude_tester_Chris "[TASK] 测试登录流程" --notify
+agtalk send claude_ops_Charlie "[TASK] 部署到 staging" --notify
 ```
 
 ### 3. 并行任务收集
 ```bash
-# 并行分发给 3 个 coder
-agtalk multicast "alice,bob,charlie" "[TASK] 各自实现一个 API endpoint" --notify
+# 并行分发给多个 Agent
+agtalk multicast "alice,bob,charlie" "[TASK] 各自分析一个数据集" --notify
 
 # 等待结果
 agtalk inbox me --all --json | jq '.[] | select(.status=="done")'
@@ -206,12 +253,12 @@ agtalk broadcast "[TASK] 紧急：停止当前所有操作" --notify
 
 ---
 
-## 与 Claude Code 集成
+## 与 AI Agent 集成
 
-当你在 Zellij/Tmux 环境中使用 Claude Code 作为 Agent 时，agtalk 可以实现：
+当你在 Zellij/Tmux 环境中使用 Claude Code、Kimi 或其他 AI Agent 时，agtalk 可以实现：
 
-1. **并行开发**：在多个 pane 启动不同的 Claude Code Agent，分别负责任务的不同部分
-2. **专业分工**：coder、reviewer、tester Agent 各司其职
+1. **并行工作**：在多个 pane 启动不同的 Agent，分别负责任务的不同部分
+2. **专业分工**：不同 Agent 根据自定义角色各司其职（开发、写作、分析、运维等）
 3. **结果汇总**：通过 inbox 收集各 Agent 的工作结果
 
 ### 在 Zellij 中设置多 Agent
@@ -221,16 +268,16 @@ cd /path/to/project
 agtalk register claude_coder_Alice --role coder
 claude
 
-#Pane 2: 注册为 reviewer
+#Pane 2: 注册为 writer
 cd /path/to/project
-agtalk register claude_reviewer_Bob --role reviewer
+agtalk register claude_writer_Bob --role writer
 claude
 
-#Pane 3: 架构师/主控
-agtalk register claude_architect_Charlie --role architect
+#Pane 3: 主控/协调者
+agtalk register claude_planner_Charlie --role planner
 # 分发任务
-agtalk send claude_coder_Alice "[TASK] 实现用户模块"
-agtalk send claude_reviewer_Bob "[TASK] 审查 Alice 的代码"
+agtalk send claude_coder_Alice "[TASK] 实现用户模块" --notify
+agtalk send claude_writer_Bob "[TASK] 撰写 API 文档" --notify
 ```
 
 ---

@@ -41,9 +41,9 @@ Review 分两个阶段：
 
 1. 执行 `agtalk list --capabilities` 查看当前在线 Agent
 2. 根据决策类型选择最合适的 Agent：
-   - 架构/设计决策 → 优先找 `planner` 或 `architect` role
-   - 代码质量决策 → 优先找 `reviewer` role
-   - 业务逻辑决策 → 优先找最了解该模块的 Agent
+   - 架构/设计类决策 → 优先找负责架构的 Agent（如 `planner`、`architect` 等角色）
+   - 质量审查类决策 → 优先找负责审查的 Agent（如 `reviewer`、`auditor` 等角色）
+   - 领域专业类决策 → 优先找最了解该模块的 Agent
 3. 没有明显合适的 Agent 时，选择当前在线且空闲的任意 Agent
 
 ### 如何发起 Review？
