@@ -139,6 +139,24 @@ agtalk send <agent_name> "<消息内容>" --wait-done --timeout 120
 agtalk send <agent_name> "<消息内容>" --subject "重构任务" --priority 3
 ```
 
+#### Shell 安全注意事项
+
+消息内容中包含特殊字符时，bash 可能会意外处理：
+
+```bash
+# ❌ 错误 — $100 会被 bash 替换为空变量
+agtalk send <agent> "价格是 $100"
+
+# ✅ 正确 — 使用单引号阻止变量替换
+agtalk send <agent> '价格是 $100'
+
+# ✅ 正确 — 使用 \\n 插入换行（agtalk 会自动转义）
+agtalk send <agent> '第一行\n第二行\n第三行' --notify
+
+# ✅ 正确 — 使用 $'...' 语法（bash 原生支持转义）
+agtalk send <agent> $'第一行\n第二行' --notify
+```
+
 ### 广播和多播
 ```bash
 # 广播给所有 Agent

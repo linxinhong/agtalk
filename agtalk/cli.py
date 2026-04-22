@@ -11,6 +11,21 @@ from .delivery import notify as _fifo_notify, watch_until_done, _ensure_fifo, no
 
 _PRESET_NAMES = ["Alex", "Bob", "Chris", "David", "Emma", "Frank", "Grace", "Henry", "Iris", "Jack", "Kate", "Liam", "Mary", "Nick", "Olivia", "Paul", "Quinn", "Rose", "Sam", "Tom", "Uma", "Victor", "Wendy", "Xin", "Yale", "Zoe"]
 
+
+def _unescape_body(body: str) -> str:
+    """将字面转义字符替换为真实控制字符。
+
+    支持 \\n → \n, \\t → \t, \\r → \r, \\\\ → \
+    按反序处理避免冲突。
+    """
+    body = body.replace("\\\\", "\x00")  # 临时占位
+    body = body.replace("\\n", "\n")
+    body = body.replace("\\t", "\t")
+    body = body.replace("\\r", "\r")
+    body = body.replace("\x00", "\\")
+    return body
+
+
 # 命令分组
 _COMMAND_GROUPS = {
     "注册管理": ["register", "unregister", "list"],
@@ -158,6 +173,7 @@ def list_agents(as_json, capabilities):
 @click.option("--no-enter", is_flag=True, help="提醒不自动发送 Enter")
 def send(agent, body, subject, msg_type, priority, wait_done, timeout, reply_to, notify, no_enter):
     """发送消息给指定 Agent（仅写入 inbox）。支持 \\n 转义换行。"""
+    body = _unescape_body(body)
     try:
         msg_id = messenger.send(
             to_agent=agent,
@@ -206,6 +222,7 @@ def send(agent, body, subject, msg_type, priority, wait_done, timeout, reply_to,
 @click.option("--msg-id", default=None, help="关联的消息 ID，使用标准提醒格式")
 def notify(agent, body, no_enter, msg_id):
     """向指定 Agent 的 pane 发送提醒通知（不写 inbox）。"""
+    body = _unescape_body(body)
     agent_info = registry.lookup(agent)
     if not agent_info:
         click.echo(f"❌ Agent {agent} 未找到或已离线", err=True)
@@ -240,6 +257,7 @@ def notify(agent, body, no_enter, msg_id):
 @click.option("--no-enter", is_flag=True, help="提醒不自动发送 Enter")
 def broadcast(body, exclude, notify, no_enter):
     """广播给所有 Agent（仅写入 inbox）"""
+    body = _unescape_body(body)
     excludes = [e.strip() for e in exclude.split(",") if e.strip()]
     try:
         ids = messenger.broadcast(body, exclude=excludes)
@@ -275,6 +293,7 @@ def broadcast(body, exclude, notify, no_enter):
 @click.option("--no-enter", is_flag=True, help="提醒不自动发送 Enter")
 def multicast(agents, body, notify, no_enter):
     """多播给指定 Agents (逗号分隔，仅写入 inbox)"""
+    body = _unescape_body(body)
     agent_list = [a.strip() for a in agents.split(",") if a.strip()]
     if not agent_list:
         click.echo("❌ 未指定 agents", err=True)
