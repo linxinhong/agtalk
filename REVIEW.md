@@ -39,7 +39,7 @@ Review 分两个阶段：
 
 没有专职 reviewer，由任务上下文决定：
 
-1. 执行 `agtalk list --capabilities` 查看当前在线 Agent
+1. 执行 `agtalk list` 查看当前在线 Agent
 2. 根据决策类型选择最合适的 Agent：
    - 架构/设计类决策 → 优先找负责架构的 Agent（如 `planner`、`architect` 等角色）
    - 质量审查类决策 → 优先找负责审查的 Agent（如 `reviewer`、`auditor` 等角色）

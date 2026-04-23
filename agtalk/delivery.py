@@ -45,8 +45,7 @@ def _format_notification_text(to_agent: str, from_agent: str, msg_count: int = 1
     if msg_id:
         short_id = msg_id[:8]
         return (
-            f"\r\n[agtalk:{short_id}] | exec: agtalk inbox {to_agent} | "
-            f"exec: agtalk done {short_id}\r\n"
+            f"\r\n[agtalk:{short_id}] | exec: agtalk inbox {to_agent}\r\n"
         )
     if msg_count == 1:
         return (

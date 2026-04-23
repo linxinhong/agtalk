@@ -8,6 +8,8 @@ from typing import Optional
 
 from rich.live import Live
 from rich.text import Text
+from rich.panel import Panel
+from rich import box
 
 import typer
 
@@ -45,59 +47,130 @@ def _fmt_ts_full(ts: float) -> str:
 
 
 def _status_style(status: str) -> tuple[str, str]:
-    """返回 (emoji, rich color)。"""
+    """返回 (label, rich color)。"""
     return {
-        "done":      ("✅", "green"),
-        "sent":      ("📤", "blue"),
-        "pending":   ("⏳", "yellow"),
-        "delivered": ("📬", "cyan"),
-        "read":      ("👁", "white"),
-        "failed":    ("❌", "red"),
-    }.get(status, ("•", "white"))
+        "done":        ("DONE", "green"),
+        "sent":        ("SEND", "blue"),
+        "pending":     ("WAIT", "yellow"),
+        "delivered":   ("RECV", "cyan"),
+        "read":        ("READ", "white"),
+        "failed":      ("FAIL", "red"),
+        "progress":    ("PROGRESS", "yellow"),
+        "open":        ("OPEN", "yellow"),
+        "in_progress": ("WORK", "blue"),
+        "resolved":    ("DONE", "green"),
+        "closed":      ("CLOSE", "dim"),
+    }.get(status, ("UNKN", "white"))
+
+
+_prefix_colors = {
+    "[TASK]":     "green",
+    "[REPLY]":    "cyan",
+    "[DONE]":     "green",
+    "[ACK]":      "blue",
+    "[INFO]":     "white",
+    "[FILE]":     "magenta",
+    "[QUESTION]": "yellow",
+    "[REMINDER]": "yellow",
+    "[ISSUE]":    "red",
+}
+
+
+def _colorize_prefix(text: str) -> str:
+    """为消息前缀标注颜色。"""
+    for prefix, color in _prefix_colors.items():
+        if text.startswith(prefix):
+            return f"[{color}]{prefix}[/{color}]{text[len(prefix):]}"
+    return text
+
+
+def _short_id() -> str:
+    """生成 8 位短 ID。"""
+    import uuid
+    return uuid.uuid4().hex[:8]
+
+
+def _j(data: dict | list) -> None:
+    """输出 JSON（Agent 默认格式），时间戳自动转 ISO 8601，msg_id 自动截短。"""
+    from datetime import datetime, timezone
+
+    def _normalize(obj):
+        if isinstance(obj, dict):
+            for k, v in list(obj.items()):
+                if k in ("created_at", "last_seen_at", "registered_at", "updated_at") and isinstance(v, (int, float)):
+                    obj[k] = datetime.fromtimestamp(v, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                elif k == "msg_ids" and isinstance(v, list):
+                    obj[k] = [item[:8] if isinstance(item, str) and len(item) > 8 else item for item in v]
+                elif k == "sent" and isinstance(v, dict):
+                    for sk, sv in list(v.items()):
+                        if isinstance(sv, str) and len(sv) > 8:
+                            v[sk] = sv[:8]
+                elif k in ("msg_id", "reply_to_msg_id") and isinstance(v, str) and len(v) > 8:
+                    obj[k] = v[:8]
+                else:
+                    _normalize(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                _normalize(item)
+
+    _normalize(data)
+    console.print(json.dumps(data, indent=2, ensure_ascii=False, default=str))
 
 
 # ─── 初始化 ──────────────────────────────────────────
 @app.command()
-def init():
+def init(
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
+):
     """初始化环境：检查终端环境、初始化数据库、确保 FIFO 存在。"""
     errors = []
+    results = {}
     mux = get()
 
     with console.status("[bold green]正在初始化...", spinner="dots"):
         try:
             session = mux.get_current_session()
             pane_id = mux.get_current_pane_id()
-            console.print(
-                f"✅ 终端环境: session=[cyan]{session}[/cyan], "
-                f"pane_id=[cyan]{pane_id}[/cyan]"
-            )
+            results["session"] = session
+            results["pane_id"] = pane_id
         except EnvironmentError as e:
             errors.append(f"终端环境: {e}")
 
         import shutil
-        if shutil.which("zellij"):
-            console.print("✅ zellij CLI 可用")
-        else:
+        results["zellij"] = bool(shutil.which("zellij"))
+        if not results["zellij"]:
             errors.append("zellij CLI 未找到")
 
         try:
             db.init_db()
-            console.print(f"✅ 数据库: [dim]{db.get_db_path()}[/dim]")
+            results["db"] = str(db.get_db_path())
         except Exception as e:
             errors.append(f"数据库初始化: {e}")
 
         try:
             _ensure_fifo()
             from agtalk.delivery import FIFO_PATH
-            console.print(f"✅ FIFO: [dim]{FIFO_PATH}[/dim]")
+            results["fifo"] = str(FIFO_PATH)
         except Exception as e:
             errors.append(f"FIFO 创建: {e}")
+
+    if not view:
+        if errors:
+            _j({"ok": False, "errors": errors, "results": results})
+            sys.exit(1)
+        else:
+            _j({"ok": True, **results})
+            return
 
     if errors:
         for err in errors:
             console.print(f"❌ {err}")
         sys.exit(1)
     else:
+        console.print(f"✅ 终端环境: session=[cyan]{results.get('session')}[/cyan], pane_id=[cyan]{results.get('pane_id')}[/cyan]")
+        console.print("✅ zellij CLI 可用")
+        console.print(f"✅ 数据库: [dim]{results.get('db')}[/dim]")
+        console.print(f"✅ FIFO: [dim]{results.get('fifo')}[/dim]")
         console.print("\n✅ 初始化完成")
 
 
@@ -108,14 +181,27 @@ def register(
     role: str = "",
     capabilities: str = "",
     bio: str = "",
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
 ):
     """注册当前 pane 为 Agent。"""
     try:
         info = registry.register(agent_name, role, capabilities, bio)
     except EnvironmentError as e:
+        if not view:
+            _j({"ok": False, "error": str(e)})
+            sys.exit(1)
         console.print(f"[red]❌ {e}[/red]")
         sys.exit(1)
     os.environ["AGTALK_AGENT_NAME"] = agent_name
+
+    if not view:
+        with db.get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM agents WHERE agent_name = ?", (agent_name,)
+            ).fetchone()
+        agent_info = dict(row) if row else {}
+        _j({"ok": True, **agent_info})
+        return
 
     console.print(f"\n✅ 注册成功: {agent_name}")
     console.print(f"  Session: {info['session']} | Pane: {info['pane_id']}")
@@ -128,30 +214,29 @@ def register(
 
 
 @app.command()
-def unregister(agent_name: str):
+def unregister(
+    agent_name: str,
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
+):
     """注销 Agent。"""
     registry.unregister(agent_name)
+    if not view:
+        _j({"ok": True, "agent_name": agent_name})
+        return
     console.print(f"[yellow]🗑 已注销:[/yellow] {agent_name}")
 
 
 @app.command("list")
 def list_agents(
-    as_json: bool = False,
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
     capabilities: bool = False,
 ):
     """列出所有注册 Agent。"""
     with db.get_conn() as conn:
-        if capabilities:
-            rows = conn.execute(
-                "SELECT agent_name, session, pane_id, role, capabilities, last_seen_at FROM agents"
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT agent_name, session, pane_id, role, last_seen_at FROM agents"
-            ).fetchall()
+        rows = conn.execute("SELECT * FROM agents").fetchall()
 
-    if as_json:
-        console.print(json.dumps([dict(r) for r in rows], indent=2))
+    if not view:
+        _j([dict(r) for r in rows])
         return
 
     if not rows:
@@ -179,10 +264,12 @@ def send(
     wait_done: bool = False,
     timeout: int = 120,
     reply_to: Optional[str] = None,
-    notify: bool = False,
+    notify: bool = True,
+    no_notify: bool = typer.Option(False, "--no-notify", help="不发送 pane 提醒"),
     no_enter: bool = False,
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
 ):
-    """发送消息给指定 Agent（仅写入 inbox）。支持 \\n 转义换行。"""
+    """发送消息给指定 Agent（写入 inbox + 自动提醒）。支持 \\n 转义换行。"""
     body = _unescape_body(body)
     try:
         msg_id = messenger.send(
@@ -195,28 +282,49 @@ def send(
             deliver=False,
         )
     except EnvironmentError as e:
+        if not view:
+            _j({"ok": False, "error": str(e)})
+            sys.exit(1)
         console.print(f"[red]❌ {e}[/red]")
         sys.exit(1)
 
     preview = body[:50] + ("..." if len(body) > 50 else "")
-    console.print(
-        f"[blue]📨[/blue] [bold]{msg_id[:8]}...[/bold] → [cyan]{agent}[/cyan]  [dim]{preview}[/dim]"
-    )
 
-    if notify:
+    # 执行 notify（JSON 和 view 模式都需要）
+    notified = False
+    notify_error = ""
+    if notify and not no_notify:
         agent_info = registry.lookup(agent)
-        try:
-            from_agent = get_agent_name()
-        except Exception:
-            from_agent = "unknown"
         if agent_info:
             try:
+                from_agent = get_agent_name()
+            except Exception:
+                from_agent = "unknown"
+            try:
                 notify_agent(agent, from_agent, agent_info, send_enter=not no_enter, msg_id=msg_id)
-                console.print(f"[yellow]🔔 已提醒[/yellow] {agent} 查收")
+                notified = True
             except Exception as e:
-                console.print(f"[red]🔔 提醒发送失败:[/red] {e}")
-        else:
-            console.print(f"[dim]🔔 {agent} 离线，无法提醒[/dim]")
+                notify_error = str(e)
+
+    if not view:
+        result = {"ok": True, "msg_id": msg_id, "to_agent": agent, "preview": preview}
+        if notified:
+            result["notified"] = True
+        if notify_error:
+            result["notify_error"] = notify_error
+        if wait_done:
+            status = watch_until_done(msg_id, timeout)
+            result["status"] = status
+        _j(result)
+        return
+
+    console.print(
+        f"[blue]📨[/blue] [dim]{msg_id[:8]}...[/dim] → [cyan]{agent}[/cyan]  [dim]{preview}[/dim]"
+    )
+    if notified:
+        console.print(f"[yellow]🔔 已提醒[/yellow] {agent} 查收")
+    elif notify_error:
+        console.print(f"[red]🔔 提醒发送失败:[/red] {notify_error}")
 
     if wait_done:
         with console.status(f"[yellow]等待 {agent} 完成... (超时 {timeout}s)[/yellow]", spinner="dots"):
@@ -235,16 +343,23 @@ def notify(
     body: str = "",
     no_enter: bool = False,
     msg_id: Optional[str] = None,
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
 ):
     """向指定 Agent 的 pane 发送提醒通知（不写 inbox）。"""
     body = _unescape_body(body)
     agent_info = registry.lookup(agent)
     if not agent_info:
+        if not view:
+            _j({"ok": False, "error": f"Agent {agent} 未找到或已离线"})
+            sys.exit(1)
         console.print(f"[red]❌ Agent {agent} 未找到或已离线[/red]")
         return
     try:
         from_agent = get_agent_name()
     except EnvironmentError as e:
+        if not view:
+            _j({"ok": False, "error": str(e)})
+            sys.exit(1)
         console.print(f"[red]❌ {e}[/red]")
         sys.exit(1)
 
@@ -255,12 +370,18 @@ def notify(
                 (msg_id + "%",),
             ).fetchone()
         if row and row["status"] in ("done", "failed", "read"):
+            if not view:
+                _j({"ok": True, "skipped": True, "reason": f"消息已 {row['status']}"})
+                return
             console.print(f"[dim]⏭ 消息已 {row['status']}，无需提醒[/dim]")
             return
 
     custom_text = body if body else None
     notify_agent(agent, from_agent, agent_info, send_enter=not no_enter,
                  custom_text=custom_text, msg_id=msg_id)
+    if not view:
+        _j({"ok": True, "agent": agent, "notified": True})
+        return
     console.print(f"[yellow]🔔 已提醒[/yellow] {agent}")
 
 
@@ -268,20 +389,26 @@ def notify(
 def broadcast(
     body: str,
     exclude: str = "",
-    notify: bool = False,
+    notify: bool = True,
+    no_notify: bool = typer.Option(False, "--no-notify", help="不发送 pane 提醒"),
     no_enter: bool = False,
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
 ):
-    """广播给所有 Agent（仅写入 inbox）。"""
+    """广播给所有 Agent（写入 inbox + 自动提醒）。"""
     body = _unescape_body(body)
     excludes = [e.strip() for e in exclude.split(",") if e.strip()]
     try:
         ids = messenger.broadcast(body, exclude=excludes)
     except EnvironmentError as e:
+        if not view:
+            _j({"ok": False, "error": str(e)})
+            sys.exit(1)
         console.print(f"[red]❌ {e}[/red]")
         sys.exit(1)
-    console.print(f"[blue]📢 广播完成[/blue]，共 [bold]{len(ids)}[/bold] 条消息")
 
-    if notify:
+    # 执行 notify（JSON 和 view 模式都需要）
+    notified_count = 0
+    if notify and not no_notify:
         try:
             from_agent = get_agent_name()
         except Exception:
@@ -298,58 +425,103 @@ def broadcast(
                     try:
                         notify_agent(to_agent, from_agent, agent_info,
                                      send_enter=not no_enter, msg_id=mid)
+                        notified_count += 1
                     except Exception:
                         pass
+
+    if not view:
+        result = {"ok": True, "count": len(ids), "msg_ids": ids}
+        if notified_count:
+            result["notified_count"] = notified_count
+        _j(result)
+        return
+    console.print(f"[blue]📢 广播完成[/blue]，共 [bold]{len(ids)}[/bold] 条消息")
+    if notified_count:
+        console.print(f"[yellow]🔔 已提醒 {notified_count} 个 Agent[/yellow]")
 
 
 @app.command()
 def multicast(
     agents: str,
     body: str,
-    notify: bool = False,
+    notify: bool = True,
+    no_notify: bool = typer.Option(False, "--no-notify", help="不发送 pane 提醒"),
     no_enter: bool = False,
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
 ):
-    """多播给指定 Agents (逗号分隔，仅写入 inbox)。"""
+    """多播给指定 Agents (逗号分隔，写入 inbox + 自动提醒)。"""
     body = _unescape_body(body)
     agent_list = [a.strip() for a in agents.split(",") if a.strip()]
     if not agent_list:
+        if not view:
+            _j({"ok": False, "error": "未指定 agents"})
+            sys.exit(1)
         console.print("[red]❌ 未指定 agents[/red]")
         return
     try:
         from_agent = get_agent_name()
     except EnvironmentError as e:
+        if not view:
+            _j({"ok": False, "error": str(e)})
+            sys.exit(1)
         console.print(f"[red]❌ {e}[/red]")
         sys.exit(1)
 
     sent = {}
+    failed = {}
     for agent in agent_list:
         try:
             mid = messenger.send(to_agent=agent, body=body)
             sent[agent] = mid
-            console.print(f"  [green]✅[/green] [cyan]{agent}[/cyan]: {mid[:8]}...")
         except Exception as e:
-            console.print(f"  [red]❌[/red] [cyan]{agent}[/cyan]: {e}")
+            failed[agent] = str(e)
 
-    if notify:
+    # 执行 notify（JSON 和 view 模式都需要）
+    notified_count = 0
+    if notify and not no_notify:
         for agent, mid in sent.items():
             agent_info = registry.lookup(agent)
             if agent_info:
                 try:
                     notify_agent(agent, from_agent, agent_info,
                                  send_enter=not no_enter, msg_id=mid)
+                    notified_count += 1
                 except Exception:
                     pass
 
+    if not view:
+        result = {"ok": True, "sent": sent, "failed": failed}
+        if notified_count:
+            result["notified_count"] = notified_count
+        _j(result)
+        return
+
+    for agent, mid in sent.items():
+        console.print(f"  [green]✅[/green] [cyan]{agent}[/cyan]: {mid[:8]}...")
+    for agent, err in failed.items():
+        console.print(f"  [red]❌[/red] [cyan]{agent}[/cyan]: {err}")
+    if notified_count:
+        console.print(f"[yellow]🔔 已提醒 {notified_count} 个 Agent[/yellow]")
+
 
 @app.command("key-enter")
-def key_enter(agent_name: str):
+def key_enter(
+    agent_name: str,
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
+):
     """向 agent pane 发送 Enter 键。"""
     info = registry.lookup(agent_name)
     if not info:
+        if not view:
+            _j({"ok": False, "error": f"Agent {agent_name} 未找到"})
+            sys.exit(1)
         console.print(f"[red]❌ Agent {agent_name} 未找到[/red]")
         return
     mux = get()
     mux.send_keys(info["session"], info["pane_id"], "Enter")
+    if not view:
+        _j({"ok": True, "agent": agent_name})
+        return
     console.print(f"[green]✅ 已向[/green] {agent_name} 发送 Enter")
 
 
@@ -358,7 +530,7 @@ def key_enter(agent_name: str):
 def inbox(
     agent_name: str,
     show_all: bool = typer.Option(False, "--all", "--show-all", help="包含已读消息"),
-    as_json: bool = False,
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
 ):
     """查看 inbox。"""
     if not agent_name:
@@ -368,43 +540,51 @@ def inbox(
     status = "pending,delivered,read,done,failed" if show_all else "pending,delivered"
     messages = messenger.inbox(agent_name, status=status)
 
-    if as_json:
-        console.print(json.dumps(messages, indent=2))
+    if not view:
+        _j(messages)
         return
 
-    prefix_style = {
-        "[TASK]":  "bold yellow",
-        "[REPLY]": "bold green",
-        "[DONE]":  "bold green",
-        "[ACK]":   "bold blue",
-        "[INFO]":  "bold white",
-        "[FILE]":  "bold magenta",
-    }
+    prefix_style = _prefix_colors
 
     console.print(f"\n📬 {agent_name} 的收件箱 ({len(messages)} 条)\n")
     if not messages:
         console.print("  (empty)")
         return
 
+    console.print(
+        "  提示：处理完 [TASK] 后用 agtalk done <msg_id> 标记完成；\n"
+        '        需要回复时用 agtalk send <from_agent> "[REPLY] ..."',
+        style="dim",
+    )
+
     for m in messages:
         emoji, _color = _status_style(m["status"])
         body_preview = m["body"].replace("\n", " ")[:40]
         if len(m["body"]) > 40:
             body_preview += "..."
-        line = f"  [{m['msg_id'][:8]}] {emoji} {m['from_agent']:<25} | {body_preview}"
+        line = f"  [dim]{m['msg_id'][:8]}[/dim] {emoji} {m['from_agent']:<25} | {_colorize_prefix(body_preview)}"
         console.print(line, no_wrap=True, overflow="ellipsis")
 
 
 @app.command()
-def done(msg_id: str):
+def done(
+    msg_id: str,
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
+):
     """标记消息为已完成 (done)。"""
     try:
         agent_name = get_agent_name()
     except EnvironmentError as e:
+        if not view:
+            _j({"ok": False, "error": str(e)})
+            sys.exit(1)
         console.print(f"[red]❌ {e}[/red]")
         sys.exit(1)
     messenger.mark_done(msg_id, agent_name)
     _fifo_notify()
+    if not view:
+        _j({"ok": True, "msg_id": msg_id, "status": "done"})
+        return
     console.print(
         f"[green]✅ 消息[/green] [dim]{msg_id[:8]}...[/dim] [green]已标记完成[/green]"
     )
@@ -417,6 +597,7 @@ def progress(
     percent: int,
     note: str = "",
     watch: bool = False,
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
 ):
     """更新任务进度（0-100），或用 --watch 实时监控所有任务进度。"""
     if watch:
@@ -424,6 +605,9 @@ def progress(
         return
 
     if not (0 <= percent <= 100):
+        if not view:
+            _j({"ok": False, "error": "进度必须在 0-100 之间"})
+            return
         console.print("[red]❌ 进度必须在 0-100 之间[/red]")
         return
 
@@ -437,24 +621,36 @@ def progress(
                 created_at  REAL NOT NULL DEFAULT (unixepoch('now','subsec'))
             )
         """)
+        row = conn.execute(
+            "SELECT msg_id FROM messages WHERE msg_id LIKE ?",
+            (msg_id + "%",),
+        ).fetchone()
+        full_msg_id = row["msg_id"] if row else msg_id
         conn.execute(
             "INSERT INTO task_progress (msg_id, percent, note) VALUES (?, ?, ?)",
-            (msg_id, percent, note),
+            (full_msg_id, percent, note),
         )
+
+    if not view:
+        _j({"ok": True, "msg_id": msg_id, "percent": percent, "note": note})
+        return
 
     bar_filled = int(percent / 5)
     bar = "█" * bar_filled + "░" * (20 - bar_filled)
     color = "green" if percent == 100 else "yellow" if percent >= 50 else "cyan"
 
     console.print(
-        f"[bold]{msg_id[:8]}[/bold]  [{color}]{bar}[/{color}]  "
+        f"[dim]{msg_id[:8]}[/dim]  [{color}]{bar}[/{color}]  "
         f"[bold {color}]{percent:3d}%[/bold {color}]"
         + (f"  [dim]{note}[/dim]" if note else "")
     )
 
 
 @app.command("progress-list")
-def progress_list(watch: bool = False):
+def progress_list(
+    watch: bool = False,
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
+):
     """查看所有任务的进度总览。"""
     if watch:
         import time
@@ -466,8 +662,31 @@ def progress_list(watch: bool = False):
                     time.sleep(1)
         except KeyboardInterrupt:
             console.print("\n[dim]已退出监控[/dim]")
-    else:
-        console.print(_build_progress_table())
+        return
+
+    if not view:
+        with db.get_conn() as conn:
+            exists = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='task_progress'"
+            ).fetchone()
+            if not exists:
+                _j({"ok": True, "tasks": []})
+                return
+            rows = conn.execute("""
+                SELECT tp.msg_id, tp.percent, tp.note, tp.created_at,
+                       m.from_agent, m.to_agent, m.body, m.status
+                FROM task_progress tp
+                LEFT JOIN messages m ON m.msg_id = tp.msg_id
+                WHERE tp.id IN (
+                    SELECT MAX(id) FROM task_progress GROUP BY msg_id
+                )
+                ORDER BY tp.created_at DESC
+            """).fetchall()
+        tasks = [dict(r) for r in rows]
+        _j({"ok": True, "tasks": tasks})
+        return
+
+    console.print(_build_progress_table())
 
 
 def _build_progress_table():
@@ -504,7 +723,7 @@ def _build_progress_table():
             body_preview += "..."
         note = r["note"] or body_preview or "—"
         lines.append(
-            f"  {r['msg_id'][:8]}  {bar}  {pct:3d}%  {from_to:<30} | {note}"
+            f"  [dim]{r['msg_id'][:8]}[/dim]  {bar}  {pct:3d}%  {from_to:<30} | {_colorize_prefix(note)}"
         )
 
     return "\n".join(lines)
@@ -525,9 +744,15 @@ def _watch_all_progress():
 
 # ─── 工具命令 ──────────────────────────────────────────
 @app.command()
-def prune(dry_run: bool = False):
+def prune(
+    dry_run: bool = False,
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
+):
     """清理僵尸 Agent。"""
     dead = registry.prune(dry_run)
+    if not view:
+        _j({"ok": True, "pruned": dead, "dry_run": dry_run})
+        return
     if dead:
         verb = "将清理" if dry_run else "已清理"
         console.print(f"[yellow]🧹 {verb}:[/yellow] {', '.join(dead)}")
@@ -536,22 +761,43 @@ def prune(dry_run: bool = False):
 
 
 @app.command("check-stuck")
-def check_stuck():
+def check_stuck(
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
+):
     """检查并标记超时的 delivered 消息为 failed。"""
     count = messenger.check_stuck_messages()
+    if not view:
+        _j({"ok": True, "count": count})
+        return
     console.print(f"[yellow]🚨 标记了[/yellow] [bold]{count}[/bold] 条卡死消息为 failed")
 
 
 @app.command()
 def memory(
-    agent: str = "",
-    last: int = 20,
-    task_view: bool = typer.Option(False, "--task", help="按任务线索分组显示"),
-    as_json: bool = False,
+    agent: str = typer.Option("", "--agent", help="指定 Agent 过滤"),
+    last: int = typer.Option(20, "--last", help="最近 N 条"),
+    msg_id: str = typer.Argument("", help="指定 msg_id 查看详情"),
+    task_view: bool = typer.Option(False, "--group", help="按 msg_id 分组显示"),
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
 ):
-    """查询消息历史（支持 --task 任务视角）。"""
+    """查询消息历史（支持 --task 任务视角，支持指定 msg_id）。"""
     with db.get_conn() as conn:
-        if agent:
+        if msg_id:
+            # 支持短 ID 前缀匹配
+            full_id = conn.execute(
+                "SELECT msg_id FROM messages WHERE msg_id LIKE ? LIMIT 1",
+                (msg_id + "%",),
+            ).fetchone()
+            target_id = full_id["msg_id"] if full_id else msg_id
+            rows = conn.execute("""
+                SELECT l.msg_id, l.event, l.agent, l.session, l.note, l.created_at,
+                       m.from_agent, m.to_agent, m.body
+                FROM message_log l
+                LEFT JOIN messages m ON m.msg_id = l.msg_id
+                WHERE l.msg_id = ?
+                ORDER BY l.created_at ASC
+            """, (target_id,)).fetchall()
+        elif agent:
             rows = conn.execute("""
                 SELECT l.msg_id, l.event, l.agent, l.session, l.note, l.created_at,
                        m.from_agent, m.to_agent, m.body
@@ -569,18 +815,23 @@ def memory(
                 ORDER BY l.created_at DESC LIMIT ?
             """, (last,)).fetchall()
 
-    if as_json:
-        console.print(json.dumps([dict(r) for r in rows], indent=2))
-        return
-
     if not rows:
-        console.print("[dim]📭 无消息历史[/dim]")
+        if not view:
+            _j([])
+        else:
+            console.print("[dim]📭 无消息历史[/dim]")
         return
 
-    if task_view:
-        _render_memory_task_view(rows)
+    if task_view or msg_id:
+        if not view:
+            _render_memory_task_json(rows)
+        else:
+            _render_memory_task_view(rows)
     else:
-        _render_memory_timeline(rows)
+        if not view:
+            _j([dict(r) for r in rows])
+        else:
+            _render_memory_timeline(rows)
 
 
 def _render_memory_timeline(rows):
@@ -593,74 +844,172 @@ def _render_memory_timeline(rows):
         body_text = (r["body"] or r["note"] or "").replace("\n", " ")[:40]
         if len(r["body"] or "") > 40:
             body_text += "..."
-        line = f"  [{_fmt_time(r['created_at'])}] {emoji} {from_to:<30} | {body_text}"
+        line = f"  [{_fmt_time(r['created_at'])}] {emoji} {from_to:<30} | {_colorize_prefix(body_text)}"
         console.print(line, no_wrap=True, overflow="ellipsis")
+
+
+def _render_memory_task_json(rows):
+    """任务视角 JSON：按 msg_id 分组，包含 progress。"""
+    tasks = defaultdict(list)
+    for r in rows:
+        tasks[r["msg_id"]].append(dict(r))
+
+    with db.get_conn() as conn:
+        for msg_id in tasks:
+            prog_rows = conn.execute("""
+                SELECT percent, note, unixepoch(created_at) as created_at
+                FROM task_progress
+                WHERE msg_id = ?
+                ORDER BY created_at
+            """, (msg_id,)).fetchall()
+            for pr in prog_rows:
+                tasks[msg_id].append({
+                    "event": "progress",
+                    "percent": pr["percent"],
+                    "note": pr["note"],
+                    "created_at": pr["created_at"],
+                    "agent": "",
+                    "session": "",
+                })
+
+    result = []
+    for msg_id, events in tasks.items():
+        events_sorted = sorted(events, key=lambda x: x["created_at"])
+        msg_events = [e for e in events_sorted if e["event"] != "progress"]
+        first = msg_events[0] if msg_events else events_sorted[0]
+        latest_progress = None
+        for e in reversed(events_sorted):
+            if e["event"] == "progress":
+                latest_progress = {"percent": e["percent"], "note": e["note"]}
+                break
+
+        task = {
+            "msg_id": msg_id,
+            "from_agent": first.get("from_agent"),
+            "to_agent": first.get("to_agent"),
+            "body": first.get("body"),
+            "events": [
+                {
+                    "event": e["event"],
+                    "created_at": e["created_at"],
+                    **({"note": e["note"]} if e.get("note") else {}),
+                    **({"percent": e["percent"]} if e.get("percent") is not None else {}),
+                }
+                for e in events_sorted
+            ],
+        }
+        if latest_progress:
+            task["latest_progress"] = latest_progress
+        result.append(task)
+
+    _j(result)
 
 
 def _render_memory_task_view(rows):
     """任务视角：按 msg_id 分组，展示任务生命周期。"""
     tasks = defaultdict(list)
     for r in rows:
-        tasks[r["msg_id"]].append(r)
+        tasks[r["msg_id"]].append(dict(r))
+
+    with db.get_conn() as conn:
+        for msg_id in tasks:
+            prog_rows = conn.execute("""
+                SELECT percent, note, unixepoch(created_at) as created_at
+                FROM task_progress
+                WHERE msg_id = ?
+                ORDER BY created_at
+            """, (msg_id,)).fetchall()
+            for pr in prog_rows:
+                tasks[msg_id].append({
+                    "event": "progress",
+                    "percent": pr["percent"],
+                    "note": pr["note"],
+                    "created_at": pr["created_at"],
+                    "agent": "",
+                    "session": "",
+                })
 
     console.print(f"\n📋 任务视图 ({len(tasks)} 个任务)\n")
 
     for msg_id, events in tasks.items():
         events_sorted = sorted(events, key=lambda x: x["created_at"])
-        first = events_sorted[0]
+        msg_events = [e for e in events_sorted if e["event"] != "progress"]
+        first = msg_events[0] if msg_events else events_sorted[0]
         last_event = events_sorted[-1]
 
         elapsed = last_event["created_at"] - first["created_at"]
-        elapsed_str = f"{elapsed:.0f}s" if elapsed < 60 else f"{elapsed/60:.1f}m"
+        if elapsed < 60:
+            elapsed_str = f"{elapsed:.0f}s"
+        elif elapsed < 3600:
+            elapsed_str = f"{elapsed/60:.1f}m"
+        else:
+            elapsed_str = f"{elapsed/3600:.1f}h"
 
-        body_preview = (first["body"] or "").replace("\n", " ")[:40]
-        if len(first["body"] or "") > 40:
-            body_preview += "..."
         from_to = f"{first['from_agent'] or '?'} → {first['to_agent'] or '?'}"
 
         # 树形结构
         console.print(
-            f"[cyan]┌─[/cyan] [bold]{msg_id[:8]}[/bold]   [green]{from_to}[/green]",
+            f"[cyan]┌─[/cyan] [dim]{msg_id[:8]}[/dim]   {from_to}",
             no_wrap=True, overflow="ellipsis",
         )
-        console.print(
-            f"[cyan]│[/cyan]   [yellow]{body_preview}[/yellow]",
-            no_wrap=True, overflow="ellipsis",
-        )
+        console.print("[cyan]│[/cyan]  [dim]────────[/dim]")
+        console.print("[cyan]│[/cyan]  ")
+        for line in (first["body"] or "").split("\n"):
+            console.print(
+                f"[cyan]│[/cyan]  {_colorize_prefix(line)}",
+                no_wrap=True, overflow="ellipsis",
+            )
+        console.print("[cyan]│[/cyan]  ")
+        console.print("[cyan]│[/cyan]  [dim]────────[/dim]")
 
         for e in events_sorted:
             e_emoji, e_color = _status_style(e["event"])
-            note = e["note"] or ""
+            note = e.get("note") or ""
+            if e["event"] == "progress":
+                note = f"{e['percent']}%  {note}".strip()
             line = (
-                f"[cyan]│[/cyan]  [{e_color}]{e_emoji} {e['event']:<11}[/{e_color}] "
-                f"[dim]{_fmt_time(e['created_at'])}[/dim]"
+                f"[cyan]│[/cyan]  [dim][{_fmt_time(e['created_at'])}][/dim]  "
+                f"[{e_color}]{e_emoji}[/{e_color}]"
             )
             if note:
-                line += f"  [dim]{note}[/dim]"
+                line += f"  {note}"
             console.print(line, no_wrap=True, overflow="ellipsis")
 
+        console.print("[cyan]│[/cyan]  ")
         console.print(
-            f"[cyan]└─[/cyan]耗时  [bold]{elapsed_str}[/bold]",
+            f"[cyan]└─[/cyan] [耗时:[bold]{elapsed_str}[/bold]]",
             no_wrap=True, overflow="ellipsis",
         )
         console.print()
 
 
 @app.command()
-def whoami():
+def whoami(
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
+):
     """显示当前 agent 信息。"""
     try:
         name = get_agent_name()
     except EnvironmentError as e:
+        if not view:
+            _j({"ok": False, "error": str(e)})
+            sys.exit(1)
         console.print(f"[red]❌ {e}[/red]")
         return
 
     info = registry.lookup(name)
     if not info:
+        if not view:
+            _j({"ok": True, "agent_name": name, "registered": False})
+            return
         console.print(f"Agent: [bold]{name}[/bold]\n状态: [red]未注册[/red]")
         return
 
-    console.print(f"\n👤 当前 Agent: {name}")
+    if not view:
+        _j({"ok": True, "agent_name": name, "registered": True, **{k: info.get(k) for k in ("role", "bio", "capabilities", "session", "pane_id")}})
+        return
+
+    console.print(f"\n当前 Agent: {name}")
     console.print(f"  Role:         {info.get('role') or '-'}")
     console.print(f"  Bio:          {info.get('bio') or '-'}")
     console.print(f"  Capabilities: {info.get('capabilities') or '-'}")
@@ -669,7 +1018,10 @@ def whoami():
 
 
 @app.command()
-def health(agent_name: str = ""):
+def health(
+    agent_name: str = "",
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
+):
     """健康检查。"""
     checks = []
 
@@ -681,40 +1033,383 @@ def health(agent_name: str = ""):
                     "VALUES ('test', 'health_check', 'system', '')"
                 )
                 conn.execute("DELETE FROM message_log WHERE msg_id='test'")
-            checks.append(("DB 可写", True, ""))
+            checks.append({"name": "DB 可写", "ok": True})
         except Exception as e:
-            checks.append(("DB 可写", False, str(e)))
+            checks.append({"name": "DB 可写", "ok": False, "error": str(e)})
 
         import shutil
         ok = bool(shutil.which("zellij"))
-        checks.append(("zellij CLI", ok, "" if ok else "未找到"))
+        check = {"name": "zellij CLI", "ok": ok}
+        if not ok:
+            check["error"] = "未找到"
+        checks.append(check)
 
         from agtalk.delivery import FIFO_PATH
-        checks.append(("FIFO 存在", FIFO_PATH.exists(), ""))
+        ok = FIFO_PATH.exists()
+        check = {"name": "FIFO 存在", "ok": ok}
+        if not ok:
+            check["error"] = "不存在"
+        checks.append(check)
 
         if agent_name:
             info = registry.lookup(agent_name)
-            checks.append(("Agent 注册", bool(info), ""))
+            ok = bool(info)
+            check = {"name": "Agent 注册", "ok": ok}
+            if not ok:
+                check["error"] = "未注册"
+            checks.append(check)
             if info and info.get("pid"):
                 alive = registry._proc_alive(info["pid"])
-                checks.append(("进程存活", alive, ""))
+                check = {"name": "进程存活", "ok": alive}
+                if not alive:
+                    check["error"] = "进程已退出"
+                checks.append(check)
         else:
-            checks.append(("Agent 检查", None, "未指定"))
+            checks.append({"name": "Agent 检查", "ok": None, "error": "未指定"})
+
+    passed = sum(1 for c in checks if c["ok"] is True)
+    total = sum(1 for c in checks if c["ok"] is not None)
+
+    if not view:
+        _j({"ok": True, "checks": checks, "score": f"{passed}/{total}"})
+        return
 
     console.print("\n🏥 健康检查")
-    passed = 0
-    total = 0
-    for name_str, ok, detail in checks:
-        if ok is None:
+    for c in checks:
+        if c["ok"] is None:
             icon = "—"
-        elif ok:
+        elif c["ok"]:
             icon = "✅"
-            passed += 1
-            total += 1
         else:
             icon = "❌"
-            total += 1
-        detail_str = f" ({detail})" if detail else ""
-        console.print(f"  {icon} {name_str}{detail_str}")
+        detail_str = f" ({c['error']})" if c.get("error") else ""
+        console.print(f"  {icon} {c['name']}{detail_str}")
 
     console.print(f"\n健康分数: {passed}/{total}")
+
+
+
+# ─── 看板 ──────────────────────────────────────────────
+kanban_app = typer.Typer()
+
+
+def _kanban_author() -> str:
+    """返回当前作者名（Agent 或空字符串）。"""
+    try:
+        return get_agent_name()
+    except EnvironmentError:
+        return ""
+
+
+@kanban_app.command("list")
+def _kanban_list(
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
+    show_all: bool = typer.Option(False, "--all", help="包含已关闭/已过期条目"),
+    announcements: bool = typer.Option(False, "--announcements", help="只看公告"),
+):
+    """查看看板卡片列表（默认只看卡片，--announcements 看公告）。"""
+    card_type = "announcement" if announcements else "card"
+    with db.get_conn() as conn:
+        if show_all:
+            rows = conn.execute("""
+                SELECT c.card_id, c.title, c.author, c.status, c.created_at, c.type,
+                       (SELECT COUNT(*) FROM kanban_comments WHERE card_id = c.card_id) as comment_count
+                FROM kanban_cards c
+                WHERE c.type = ?
+                ORDER BY c.updated_at DESC
+            """, (card_type,)).fetchall()
+        else:
+            rows = conn.execute("""
+                SELECT c.card_id, c.title, c.author, c.status, c.created_at, c.type,
+                       (SELECT COUNT(*) FROM kanban_comments WHERE card_id = c.card_id) as comment_count
+                FROM kanban_cards c
+                WHERE c.type = ? AND c.status != 'closed'
+                ORDER BY c.updated_at DESC
+            """, (card_type,)).fetchall()
+
+    label = "公告" if announcements else "看板"
+    if not view:
+        board = {"open": [], "in_progress": [], "resolved": [], "closed": []}
+        for r in rows:
+            status = r["status"]
+            if status not in board:
+                status = "open"
+            board[status].append({
+                "card_id": r["card_id"],
+                "title": r["title"],
+                "author": r["author"] or None,
+                "comment_count": r["comment_count"],
+                "created_at": r["created_at"],
+            })
+        _j({"ok": True, "type": card_type, "board": board, "total": len(rows)})
+        return
+
+    if not rows:
+        console.print(f"[dim]📭 暂无{label}内容[/dim]")
+        return
+
+    groups = {"open": [], "in_progress": [], "resolved": [], "closed": []}
+    for r in rows:
+        status = r["status"]
+        if status not in groups:
+            status = "open"
+        groups[status].append(r)
+
+    console.print(f"\n📋 {label} ({len(rows)} 条)\n")
+
+    status_labels = {
+        "open": "OPEN",
+        "in_progress": "IN PROGRESS",
+        "resolved": "RESOLVED",
+        "closed": "CLOSED",
+    }
+    status_colors = {
+        "open": "yellow",
+        "in_progress": "blue",
+        "resolved": "green",
+        "closed": "dim",
+    }
+
+    for status in ("open", "in_progress", "resolved", "closed"):
+        cards = groups[status]
+        color = status_colors[status]
+        label = status_labels[status]
+
+        content = Text()
+        if not cards:
+            content.append("(empty)", style="dim")
+        for c in cards:
+            content.append(f"{c['card_id']} ")
+            content.append(f"{c['title'][:28]}{'...' if len(c['title']) > 28 else ''}\n", style="bold")
+            author_display = f"[{c['author']}]" if c["author"] else "[你]"
+            content.append(f"    {author_display}  · {c['comment_count']}评论\n", style="dim")
+
+        panel = Panel(
+            content,
+            title=f"[bold]{label}[/bold] ([bold]{len(cards)}[/bold])",
+            border_style=color,
+            box=box.ROUNDED,
+            padding=(0, 2),
+        )
+        console.print(panel)
+
+
+@kanban_app.command("post")
+def post(
+    title: str,
+    body: str,
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
+):
+    """发布看板卡片。"""
+    author = _kanban_author()
+    card_id = _short_id()
+    with db.get_conn() as conn:
+        conn.execute(
+            "INSERT INTO kanban_cards (card_id, title, body, author, type) VALUES (?, ?, ?, ?, ?)",
+            (card_id, title, body, author, "card"),
+        )
+
+    if not view:
+        _j({"ok": True, "card_id": card_id, "title": title, "status": "open", "type": "card", "author": author or None})
+        return
+
+    console.print(f"[green]✅[/green] 已发布看板卡片 [{card_id}]: {title}")
+
+
+@kanban_app.command("announce")
+def announce(
+    title: str,
+    body: str,
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
+):
+    """发布公告（全员可见）。"""
+    author = _kanban_author()
+    card_id = _short_id()
+    with db.get_conn() as conn:
+        conn.execute(
+            "INSERT INTO kanban_cards (card_id, title, body, author, type) VALUES (?, ?, ?, ?, ?)",
+            (card_id, title, body, author, "announcement"),
+        )
+
+    if not view:
+        _j({"ok": True, "card_id": card_id, "title": title, "status": "open", "type": "announcement", "author": author or None})
+        return
+
+    console.print(f"[green]✅[/green] 已发布公告 [{card_id}]: {title}")
+
+
+@kanban_app.command("show")
+def show(
+    card_id: str,
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
+):
+    """查看看板卡片详情。"""
+    with db.get_conn() as conn:
+        card = conn.execute(
+            "SELECT * FROM kanban_cards WHERE card_id = ?", (card_id,)
+        ).fetchone()
+        if not card:
+            if not view:
+                _j({"ok": False, "error": f"卡片 {card_id} 不存在"})
+                sys.exit(1)
+            console.print(f"[red]❌ 卡片 {card_id} 不存在[/red]")
+            return
+
+        comments = conn.execute("""
+            SELECT comment_id, author, body, created_at
+            FROM kanban_comments
+            WHERE card_id = ?
+            ORDER BY created_at ASC
+        """, (card_id,)).fetchall()
+
+    if not view:
+        result = {
+            "ok": True,
+            "card_id": card["card_id"],
+            "title": card["title"],
+            "body": card["body"],
+            "author": card["author"] or None,
+            "status": card["status"],
+            "comments": [
+                {
+                    "comment_id": c["comment_id"],
+                    "author": c["author"] or None,
+                    "body": c["body"],
+                    "created_at": c["created_at"],
+                }
+                for c in comments
+            ],
+            "created_at": card["created_at"],
+            "updated_at": card["updated_at"],
+        }
+        _j(result)
+        return
+
+    author_display = f"[magenta]{card['author']}[/magenta]" if card["author"] else "[green][你][/green]"
+    console.print(f"\n┌─ 看板卡片 {card['card_id']} ─{'─' * 30}")
+    console.print(f"│  {author_display}")
+    console.print(f"│  [{_status_style(card['status'])[1]}]● {card['status'].upper()}[/{_status_style(card['status'])[1]}]")
+    console.print(f"│")
+    console.print(f"│  [bold]{card['title']}[/bold]")
+    for line in (card["body"] or "").split("\n"):
+        console.print(f"│  {line}")
+    console.print(f"│")
+    console.print(f"│  [dim]创建于 {_fmt_ts_full(card['created_at'])}[/dim]")
+    console.print(f"└{'─' * 40}")
+
+    if comments:
+        console.print(f"\n💬 评论 ({len(comments)} 条)\n")
+        for c in comments:
+            c_author = f"[magenta]{c['author']}[/magenta]" if c["author"] else "[green][你][/green]"
+            console.print(f"  {c_author}  {_fmt_time(c['created_at'])}")
+            for line in c["body"].split("\n"):
+                console.print(f"    {line}")
+            console.print()
+    else:
+        console.print("\n  [dim](暂无评论)[/dim]\n")
+
+
+@kanban_app.command("comment")
+def comment(
+    card_id: str,
+    body: str,
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
+):
+    """发表评论。"""
+    author = _kanban_author()
+    with db.get_conn() as conn:
+        card = conn.execute(
+            "SELECT card_id FROM kanban_cards WHERE card_id = ?", (card_id,)
+        ).fetchone()
+        if not card:
+            if not view:
+                _j({"ok": False, "error": f"卡片 {card_id} 不存在"})
+                sys.exit(1)
+            console.print(f"[red]❌ 卡片 {card_id} 不存在[/red]")
+            return
+
+        comment_id = _short_id()
+        conn.execute(
+            "INSERT INTO kanban_comments (comment_id, card_id, author, body) VALUES (?, ?, ?, ?)",
+            (comment_id, card_id, author, body),
+        )
+        conn.execute(
+            "UPDATE kanban_cards SET updated_at = unixepoch('now','subsec') WHERE card_id = ?",
+            (card_id,),
+        )
+
+    if not view:
+        _j({"ok": True, "comment_id": comment_id, "card_id": card_id, "author": author or None})
+        return
+
+    console.print(f"[green]✅[/green] 已评论卡片 {card_id}")
+
+
+@kanban_app.command("move")
+def move(
+    card_id: str,
+    status: str,
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
+):
+    """移动卡片状态。"""
+    valid_statuses = {"open", "in_progress", "resolved", "closed"}
+    if status not in valid_statuses:
+        if not view:
+            _j({"ok": False, "error": f"无效状态: {status}，可选: {', '.join(valid_statuses)}"})
+            sys.exit(1)
+        console.print(f"[red]❌ 无效状态: {status}[/red]")
+        return
+
+    with db.get_conn() as conn:
+        card = conn.execute(
+            "SELECT card_id FROM kanban_cards WHERE card_id = ?", (card_id,)
+        ).fetchone()
+        if not card:
+            if not view:
+                _j({"ok": False, "error": f"卡片 {card_id} 不存在"})
+                sys.exit(1)
+            console.print(f"[red]❌ 卡片 {card_id} 不存在[/red]")
+            return
+
+        conn.execute(
+            "UPDATE kanban_cards SET status = ?, updated_at = unixepoch('now','subsec') WHERE card_id = ?",
+            (status, card_id),
+        )
+
+    if not view:
+        _j({"ok": True, "card_id": card_id, "status": status})
+        return
+
+    console.print(f"[green]✅[/green] 卡片 {card_id} → [{_status_style(status)[1]}]{status.upper()}[/{_status_style(status)[1]}]")
+
+
+@kanban_app.command("close")
+def close(
+    card_id: str,
+    view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
+):
+    """关闭卡片（快捷方式：移动到 closed）。"""
+    with db.get_conn() as conn:
+        card = conn.execute(
+            "SELECT card_id FROM kanban_cards WHERE card_id = ?", (card_id,)
+        ).fetchone()
+        if not card:
+            if not view:
+                _j({"ok": False, "error": f"卡片 {card_id} 不存在"})
+                sys.exit(1)
+            console.print(f"[red]❌ 卡片 {card_id} 不存在[/red]")
+            return
+
+        conn.execute(
+            "UPDATE kanban_cards SET status = 'closed', updated_at = unixepoch('now','subsec') WHERE card_id = ?",
+            (card_id,),
+        )
+
+    if not view:
+        _j({"ok": True, "card_id": card_id, "status": "closed"})
+        return
+
+    console.print(f"[green]✅[/green] 卡片 {card_id} → [dim]CLOSED[/dim]")
+
+
+app.add_typer(kanban_app, name="kanban")
