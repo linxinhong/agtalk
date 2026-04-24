@@ -31,7 +31,7 @@ def notify():
 def _format_delivery_text(msg_id: str, from_agent: str, body: str) -> str:
     """投递到 pane 时的标准格式。使用 \r\n (CRLF) 提高终端兼容性。"""
     return (
-        f"\r\n[ZAT-MSG:{msg_id[:8]}]\r\n"
+        f"\r\n[agtalk:{msg_id[:8]}]\r\n"
         f"From: {from_agent}\r\n"
         f"---\r\n"
         f"{body}\r\n"
@@ -49,11 +49,11 @@ def _format_notification_text(to_agent: str, from_agent: str, msg_count: int = 1
         )
     if msg_count == 1:
         return (
-            f"\r\n[ZAT-NOTIFY] 新消息来自 {from_agent}\r\n"
+            f"\r\n[agtalk] 新消息来自 {from_agent}\r\n"
             f"查收: agtalk inbox {to_agent}\r\n"
         )
     return (
-        f"\r\n[ZAT-NOTIFY] 你有 {msg_count} 条新消息（来自 {from_agent} 等）\r\n"
+        f"\r\n[agtalk] 你有 {msg_count} 条新消息（来自 {from_agent} 等）\r\n"
         f"查收: agtalk inbox {to_agent}\r\n"
     )
 
