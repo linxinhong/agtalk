@@ -3,13 +3,13 @@ import os
 import re
 
 from .db import get_conn
-from .factory import get
+from .factory import get, detect_name
 from .delivery import _flush_offline_queue
 
 AGENT_NAME_PATTERN = r'^[a-z]+_[a-z]+_[A-Z][a-zA-Z0-9]+$'
 
 
-def register(agent_name: str, role: str = "", capabilities: str = "", bio: str = "") -> dict:
+def register(agent_name: str, role: str = "", capabilities: str = "", bio: str = "", workdir: str = "", mux: str = "") -> dict:
     """
     注册当前 pane 为 agent。
     必须在终端多路复用器环境内执行。
@@ -17,15 +17,15 @@ def register(agent_name: str, role: str = "", capabilities: str = "", bio: str =
     if not re.match(AGENT_NAME_PATTERN, agent_name):
         raise ValueError(f"agent_name 不符合规范: {agent_name}\n"
                          f"格式应为 {{tool}}_{{role}}_{{Name}}, 如 claude_coder_Alex")
-    mux = get()
-    session = mux.get_current_session()
-    pane_id = mux.get_current_pane_id()
+    multiplexer = get()
+    session = multiplexer.get_current_session()
+    pane_id = multiplexer.get_current_pane_id()
     pid = os.getppid()  # agent 所在 shell 的 pid，用于进程级健康检查
 
     with get_conn() as conn:
         conn.execute("""
-            INSERT INTO agents (agent_name, session, pane_id, pid, role, capabilities, bio, last_seen_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch('now','subsec'))
+            INSERT INTO agents (agent_name, session, pane_id, pid, role, capabilities, bio, workdir, mux, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch('now','subsec'))
             ON CONFLICT(agent_name) DO UPDATE SET
                 session=excluded.session,
                 pane_id=excluded.pane_id,
@@ -33,16 +33,18 @@ def register(agent_name: str, role: str = "", capabilities: str = "", bio: str =
                 role=excluded.role,
                 capabilities=excluded.capabilities,
                 bio=excluded.bio,
+                workdir=excluded.workdir,
+                mux=excluded.mux,
                 last_seen_at=unixepoch('now','subsec')
-        """, (agent_name, session, pane_id, pid, role, capabilities, bio))
+        """, (agent_name, session, pane_id, pid, role, capabilities, bio, workdir, mux))
 
     # 投递离线消息
     _flush_offline_queue(agent_name, session, pane_id)
     
     # 将当前 pane 标题改为 agent_name，方便识别
-    mux.rename_pane(session, pane_id, agent_name)
+    multiplexer.rename_pane(session, pane_id, agent_name)
     
-    return {"agent_name": agent_name, "session": session, "pane_id": pane_id, "pid": pid}
+    return {"agent_name": agent_name, "session": session, "pane_id": pane_id, "pid": pid, "workdir": workdir, "mux": mux}
 
 
 def unregister(agent_name: str):
@@ -70,7 +72,7 @@ def prune(dry_run: bool = False) -> list[str]:
     dead = []
     mux = get()
     with get_conn() as conn:
-        rows = conn.execute("SELECT agent_name, session, pane_id, pid FROM agents").fetchall()
+        rows = conn.execute("SELECT agent_name, session, pane_id, pid, mux FROM agents").fetchall()
         if not rows:
             return dead
 
@@ -84,6 +86,8 @@ def prune(dry_run: bool = False) -> list[str]:
         alive_pane_ids = {p["id"] for panes in session_panes.values() for p in panes if not p.get("exited", False)}
 
         for row in rows:
+            if row["mux"] not in ("zellij", "tmux"):
+                continue  # 非终端多路复用器的 Agent（web/office/remote 等）不检查 pane 存活
             pane_alive = row["pane_id"] in alive_pane_ids
             if pane_alive:
                 continue  # pane 存活即认为 agent 存活

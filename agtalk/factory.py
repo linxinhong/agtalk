@@ -19,6 +19,15 @@ def detect() -> type[AbstractMultiplexer]:
     )
 
 
+def detect_name() -> str:
+    """返回当前多路复用器名称（zellij / tmux / unknown）。"""
+    if os.environ.get("ZELLIJ_SESSION_NAME"):
+        return "zellij"
+    if os.environ.get("TMUX"):
+        return "tmux"
+    return "unknown"
+
+
 def get() -> AbstractMultiplexer:
     """获取当前 multiplexer 的单例实例。"""
     global _multiplexer_instance

@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS agents (
     role            TEXT NOT NULL DEFAULT '',
     capabilities    TEXT NOT NULL DEFAULT '',
     bio             TEXT NOT NULL DEFAULT '',
+    workdir         TEXT NOT NULL DEFAULT '',
+    mux             TEXT NOT NULL DEFAULT '',
     registered_at   REAL NOT NULL DEFAULT (unixepoch('now','subsec')),
     last_seen_at    REAL NOT NULL DEFAULT (unixepoch('now','subsec'))
 );

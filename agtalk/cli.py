@@ -16,7 +16,7 @@ import typer
 from agtalk.main import app
 from agtalk.console import console
 from agtalk import db, registry, messenger
-from agtalk.factory import get, get_agent_name
+from agtalk.factory import get, get_agent_name, detect_name
 from agtalk.delivery import notify as _fifo_notify, watch_until_done, _ensure_fifo, notify_agent
 
 _PRESET_NAMES = [
@@ -181,11 +181,15 @@ def register(
     role: str = "",
     capabilities: str = "",
     bio: str = "",
+    workdir: str = typer.Option("", "--workdir", "-w", help="工作目录（默认当前目录）"),
     view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
 ):
     """注册当前 pane 为 Agent。"""
+    if not workdir:
+        workdir = os.getcwd()
+    mux = detect_name()
     try:
-        info = registry.register(agent_name, role, capabilities, bio)
+        info = registry.register(agent_name, role, capabilities, bio, workdir, mux)
     except EnvironmentError as e:
         if not view:
             _j({"ok": False, "error": str(e)})
@@ -205,12 +209,14 @@ def register(
 
     console.print(f"\n✅ 注册成功: {agent_name}")
     console.print(f"  Session: {info['session']} | Pane: {info['pane_id']}")
+    console.print(f"  Mux:     {mux}")
     if role:
         console.print(f"  Role: {role}")
     if capabilities:
         console.print(f"  Capabilities: {capabilities}")
     if bio:
         console.print(f"  Bio: {bio}")
+    console.print(f"  Workdir: {workdir}")
 
 
 @app.command()
@@ -243,21 +249,90 @@ def list_agents(
         console.print("暂无注册的 Agent")
         return
 
-    console.print(f"{'Agent':<25} {'Role':<12} {'Session':<10} {'Pane':<5}")
-    console.print("-" * 55)
+    # 批量验活（非多路复用器环境跳过）
+    alive_pane_ids: set = set()
+    try:
+        mux = get()
+        session_panes = {}
+        for r in rows:
+            session = r["session"]
+            if session not in session_panes:
+                try:
+                    session_panes[session] = mux.list_panes(session)
+                except Exception:
+                    session_panes[session] = []
+        alive_pane_ids = {
+            p["id"]
+            for panes in session_panes.values()
+            for p in panes
+            if not p.get("exited", False)
+        }
+        can_detect_mux = True
+    except EnvironmentError:
+        can_detect_mux = False
+
+    home = os.path.expanduser("~")
+    cards = []
     for r in rows:
-        cap = f" | {r['capabilities']}" if capabilities and r["capabilities"] else ""
-        console.print(
-            f"{r['agent_name']:<25} {r['role'] or '-':<12} "
-            f"{r['session']:<10} {r['pane_id']:<5}{cap}"
+        if can_detect_mux:
+            is_alive = r["pane_id"] in alive_pane_ids
+            border_color = "green" if is_alive else "dim"
+            status_dot = "●" if is_alive else "○"
+        else:
+            border_color = "yellow"
+            status_dot = "?"
+
+
+        wd = r["workdir"] or "-"
+        if wd.startswith(home + "/"):
+            wd = "~" + wd[len(home):]
+        elif wd == home:
+            wd = "~"
+
+        content = Text()
+        content.append(f"角色: {r['role'] or '-'}\n")
+        if r["capabilities"]:
+            cap = r["capabilities"]
+            if len(cap) > 22:
+                cap = cap[:19] + "..."
+            content.append(f"能力: {cap}\n")
+        if r["bio"]:
+            bio = r["bio"]
+            if len(bio) > 22:
+                bio = bio[:19] + "..."
+            content.append(f"简介: {bio}\n")
+        content.append(f"目录: {wd}\n")
+        content.append(f"终端: {r['session']}:{r['pane_id']}")
+        if r["mux"]:
+            content.append(f" [{r['mux']}]", style="dim")
+
+        title = Text()
+        title.append(f"{status_dot} ", style=border_color)
+        title.append(r["agent_name"], style="bold")
+
+        panel = Panel(
+            content,
+            title=title,
+            title_align="left",
+            border_style=border_color,
+            box=box.ROUNDED,
+            padding=(0, 0),
         )
+        cards.append(panel)
+
+    console.print()
+    card_width = max(40, int(console.width * 0.6))
+    for card in cards:
+        card.width = card_width
+        console.print(card)
+    console.print()
 
 
 # ─── 发消息 ──────────────────────────────────────────
 @app.command()
 def send(
-    agent: str,
-    body: str,
+    agent: str = typer.Argument("", help="目标 Agent 名称（--file 模式下可省略）"),
+    body: str = typer.Argument("", help="消息内容（--file 模式下可省略）"),
     subject: str = "",
     msg_type: str = "text",
     priority: int = 5,
@@ -267,9 +342,47 @@ def send(
     notify: bool = True,
     no_notify: bool = typer.Option(False, "--no-notify", help="不发送 pane 提醒"),
     no_enter: bool = False,
+    file: Optional[str] = typer.Option(None, "--file", "-f", help="从 JSON 文件读取消息配置（- 表示从 stdin 读取）"),
     view: bool = typer.Option(False, "--view", "-v", help="人类可读格式"),
 ):
     """发送消息给指定 Agent（写入 inbox + 自动提醒）。支持 \\n 转义换行。"""
+    if file:
+        if file == "-":
+            cfg = json.load(sys.stdin)
+        else:
+            with open(file, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        agent = agent or cfg.get("agent", "")
+        body = body or cfg.get("body", "")
+        subject = subject or cfg.get("subject", "")
+        msg_type = cfg.get("msg_type", msg_type)
+        priority = cfg.get("priority", priority)
+        wait_done = cfg.get("wait_done", wait_done)
+        timeout = cfg.get("timeout", timeout)
+        reply_to = reply_to or cfg.get("reply_to")
+        if "notify" in cfg:
+            notify = cfg["notify"]
+        if "no_enter" in cfg:
+            no_enter = cfg["no_enter"]
+
+    if not agent:
+        if not view:
+            _j({"ok": False, "error": "请指定目标 Agent 名称，或使用 --file 提供配置"})
+            sys.exit(1)
+        console.print("[red]❌ 请指定目标 Agent 名称，或使用 --file 提供配置[/red]")
+        sys.exit(1)
+    if not body:
+        if not view:
+            _j({"ok": False, "error": "消息内容不能为空，或使用 --file 提供配置"})
+            sys.exit(1)
+        console.print("[red]❌ 消息内容不能为空，或使用 --file 提供配置[/red]")
+        sys.exit(1)
+
+    if body == "-":
+        body = sys.stdin.read()
+        if body.endswith("\n"):
+            body = body[:-1]
+
     body = _unescape_body(body)
     try:
         msg_id = messenger.send(
@@ -1006,13 +1119,15 @@ def whoami(
         return
 
     if not view:
-        _j({"ok": True, "agent_name": name, "registered": True, **{k: info.get(k) for k in ("role", "bio", "capabilities", "session", "pane_id")}})
+        _j({"ok": True, "agent_name": name, "registered": True, **{k: info.get(k) for k in ("role", "bio", "capabilities", "session", "pane_id", "workdir", "mux")}})
         return
 
     console.print(f"\n当前 Agent: {name}")
     console.print(f"  Role:         {info.get('role') or '-'}")
     console.print(f"  Bio:          {info.get('bio') or '-'}")
     console.print(f"  Capabilities: {info.get('capabilities') or '-'}")
+    console.print(f"  Workdir:      {info.get('workdir') or '-'}")
+    console.print(f"  Mux:          {info.get('mux') or '-'}")
     console.print(f"  Session:      {info['session']}")
     console.print(f"  Pane:         {info['pane_id']}")
 

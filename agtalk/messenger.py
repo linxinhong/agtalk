@@ -79,10 +79,7 @@ def inbox(agent_name: str, status: str = "pending,delivered", limit: int = 20) -
             ORDER BY priority ASC, created_at ASC
             LIMIT ?
         """, (agent_name, *statuses, limit)).fetchall()
-        result = [dict(r) for r in rows]
-        for msg in result:
-            msg["content"] = msg["body"]
-        return result
+        return [dict(r) for r in rows]
 
 
 def _resolve_msg_id(conn, msg_id: str, agent_name: str) -> str:
