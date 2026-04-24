@@ -16,7 +16,7 @@ import typer
 from agtalk.main import app
 from agtalk.console import console
 from agtalk import db, registry, messenger
-from agtalk.factory import get, get_agent_name, detect_name
+from agtalk.factory import get, get_agent_name, detect_name, get_by_name
 from agtalk.delivery import notify as _fifo_notify, watch_until_done, _ensure_fifo, notify_agent
 
 _PRESET_NAMES = [
@@ -124,22 +124,29 @@ def init(
 ):
     """初始化环境：检查终端环境、初始化数据库、确保 FIFO 存在。"""
     errors = []
+    warnings = []
     results = {}
-    mux = get()
 
     with console.status("[bold green]正在初始化...", spinner="dots"):
+        # 检测 multiplexer（非 multiplexer 环境下降级为警告）
         try:
+            mux = get()
             session = mux.get_current_session()
             pane_id = mux.get_current_pane_id()
             results["session"] = session
             results["pane_id"] = pane_id
+            results["mux"] = detect_name()
         except EnvironmentError as e:
-            errors.append(f"终端环境: {e}")
+            warnings.append(f"终端环境: {e}")
+            results["mux"] = "unknown"
 
         import shutil
-        results["zellij"] = bool(shutil.which("zellij"))
-        if not results["zellij"]:
-            errors.append("zellij CLI 未找到")
+        has_zellij = bool(shutil.which("zellij"))
+        has_tmux = bool(shutil.which("tmux"))
+        results["zellij"] = has_zellij
+        results["tmux"] = has_tmux
+        if not has_zellij and not has_tmux:
+            warnings.append("未找到 zellij 或 tmux CLI")
 
         try:
             db.init_db()
@@ -156,22 +163,26 @@ def init(
 
     if not view:
         if errors:
-            _j({"ok": False, "errors": errors, "results": results})
+            _j({"ok": False, "errors": errors, "warnings": warnings, "results": results})
             sys.exit(1)
         else:
-            _j({"ok": True, **results})
+            _j({"ok": True, "warnings": warnings, **results})
             return
 
     if errors:
         for err in errors:
-            console.print(f"❌ {err}")
+            console.print(f"[red]❌ {err}[/red]")
         sys.exit(1)
-    else:
-        console.print(f"✅ 终端环境: session=[cyan]{results.get('session')}[/cyan], pane_id=[cyan]{results.get('pane_id')}[/cyan]")
-        console.print("✅ zellij CLI 可用")
-        console.print(f"✅ 数据库: [dim]{results.get('db')}[/dim]")
-        console.print(f"✅ FIFO: [dim]{results.get('fifo')}[/dim]")
-        console.print("\n✅ 初始化完成")
+
+    if warnings:
+        for w in warnings:
+            console.print(f"[yellow]⚠ {w}[/yellow]")
+
+    console.print(f"✅ 数据库: [dim]{results.get('db')}[/dim]")
+    console.print(f"✅ FIFO: [dim]{results.get('fifo')}[/dim]")
+    if results.get("session"):
+        console.print(f"✅ 终端环境: session=[cyan]{results['session']}[/cyan], pane_id=[cyan]{results.get('pane_id')}[/cyan], mux=[cyan]{results['mux']}[/cyan]")
+    console.print("\n✅ 初始化完成")
 
 
 # ─── 注册 ────────────────────────────────────────────
@@ -630,7 +641,13 @@ def key_enter(
             sys.exit(1)
         console.print(f"[red]❌ Agent {agent_name} 未找到[/red]")
         return
-    mux = get()
+    if info.get("mux") not in ("zellij", "tmux"):
+        if not view:
+            _j({"ok": False, "error": f"Agent {agent_name} 不是终端 Agent，无法发送 Enter"})
+            sys.exit(1)
+        console.print(f"[yellow]⚠ Agent {agent_name} 不是终端 Agent，无法发送 Enter[/yellow]")
+        return
+    mux = get_by_name(info["mux"])
     mux.send_keys(info["session"], info["pane_id"], "Enter")
     if not view:
         _j({"ok": True, "agent": agent_name})

@@ -28,6 +28,15 @@ def detect_name() -> str:
     return "unknown"
 
 
+def get_by_name(mux_name: str):
+    """根据 mux 名称创建 multiplexer 实例（不检测当前环境）。"""
+    if mux_name == "zellij":
+        return ZellijMultiplexer()
+    if mux_name == "tmux":
+        return TmuxMultiplexer()
+    raise EnvironmentError(f"不支持的 mux 类型: {mux_name}")
+
+
 def get() -> AbstractMultiplexer:
     """获取当前 multiplexer 的单例实例。"""
     global _multiplexer_instance
@@ -38,5 +47,10 @@ def get() -> AbstractMultiplexer:
 
 
 def get_agent_name() -> str:
-    """快捷方法：获取当前 agent 名称。"""
+    """快捷方法：获取当前 agent 名称。
+    优先检查 AGTALK_AGENT_NAME 环境变量，未设置再从 multiplexer 推断。
+    """
+    name = os.environ.get("AGTALK_AGENT_NAME")
+    if name:
+        return name
     return get().get_current_agent_name()

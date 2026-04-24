@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from .db import get_conn
-from .factory import get
+from .factory import get, get_by_name
 
 FIFO_PATH = Path.home() / ".config" / "agtalk" / "notify.fifo"
 
@@ -69,25 +69,27 @@ def notify_agent(to_agent: str, from_agent: str, agent_info: dict, send_enter: b
         text = _format_notification_text(to_agent, from_agent, msg_id=msg_id)
     else:
         text = _format_notification_text(to_agent, from_agent)
-    mux = get()
-    mux.write_chars_to_pane(
-        session=agent_info["session"],
-        pane_id=agent_info["pane_id"],
-        text=text,
-        send_enter=send_enter
-    )
+    if agent_info.get("mux") in ("zellij", "tmux"):
+        mux = get_by_name(agent_info["mux"])
+        mux.write_chars_to_pane(
+            session=agent_info["session"],
+            pane_id=agent_info["pane_id"],
+            text=text,
+            send_enter=send_enter
+        )
 
 
 def _deliver(msg_id: str, to_agent: str, from_agent: str, body: str, agent_info: dict, send_enter: bool = False):
     """将消息写入目标 pane，并更新 DB 状态为 delivered"""
     text = _format_delivery_text(msg_id, from_agent, body)
-    mux = get()
-    mux.write_chars_to_pane(
-        session=agent_info["session"],
-        pane_id=agent_info["pane_id"],
-        text=text,
-        send_enter=send_enter
-    )
+    if agent_info.get("mux") in ("zellij", "tmux"):
+        mux = get_by_name(agent_info["mux"])
+        mux.write_chars_to_pane(
+            session=agent_info["session"],
+            pane_id=agent_info["pane_id"],
+            text=text,
+            send_enter=send_enter
+        )
     with get_conn() as conn:
         conn.execute("""
             UPDATE messages SET status='delivered', delivered_at=unixepoch('now','subsec')
@@ -97,7 +99,7 @@ def _deliver(msg_id: str, to_agent: str, from_agent: str, body: str, agent_info:
                    session=agent_info["session"], pane_id=agent_info["pane_id"])
 
 
-def _flush_offline_queue(agent_name: str, session: str, pane_id: int):
+def _flush_offline_queue(agent_name: str, session: str, pane_id: int, mux_name: str = ""):
     """agent 上线后发送离线消息提醒通知"""
     with get_conn() as conn:
         rows = conn.execute("""
@@ -115,13 +117,14 @@ def _flush_offline_queue(agent_name: str, session: str, pane_id: int):
         msg_count = len(rows)
         unique_senders = ", ".join({r["from_agent"] for r in rows})
         text = _format_notification_text(agent_name, unique_senders, msg_count)
-        mux = get()
-        mux.write_chars_to_pane(
-            session=session,
-            pane_id=pane_id,
-            text=text,
-            send_enter=True
-        )
+        if mux_name in ("zellij", "tmux"):
+            mux = get_by_name(mux_name)
+            mux.write_chars_to_pane(
+                session=session,
+                pane_id=pane_id,
+                text=text,
+                send_enter=True
+            )
 
         # 清空离线队列（消息内容已在 messages 表中）
         for row in rows:

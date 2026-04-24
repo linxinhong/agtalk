@@ -39,7 +39,7 @@ def register(agent_name: str, role: str = "", capabilities: str = "", bio: str =
         """, (agent_name, session, pane_id, pid, role, capabilities, bio, workdir, mux))
 
     # 投递离线消息
-    _flush_offline_queue(agent_name, session, pane_id)
+    _flush_offline_queue(agent_name, session, pane_id, mux)
     
     # 将当前 pane 标题改为 agent_name，方便识别
     multiplexer.rename_pane(session, pane_id, agent_name)
@@ -54,40 +54,52 @@ def unregister(agent_name: str):
 
 def lookup(agent_name: str) -> dict | None:
     """查询 agent 的 session + pane_id，同时验活"""
-    mux = get()
     with get_conn() as conn:
         row = conn.execute(
             "SELECT * FROM agents WHERE agent_name = ?", (agent_name,)
         ).fetchone()
         if not row:
             return None
-        if not mux.pane_is_alive(row["session"], row["pane_id"]):
-            conn.execute("DELETE FROM agents WHERE agent_name = ?", (agent_name,))
-            return None
+        # 非终端 Agent（web/office 等）跳过 pane 验活
+        if row["mux"] not in ("zellij", "tmux"):
+            return dict(row)
+        # 终端 Agent 验活
+        try:
+            mux = get()
+            if not mux.pane_is_alive(row["session"], row["pane_id"]):
+                conn.execute("DELETE FROM agents WHERE agent_name = ?", (agent_name,))
+                return None
+        except EnvironmentError:
+            pass  # 非 multiplexer 环境无法验活，返回数据不删除
         return dict(row)
 
 
 def prune(dry_run: bool = False) -> list[str]:
     """清理 pane 已关闭的 agent"""
     dead = []
-    mux = get()
     with get_conn() as conn:
         rows = conn.execute("SELECT agent_name, session, pane_id, pid, mux FROM agents").fetchall()
         if not rows:
             return dead
 
-        # 一次获取所有 pane 信息
+        # 尝试获取 pane 信息（非 multiplexer 环境跳过）
         session_panes = {}
-        for row in rows:
-            session = row["session"]
-            if session not in session_panes:
-                session_panes[session] = mux.list_panes(session)
-
-        alive_pane_ids = {p["id"] for panes in session_panes.values() for p in panes if not p.get("exited", False)}
+        try:
+            mux = get()
+            for row in rows:
+                session = row["session"]
+                if session not in session_panes:
+                    try:
+                        session_panes[session] = mux.list_panes(session)
+                    except Exception:
+                        session_panes[session] = []
+            alive_pane_ids = {p["id"] for panes in session_panes.values() for p in panes if not p.get("exited", False)}
+        except EnvironmentError:
+            alive_pane_ids = set()
 
         for row in rows:
             if row["mux"] not in ("zellij", "tmux"):
-                continue  # 非终端多路复用器的 Agent（web/office/remote 等）不检查 pane 存活
+                continue  # 非终端多路复用器的 Agent 不检查 pane 存活
             pane_alive = row["pane_id"] in alive_pane_ids
             if pane_alive:
                 continue  # pane 存活即认为 agent 存活
