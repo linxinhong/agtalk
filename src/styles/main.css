@@ -1,0 +1,334 @@
+:root {
+  --bg: #ffffff;
+  --bg-sidebar: #f5f5f7;
+  --bg-hover: #ebebed;
+  --bg-active: #e0e0e2;
+  --bg-bubble-self: #007aff;
+  --bg-bubble-other: #e9e9eb;
+  --text: #1d1d1f;
+  --text-secondary: #86868b;
+  --text-bubble-self: #ffffff;
+  --border: #d2d2d7;
+  --accent: #007aff;
+  --danger: #ff3b30;
+  --radius: 8px;
+  --shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1c1e;
+    --bg-sidebar: #2c2c2e;
+    --bg-hover: #3a3a3c;
+    --bg-active: #48484a;
+    --bg-bubble-self: #0a84ff;
+    --bg-bubble-other: #2c2c2e;
+    --text: #f5f5f7;
+    --text-secondary: #98989d;
+    --text-bubble-self: #ffffff;
+    --border: #38383a;
+  }
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow: hidden;
+}
+
+#app {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+}
+
+/* 两栏布局 */
+.app-layout {
+  display: flex;
+  width: 100%;
+  height: 100%;
+}
+
+.sidebar {
+  width: 300px;
+  min-width: 260px;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-header {
+  padding: 16px;
+  font-weight: 600;
+  font-size: 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sidebar-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.conversation-item {
+  padding: 12px 16px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.15s;
+}
+
+.conversation-item:hover { background: var(--bg-hover); }
+.conversation-item.active { background: var(--bg-active); }
+
+.conversation-item .conv-title {
+  font-weight: 500;
+  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conversation-item .conv-preview {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conversation-item .conv-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.conversation-item .conv-time {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.conversation-item .conv-badge {
+  font-size: 11px;
+  background: var(--accent);
+  color: white;
+  padding: 1px 6px;
+  border-radius: 10px;
+}
+
+/* 消息区 */
+.main-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.message-header {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 500;
+  font-size: 15px;
+}
+
+.message-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.message-bubble {
+  max-width: 70%;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  font-size: 14px;
+  line-height: 1.45;
+  word-break: break-word;
+  position: relative;
+}
+
+.message-bubble.self {
+  align-self: flex-end;
+  background: var(--bg-bubble-self);
+  color: var(--text-bubble-self);
+  border-bottom-right-radius: 2px;
+}
+
+.message-bubble.other {
+  align-self: flex-start;
+  background: var(--bg-bubble-other);
+  color: var(--text);
+  border-bottom-left-radius: 2px;
+}
+
+.message-bubble .msg-sender {
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 2px;
+  opacity: 0.7;
+}
+
+.message-bubble .msg-time {
+  font-size: 10px;
+  opacity: 0.5;
+  margin-top: 4px;
+  text-align: right;
+}
+
+.message-bubble .msg-status {
+  display: inline-block;
+  font-size: 10px;
+  margin-left: 4px;
+}
+
+.message-bubble .msg-reply {
+  font-size: 11px;
+  padding: 4px 8px;
+  border-left: 2px solid rgba(255,255,255,0.3);
+  margin-bottom: 6px;
+  opacity: 0.8;
+}
+
+/* 输入区 */
+.reply-area {
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 10px;
+}
+
+.reply-area textarea {
+  flex: 1;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  resize: none;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.4;
+  background: var(--bg);
+  color: var(--text);
+  outline: none;
+  min-height: 40px;
+  max-height: 120px;
+}
+
+.reply-area textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(0,122,255,0.15);
+}
+
+.reply-area button {
+  padding: 10px 20px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: var(--radius);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  white-space: nowrap;
+}
+
+.reply-area button:hover { opacity: 0.85; }
+.reply-area button:disabled { opacity: 0.4; cursor: default; }
+
+/* 空状态 */
+.empty-state {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  font-size: 15px;
+}
+
+/* 设置页 */
+.settings-view {
+  padding: 32px;
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+.settings-view h2 {
+  font-size: 20px;
+  margin-bottom: 24px;
+}
+
+.setting-group {
+  margin-bottom: 24px;
+}
+
+.setting-group label {
+  display: block;
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+
+.setting-group input,
+.setting-group select {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 14px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* 审批卡片 */
+.approval-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  margin: 4px 0;
+}
+
+.approval-q {
+  font-weight: 600;
+  margin-bottom: 10px;
+  color: var(--text);
+}
+
+.approval-choices {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.approval-choices button {
+  padding: 6px 16px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: white;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.approval-choices button:hover { opacity: 0.85; }
+.approval-choices button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.approval-done {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-style: italic;
+  padding-top: 4px;
+}

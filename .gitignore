@@ -1,0 +1,21 @@
+# Rust build outputs
+/target/
+
+# Frontend dependencies and build outputs
+/node_modules/
+/dist/
+
+# Local agtalk runtime state
+/.agtalk2/
+*.db
+*.db-wal
+*.db-shm
+
+# Logs and local environment
+*.log
+.env.local
+
+# OS and editor files
+.DS_Store
+.idea/
+.vscode/
