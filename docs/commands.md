@@ -179,6 +179,10 @@ files:
 - `no_enter` -> `--no-enter`
 - `files` -> 多个 `-f`（相对路径按 YAML 文件目录解析）
 
+运行时校验：
+- `done` 为空时，`name` 与 `message` 均必填。
+- 仅当 `done` 有值时可省略 `name` 与 `message`（对应 `agtalk agent -d <msg-id>` 标记完成）。
+
 #### human
 
 ```yaml
@@ -204,6 +208,9 @@ questions:
 - `questions[].text` -> `-q`
 - `questions[].options[].text` -> `-o`
 - `recommended: true` -> `-o!`
+
+运行时校验：
+- `select_only: true` 时，每个 `question` 必须至少配置一个 `option`。
 
 #### reply / wait / detail / attachment / chats / peers / me
 

@@ -757,8 +757,7 @@ fn print_agent_help() {
     anstream::println!("  # 普通消息（带多附件）");
     anstream::println!("  agtalk agent \"请 review PR #42\" -n claude-reviewer-Bob -s \"代码评审\" -i -f ./src/main.rs -f ./README.md");
     anstream::println!();
-    anstream::println!("  # 复杂请求写入 YAML 后执行（避免 shell 引号与多附件问题）");
-    anstream::println!("  agtalk run task.yaml");
+    anstream::println!("  # 复杂请求（长正文/多附件/多选项）建议写 YAML 一次执行，见文末「YAML Runner」");
     anstream::println!();
     anstream::println!("  # agent-b 终端：join 后同样自动识别");
     anstream::println!("  agtalk join claude-reviewer-Bob --intro \"代码评审 Agent\" --role reviewer");
@@ -774,6 +773,90 @@ fn print_agent_help() {
     anstream::println!("  # 列出在线 Agent / 查看自己");
     anstream::println!("  agtalk peers");
     anstream::println!("  agtalk me");
+    anstream::println!();
+    anstream::println!("{}", help::section("YAML Runner（复杂指令）"));
+    anstream::println!(
+        "{}",
+        help::cmd("agtalk run <file.yaml>", "复杂请求一次执行，免去 shell 长命令与引号")
+    );
+    anstream::println!("  # Runner 只执行 agtalk 内部命令，不执行任意 shell");
+    anstream::println!("  # YAML 中的相对路径按 YAML 文件所在目录解析");
+    anstream::println!("  # version 必须为 1；command 支持 10 种 snake_case 命令");
+    anstream::println!();
+    anstream::println!("  version: 1");
+    anstream::println!(
+        "  command: agent | human | reply | wait | inbox | detail | attachment | chats | peers | me"
+    );
+    anstream::println!();
+    anstream::println!("  # agent —— 给 Agent 发任务 / 回复 / 标记完成");
+    anstream::println!("{}", help::opt("name", "目标 Agent（done 为空时必填） -> -n"));
+    anstream::println!("{}", help::opt("subject", "消息主题 -> -s"));
+    anstream::println!(
+        "{}",
+        help::opt("message", "正文（done 为空时必填非空）")
+    );
+    anstream::println!("{}", help::opt("reply_to", "回复某消息 -> -r"));
+    anstream::println!(
+        "{}",
+        help::opt("done", "标记完成（有值时可省略 name/message） -> -d")
+    );
+    anstream::println!("{}", help::opt("notify", "提醒对方查收 -> -i"));
+    anstream::println!("{}", help::opt("no_enter", "提醒时不自动发回车 -> --no-enter"));
+    anstream::println!(
+        "{}",
+        help::opt("files", "附件数组（相对路径按 YAML 目录解析） -> 多个 -f")
+    );
+    anstream::println!("  示例:");
+    anstream::println!("    version: 1");
+    anstream::println!("    command: agent");
+    anstream::println!("    name: kimi-coder-Kimi");
+    anstream::println!("    subject: \"TASK: 实现功能 X\"");
+    anstream::println!("    message: |");
+    anstream::println!("      请阅读附件并实现，重点关注：");
+    anstream::println!("      1. session 校验逻辑");
+    anstream::println!("      2. 错误处理");
+    anstream::println!("    notify: true");
+    anstream::println!("    files:");
+    anstream::println!("      - ./src/main.rs");
+    anstream::println!("      - ./docs/spec.md");
+    anstream::println!();
+    anstream::println!("  # human —— 向人类提问");
+    anstream::println!(
+        "{}",
+        help::opt("message", "共享描述；questions 为空时作为唯一问题")
+    );
+    anstream::println!("{}", help::opt("single", "单选 -> --single"));
+    anstream::println!(
+        "{}",
+        help::opt("select_only", "严格选择（每题需至少一个 option） -> --select-only")
+    );
+    anstream::println!("{}", help::opt("output", "text | json（默认 text）"));
+    anstream::println!("{}", help::opt("questions[].text", "问题文本 -> -q"));
+    anstream::println!(
+        "{}",
+        help::opt("questions[].options[].text", "选项 -> -o")
+    );
+    anstream::println!(
+        "{}",
+        help::opt(
+            "questions[].options[].recommended",
+            "推荐选项 -> -o!"
+        )
+    );
+    anstream::println!();
+    anstream::println!("  # 其余命令摘要：");
+    anstream::println!("  #   reply      msg_id / choice / reason");
+    anstream::println!("  #   wait       msg_id / timeout（默认 300s） / output");
+    anstream::println!(
+        "  #   inbox      status: unread | pending | action_required | all / limit（默认 50） / peek"
+    );
+    anstream::println!("  #   detail     msg_id");
+    anstream::println!("  #   attachment attachment_id");
+    anstream::println!("  #   chats      （无字段）");
+    anstream::println!("  #   peers      verbose");
+    anstream::println!("  #   me         （无字段）");
+    anstream::println!();
+    anstream::println!("  # 完整字段与示例见 docs/commands.md");
 }
 
 fn short_id(id: &str) -> String {
