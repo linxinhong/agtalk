@@ -879,13 +879,37 @@ impl Storage {
         Ok(Some(msg))
     }
 
+    /// 查询指定 approval_request 的回复消息（content_type = approval_response 且 reply_to_id = msg_id）。
+    /// 若找到多条，返回最新一条。
+    pub fn get_approval_response(&self, msg_id: &str) -> Result<Option<Message>> {
+        let conn = self.conn();
+        let resolved_msg_id = match resolve_message_id(&conn, msg_id)? {
+            Some(id) => id,
+            None => return Ok(None),
+        };
+        let sql = concat!(
+            "SELECT m.*, p.name as sname FROM messages m ",
+            "JOIN participants p ON m.sender_id = p.id ",
+            "WHERE m.content_type = 'approval_response' AND m.reply_to_id = ?1 ",
+            "ORDER BY m.created_at DESC LIMIT 1"
+        );
+        let mut stmt = conn.prepare(sql)?;
+        let mut rows = stmt.query_map(params![resolved_msg_id], row_to_message)?;
+        let mut msg = match rows.next() {
+            Some(Ok(m)) => m,
+            _ => return Ok(None),
+        };
+        msg.recipients = self.get_recipients_for_msg(&conn, &msg.id)?;
+        msg.attachments = self.get_attachments_for_msg(&conn, &msg.id)?;
+        msg.full_body = self.load_full_body(&conn, &msg.id)?;
+        Ok(Some(msg))
+    }
+
     fn load_full_body(&self, conn: &Connection, msg_id: &str) -> Result<Option<String>> {
         let mut stmt = conn.prepare(
             "SELECT storage_path FROM attachments WHERE message_id = ?1 AND role = 'full_body' LIMIT 1"
         )?;
-        let mut rows = stmt.query_map(params![msg_id], |row| {
-            Ok(row.get::<_, String>(0)?)
-        })?;
+        let mut rows = stmt.query_map(params![msg_id], |row| row.get::<_, String>(0))?;
         if let Some(Ok(storage_path)) = rows.next() {
             let path = self.resolve_attachment_path(&storage_path)?;
             if path.exists() {

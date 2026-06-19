@@ -52,6 +52,7 @@ agtalk config set message.attachment_threshold_bytes 4096
 ```bash
 agtalk <命令> [参数]
 agtalk agent <消息> [选项]      最常用：给 Agent 发任务 / 回复
+agtalk reply <msg-id> <choice>  回复审批请求
 ```
 
 ### Agent 对话
@@ -76,6 +77,8 @@ agtalk human <消息> [选项]
   --select-only                  严格选择，禁用自由文本
   --output <text|json>           输出格式，默认 text
 ```
+
+人类通过 `agtalk reply <msg-id> <choice> [-r/--reason <说明>]` 回应后，Ask 发起方会立即得到结果。若 Ask 进程已退出或 daemon 重启，可稍后通过 `agtalk wait <msg-id>` 重新查询结果。
 
 支持同时 `-r` 与 `-d`：
 
@@ -104,6 +107,9 @@ agtalk inbox                         查看待处理消息（待办中心）
   --action-required                  仅显示需要回应的消息
   --all                              显示全部消息（包括已完成）
 agtalk detail <msg-id>               查看消息详情（自动标记已读）
+agtalk wait <msg-id>                 等待审批结果（daemon 重启后可恢复）
+  --timeout <secs>                   最长等待秒数，默认 300
+  --output <text|json>               输出格式，默认 text
 agtalk attachment <att-id>           查看附件全文（自动标记已读）
 agtalk chats                         查看对话列表
 agtalk config <get|set|list> [key] [value]  管理全局配置

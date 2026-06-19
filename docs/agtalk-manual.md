@@ -204,6 +204,8 @@ codex$ agtalk inbox
 codex$ agtalk human "是否允许删除 target 目录？" -o 允许 -o 拒绝
 
 # 人类在 GUI 弹窗或 CLI 回复后，codex 收到 approval_response
+# 若 codex 的 Ask 已超时退出，或 daemon 曾经重启，可稍后通过 wait 重新取回结果
+codex$ agtalk wait <msg-id> --timeout 60
 ```
 
 ### 模式三：长报告协作

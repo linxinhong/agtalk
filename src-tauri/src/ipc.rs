@@ -153,6 +153,14 @@ pub enum ClientMsg {
         #[serde(default)]
         reason: String,
     },
+    /// 等待审批结果（阻塞式长轮询，timeout 秒后返回）
+    Wait {
+        #[serde(default)]
+        sender: Option<String>,
+        msg_id: String,
+        #[serde(default = "default_timeout")]
+        timeout_secs: u64,
+    },
 }
 
 /// Daemon → CLI/GUI 的响应消息
@@ -183,6 +191,17 @@ pub enum ServerMsg {
     },
     /// 审批请求超时
     AskTimeout { msg_id: String },
+    /// 等待审批的结果（Wait 命令返回）
+    WaitResult {
+        msg_id: String,
+        status: String,
+        #[serde(default)]
+        choice: String,
+        #[serde(default)]
+        reason: String,
+        #[serde(default)]
+        timed_out: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

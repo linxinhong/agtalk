@@ -18,8 +18,14 @@ pub(crate) struct AskResult {
     reason: String,
 }
 
-/// 共享的待处理 Ask：msg_id → oneshot sender
-type PendingAsks = Arc<Mutex<HashMap<String, oneshot::Sender<AskResult>>>>;
+/// 一个 waiter 的注册句柄，用于超时后安全地只清理自己
+pub(crate) struct Waiter {
+    id: String,
+    tx: oneshot::Sender<AskResult>,
+}
+
+/// 共享的待处理 Ask：msg_id → 所有在等待的 waiter
+pub(crate) type PendingAsks = Arc<Mutex<HashMap<String, Vec<Waiter>>>>;
 
 pub async fn run(
     socket_path: &str,
@@ -121,6 +127,69 @@ fn participant_from(session: &Option<SessionInfo>) -> String {
         .as_ref()
         .map(|s| s.participant_name.clone())
         .unwrap_or_else(|| "me".into())
+}
+
+/// 从 storage 读取已持久化的 approval_response，返回 (choice, reason)。
+fn read_approval_response(storage: &Storage, msg_id: &str) -> Option<(String, String)> {
+    let msg = storage.get_approval_response(msg_id).ok().flatten()?;
+    let choice = serde_json::from_str::<serde_json::Value>(&msg.metadata)
+        .ok()
+        .and_then(|v| v.get("choice").and_then(|c| c.as_str()).map(String::from))
+        .unwrap_or_default();
+    Some((choice, msg.body))
+}
+
+/// 注册一个 waiter，返回 (waiter_id, receiver)。
+fn register_waiter(pending_asks: &PendingAsks, msg_id: &str) -> (String, oneshot::Receiver<AskResult>) {
+    let (tx, rx) = oneshot::channel();
+    let id = uuid::Uuid::new_v4().to_string();
+    pending_asks
+        .lock()
+        .unwrap()
+        .entry(msg_id.to_string())
+        .or_default()
+        .push(Waiter { id: id.clone(), tx });
+    (id, rx)
+}
+
+/// 只移除指定 waiter_id 的注册，避免误删其他 waiter。
+fn remove_waiter(pending_asks: &PendingAsks, msg_id: &str, waiter_id: &str) {
+    let mut pending = pending_asks.lock().unwrap();
+    if let Some(vec) = pending.get_mut(msg_id) {
+        vec.retain(|w| w.id != waiter_id);
+        if vec.is_empty() {
+            pending.remove(msg_id);
+        }
+    }
+}
+
+/// 通知并清空指定 msg_id 的所有 waiter。
+fn notify_waiters(pending_asks: &PendingAsks, msg_id: &str, result: AskResult) {
+    let waiters = {
+        let mut pending = pending_asks.lock().unwrap();
+        pending.remove(msg_id)
+    };
+    if let Some(vec) = waiters {
+        for waiter in vec {
+            let _ = waiter.tx.send(result.clone());
+        }
+    }
+}
+
+/// 等待一个已注册的 receiver，超时后检查 storage 兜底。
+async fn await_reply(
+    rx: oneshot::Receiver<AskResult>,
+    storage: &Storage,
+    msg_id: &str,
+    timeout: std::time::Duration,
+) -> Option<(String, String)> {
+    match tokio::time::timeout(timeout, rx).await {
+        Ok(Ok(result)) => Some((result.choice, result.reason)),
+        _ => {
+            // 超时或被取消后，再查一次 storage，处理注册 waiter 与 Reply 的竞态
+            read_approval_response(storage, msg_id)
+        }
+    }
 }
 
 /// 执行一次 notify（按 session 级别 notify_config）
@@ -354,11 +423,17 @@ pub(crate) async fn handle_msg(
                 Ok(message) => {
                     let msg_id = message.id.clone();
 
-                    let (tx, rx) = oneshot::channel();
-                    {
-                        let mut pending = pending_asks.lock().unwrap();
-                        pending.insert(msg_id.clone(), tx);
+                    // 1. 若回复已持久化（极速回复），直接返回
+                    if let Some((choice, reason)) = read_approval_response(storage, &msg_id) {
+                        return ServerMsg::AskResponse {
+                            msg_id,
+                            choice,
+                            reason,
+                        };
                     }
+
+                    // 2. 先注册 waiter，再 deliver，避免“deliver 后、注册前”收到 Reply 导致的竞态
+                    let (waiter_id, rx) = register_waiter(pending_asks, &msg_id);
 
                     if let Ok(Some(p)) = storage.get_participant_by_name(&to) {
                         if let Some(t) = transports.get(&p.transport) {
@@ -369,37 +444,16 @@ pub(crate) async fn handle_msg(
                     }
 
                     let timeout = std::time::Duration::from_secs(timeout_secs);
-                    match tokio::time::timeout(timeout, rx).await {
-                        Ok(Ok(result)) => {
-                            let response_meta =
-                                serde_json::json!({"choice": &result.choice}).to_string();
-                            let _ = storage.send_message(
-                                &to,
-                                std::slice::from_ref(&sender),
-                                &result.reason,
-                                "approval_response",
-                                Some(&msg_id),
-                                Some(&message.conversation_id),
-                                None,
-                                None,
-                                Some(&response_meta),
-                            );
-                            ServerMsg::AskResponse {
-                                msg_id,
-                                choice: result.choice,
-                                reason: result.reason,
-                            }
-                        }
-                        Ok(Err(_)) => {
-                            let mut pending = pending_asks.lock().unwrap();
-                            pending.remove(&msg_id);
-                            ServerMsg::AskTimeout { msg_id }
-                        }
-                        Err(_) => {
-                            let mut pending = pending_asks.lock().unwrap();
-                            pending.remove(&msg_id);
-                            ServerMsg::AskTimeout { msg_id }
-                        }
+                    let result = await_reply(rx, storage, &msg_id, timeout).await;
+                    remove_waiter(pending_asks, &msg_id, &waiter_id);
+
+                    match result {
+                        Some((choice, reason)) => ServerMsg::AskResponse {
+                            msg_id,
+                            choice,
+                            reason,
+                        },
+                        None => ServerMsg::AskTimeout { msg_id },
                     }
                 }
                 Err(e) => ServerMsg::Error {
@@ -417,39 +471,149 @@ pub(crate) async fn handle_msg(
             reason,
         } => {
             let sender = sender_from(session, sender);
-            let mut pending = pending_asks.lock().unwrap();
-            if let Some(tx) = pending.remove(&msg_id) {
-                let _ = tx.send(AskResult {
+            let original = match storage.get_message_by_id(
+                &msg_id,
+                Some(&sender),
+                session_id_from(session).as_deref(),
+            ) {
+                Ok(Some(m)) if m.content_type == "approval_request" => m,
+                Ok(Some(_)) => {
+                    return ServerMsg::Error {
+                        code: "not_approval_request".into(),
+                        message: format!("消息 {} 不是审批请求", msg_id),
+                    }
+                }
+                Ok(None) => {
+                    return ServerMsg::Error {
+                        code: "message_not_found".into(),
+                        message: format!("消息不存在: {}", msg_id),
+                    }
+                }
+                Err(e) => {
+                    return ServerMsg::Error {
+                        code: "lookup_failed".into(),
+                        message: e.to_string(),
+                    }
+                }
+            };
+
+            // 先持久化 approval_response，再通知内存中的 waiter
+            let response_meta = serde_json::json!({"choice": &choice}).to_string();
+            if let Err(e) = storage.send_message(
+                &sender,
+                std::slice::from_ref(&original.sender_name),
+                &reason,
+                "approval_response",
+                Some(&msg_id),
+                Some(&original.conversation_id),
+                None,
+                None,
+                Some(&response_meta),
+            ) {
+                return ServerMsg::Error {
+                    code: "reply_failed".into(),
+                    message: e.to_string(),
+                };
+            }
+
+            notify_waiters(
+                pending_asks,
+                &msg_id,
+                AskResult {
                     choice: choice.clone(),
                     reason: reason.clone(),
-                });
-                // 同时写入 approval_response 消息
-                if let Ok(Some(original)) = storage.get_message_by_id(
-                    &msg_id,
-                    Some(&sender),
-                    session_id_from(session).as_deref(),
-                ) {
-                    let response_meta = serde_json::json!({"choice": &choice}).to_string();
-                    let _ = storage.send_message(
-                        &sender,
-                        std::slice::from_ref(&original.sender_name),
-                        &reason,
-                        "approval_response",
-                        Some(&msg_id),
-                        Some(&original.conversation_id),
-                        None,
-                        None,
-                        Some(&response_meta),
-                    );
+                },
+            );
+
+            ServerMsg::Ok {
+                data: serde_json::json!({"msg_id": msg_id, "status": "replied"}),
+            }
+        }
+
+        // ── 等待审批结果（长轮询）───────────────────
+        ClientMsg::Wait {
+            sender,
+            msg_id,
+            timeout_secs,
+        } => {
+            let sender = sender_from(session, sender);
+            let original = match storage.get_message_by_id(
+                &msg_id,
+                Some(&sender),
+                session_id_from(session).as_deref(),
+            ) {
+                Ok(Some(m)) if m.content_type == "approval_request" => m,
+                Ok(Some(_)) => {
+                    return ServerMsg::Error {
+                        code: "not_approval_request".into(),
+                        message: format!("消息 {} 不是审批请求", msg_id),
+                    }
                 }
-                ServerMsg::Ok {
-                    data: serde_json::json!({"msg_id": msg_id, "status": "replied"}),
+                Ok(None) => {
+                    return ServerMsg::Error {
+                        code: "message_not_found".into(),
+                        message: format!("消息不存在: {}", msg_id),
+                    }
                 }
-            } else {
-                ServerMsg::Error {
-                    code: "no_pending_ask".into(),
-                    message: format!("没有待处理的 Ask: {}", msg_id),
+                Err(e) => {
+                    return ServerMsg::Error {
+                        code: "lookup_failed".into(),
+                        message: e.to_string(),
+                    }
                 }
+            };
+
+            if original.sender_name != sender {
+                return ServerMsg::Error {
+                    code: "unauthorized_wait".into(),
+                    message: format!("只有 Ask 的发起者可以等待其审批结果: {}", msg_id),
+                };
+            }
+
+            // 先检查是否已持久化回复
+            if let Some((choice, reason)) = read_approval_response(storage, &msg_id) {
+                return ServerMsg::WaitResult {
+                    msg_id,
+                    status: "replied".into(),
+                    choice,
+                    reason,
+                    timed_out: false,
+                };
+            }
+
+            let timeout = std::time::Duration::from_secs(timeout_secs);
+            let (waiter_id, rx) = register_waiter(pending_asks, &msg_id);
+            let result = await_reply(rx, storage, &msg_id, timeout).await;
+            remove_waiter(pending_asks, &msg_id, &waiter_id);
+
+            // 最后再查一次 storage，处理 timeout 临界时 Reply 已写库但未通知到本 waiter 的情况
+            if result.is_none() {
+                if let Some((choice, reason)) = read_approval_response(storage, &msg_id) {
+                    return ServerMsg::WaitResult {
+                        msg_id: msg_id.clone(),
+                        status: "replied".into(),
+                        choice,
+                        reason,
+                        timed_out: false,
+                    };
+                }
+            }
+
+            match result {
+                Some((choice, reason)) => ServerMsg::WaitResult {
+                    msg_id,
+                    status: "replied".into(),
+                    choice,
+                    reason,
+                    timed_out: false,
+                },
+                None => ServerMsg::WaitResult {
+                    msg_id,
+                    status: "timed_out".into(),
+                    choice: String::new(),
+                    reason: String::new(),
+                    timed_out: true,
+                },
             }
         }
 

@@ -240,4 +240,13 @@ impl Client {
         })
         .await
     }
+
+    pub async fn wait(&mut self, msg_id: &str, timeout_secs: u64) -> Result<ServerMsg> {
+        self.request(&ClientMsg::Wait {
+            sender: None,
+            msg_id: msg_id.to_string(),
+            timeout_secs,
+        })
+        .await
+    }
 }

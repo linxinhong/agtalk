@@ -1437,8 +1437,7 @@ mod tests {
         .to_string()
     }
 
-    fn empty_pending_asks(
-    ) -> Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<crate::server::AskResult>>>> {
+    fn empty_pending_asks() -> crate::server::PendingAsks {
         Arc::new(Mutex::new(HashMap::new()))
     }
 
@@ -1649,5 +1648,334 @@ mod tests {
 
         send_via_server(&s, &registry, "alice", "bob", "task", true, Some(false)).await;
         assert!(!fake.calls.lock().unwrap()[0].send_enter);
+    }
+
+    // ── Wait / approval_response 持久化测试 ─────────────────
+
+    #[test]
+    fn test_get_approval_response() {
+        let s = storage();
+        s.register_participant(None, "alice", "agent", "A", "terminal", "{}", "", "agent")
+            .unwrap();
+        s.register_participant(None, "bob", "agent", "B", "terminal", "{}", "", "agent")
+            .unwrap();
+
+        let ask = s
+            .send_message(
+                "alice",
+                &["bob".into()],
+                "删除 target?",
+                "approval_request",
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert!(s.get_approval_response(&ask.id).unwrap().is_none());
+
+        s.send_message(
+            "bob",
+            &["alice".into()],
+            "同意",
+            "approval_response",
+            Some(&ask.id),
+            Some(&ask.conversation_id),
+            None,
+            None,
+            Some(r#"{"choice":"approve"}"#),
+        )
+        .unwrap();
+
+        let resp = s.get_approval_response(&ask.id).unwrap().unwrap();
+        assert_eq!(resp.content_type, "approval_response");
+        assert_eq!(resp.reply_to_id, Some(ask.id.clone()));
+        assert_eq!(resp.body, "同意");
+    }
+
+    async fn ask_via_server(
+        storage: &Storage,
+        pending: &crate::server::PendingAsks,
+        from: &str,
+        to: &str,
+        body: &str,
+        choices: Vec<String>,
+        timeout_secs: u64,
+    ) -> crate::ipc::ServerMsg {
+        let transports = TransportRegistry::new();
+        let notify = NotifyPluginRegistry::new();
+        let mut session: Option<crate::storage::SessionInfo> = None;
+        handle_msg(
+            ClientMsg::Ask {
+                sender: Some(from.to_string()),
+                to: to.to_string(),
+                body: body.to_string(),
+                choices,
+                timeout_secs,
+            },
+            storage,
+            &transports,
+            &notify,
+            pending,
+            &mut session,
+        )
+        .await
+    }
+
+    async fn reply_via_server(
+        storage: &Storage,
+        pending: &crate::server::PendingAsks,
+        from: &str,
+        msg_id: &str,
+        choice: &str,
+        reason: &str,
+    ) -> crate::ipc::ServerMsg {
+        let transports = TransportRegistry::new();
+        let notify = NotifyPluginRegistry::new();
+        let mut session: Option<crate::storage::SessionInfo> = None;
+        handle_msg(
+            ClientMsg::Reply {
+                sender: Some(from.to_string()),
+                msg_id: msg_id.to_string(),
+                choice: choice.to_string(),
+                reason: reason.to_string(),
+            },
+            storage,
+            &transports,
+            &notify,
+            pending,
+            &mut session,
+        )
+        .await
+    }
+
+    async fn wait_via_server(
+        storage: &Storage,
+        pending: &crate::server::PendingAsks,
+        from: &str,
+        msg_id: &str,
+        timeout_secs: u64,
+    ) -> crate::ipc::ServerMsg {
+        let transports = TransportRegistry::new();
+        let notify = NotifyPluginRegistry::new();
+        let mut session: Option<crate::storage::SessionInfo> = None;
+        handle_msg(
+            ClientMsg::Wait {
+                sender: Some(from.to_string()),
+                msg_id: msg_id.to_string(),
+                timeout_secs,
+            },
+            storage,
+            &transports,
+            &notify,
+            pending,
+            &mut session,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn test_ask_reply_server_flow() {
+        let s = Arc::new(storage());
+        s.register_participant(None, "alice", "agent", "A", "terminal", "{}", "", "agent")
+            .unwrap();
+        s.register_participant(None, "bob", "human", "B", "terminal", "{}", "", "human")
+            .unwrap();
+
+        let pending = empty_pending_asks();
+        let pending2 = pending.clone();
+        let s2 = s.clone();
+        let ask_handle: tokio::task::JoinHandle<crate::ipc::ServerMsg> = tokio::spawn(async move {
+            ask_via_server(
+                &s2,
+                &pending2,
+                "alice",
+                "bob",
+                "删除 target?",
+                vec!["允许".into(), "拒绝".into()],
+                5,
+            )
+            .await
+        });
+
+        // 给 tokio 调度一点时间，让 Ask 注册 waiter
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // bob 回复；需要先拿到 ask 的 msg_id
+        let ask_id = {
+            let conn = s.conn();
+            let id: String = conn
+                .query_row(
+                    "SELECT id FROM messages WHERE content_type = 'approval_request' ORDER BY created_at DESC LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            id
+        };
+
+        let reply_resp = reply_via_server(&s, &pending, "bob", &ask_id, "允许", "没问题").await;
+        assert!(matches!(reply_resp, crate::ipc::ServerMsg::Ok { .. }));
+
+        let ask_resp = ask_handle.await.unwrap();
+        match ask_resp {
+            crate::ipc::ServerMsg::AskResponse { choice, reason, .. } => {
+                assert_eq!(choice, "允许");
+                assert_eq!(reason, "没问题");
+            }
+            other => panic!("预期 AskResponse， got {:?}", other),
+        }
+
+        // 验证 approval_response 已持久化
+        let resp = s.get_approval_response(&ask_id).unwrap().unwrap();
+        assert_eq!(resp.sender_name, "bob");
+        assert_eq!(resp.body, "没问题");
+    }
+
+    #[tokio::test]
+    async fn test_wait_after_reply_uses_storage() {
+        let s = storage();
+        s.register_participant(None, "alice", "agent", "A", "terminal", "{}", "", "agent")
+            .unwrap();
+        s.register_participant(None, "bob", "human", "B", "terminal", "{}", "", "human")
+            .unwrap();
+
+        // 直接通过 storage 写入 approval_request / response，模拟 daemon 重启后的状态
+        let ask = s
+            .send_message(
+                "alice",
+                &["bob".into()],
+                "重启服务?",
+                "approval_request",
+                None,
+                None,
+                None,
+                None,
+                Some(r#"{"choices":["yes","no"]}"#),
+            )
+            .unwrap();
+        s.send_message(
+            "bob",
+            &["alice".into()],
+            "可以",
+            "approval_response",
+            Some(&ask.id),
+            Some(&ask.conversation_id),
+            None,
+            None,
+            Some(r#"{"choice":"yes"}"#),
+        )
+        .unwrap();
+
+        let pending = empty_pending_asks();
+        let resp = wait_via_server(&s, &pending, "alice", &ask.id, 1).await;
+        match resp {
+            crate::ipc::ServerMsg::WaitResult {
+                status,
+                choice,
+                reason,
+                ..
+            } => {
+                assert_eq!(status, "replied");
+                assert_eq!(choice, "yes");
+                assert_eq!(reason, "可以");
+            }
+            other => panic!("预期 WaitResult， got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_wait_timeout() {
+        let s = storage();
+        s.register_participant(None, "alice", "agent", "A", "terminal", "{}", "", "agent")
+            .unwrap();
+        s.register_participant(None, "bob", "human", "B", "terminal", "{}", "", "human")
+            .unwrap();
+
+        let ask = s
+            .send_message(
+                "alice",
+                &["bob".into()],
+                "重启服务?",
+                "approval_request",
+                None,
+                None,
+                None,
+                None,
+                Some(r#"{"choices":["yes","no"]}"#),
+            )
+            .unwrap();
+
+        let pending = empty_pending_asks();
+        let resp = wait_via_server(&s, &pending, "alice", &ask.id, 0).await;
+        match resp {
+            crate::ipc::ServerMsg::WaitResult { status, timed_out, .. } => {
+                assert_eq!(status, "timed_out");
+                assert!(timed_out);
+            }
+            other => panic!("预期 WaitResult timed_out， got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_multiple_waiters_for_same_ask() {
+        let s = Arc::new(storage());
+        s.register_participant(None, "alice", "agent", "A", "terminal", "{}", "", "agent")
+            .unwrap();
+        s.register_participant(None, "bob", "human", "B", "terminal", "{}", "", "human")
+            .unwrap();
+
+        let ask = s
+            .send_message(
+                "alice",
+                &["bob".into()],
+                "重启?",
+                "approval_request",
+                None,
+                None,
+                None,
+                None,
+                Some(r#"{"choices":["yes","no"]}"#),
+            )
+            .unwrap();
+
+        let pending = empty_pending_asks();
+        let pending2 = pending.clone();
+        let pending3 = pending.clone();
+        let s2 = s.clone();
+        let s3 = s.clone();
+        let ask_id = ask.id.clone();
+        let ask_id2 = ask_id.clone();
+
+        let h1 = tokio::spawn(async move {
+            wait_via_server(&s2, &pending2, "alice", &ask_id, 5).await
+        });
+        let h2 = tokio::spawn(async move {
+            wait_via_server(&s3, &pending3, "alice", &ask_id2, 5).await
+        });
+
+        // 让两个 Wait 都完成注册
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let reply_resp = reply_via_server(&s, &pending, "bob", &ask.id, "yes", "ok").await;
+        assert!(matches!(reply_resp, crate::ipc::ServerMsg::Ok { .. }));
+
+        for h in [h1, h2] {
+            match h.await.unwrap() {
+                crate::ipc::ServerMsg::WaitResult {
+                    status,
+                    choice,
+                    reason,
+                    ..
+                } => {
+                    assert_eq!(status, "replied");
+                    assert_eq!(choice, "yes");
+                    assert_eq!(reason, "ok");
+                }
+                other => panic!("预期 WaitResult， got {:?}", other),
+            }
+        }
     }
 }

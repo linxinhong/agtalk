@@ -39,6 +39,8 @@ enum Commands {
     Human(HumanCommand),
     #[command(about = "向 Agent 发送任务或回复")]
     Agent(AgentCommand),
+    #[command(about = "回复审批请求")]
+    Reply(ReplyCommand),
     #[command(about = "加入本地通信网络")]
     Join(JoinCommand),
     #[command(about = "离开本地通信网络")]
@@ -51,6 +53,8 @@ enum Commands {
     Inbox(InboxArgs),
     #[command(about = "查看消息详情")]
     Detail(DetailArgs),
+    #[command(about = "等待审批结果")]
+    Wait(WaitArgs),
     #[command(about = "查看附件全文")]
     Attachment(AttachmentArgs),
     #[command(about = "查看对话列表")]
@@ -96,6 +100,14 @@ struct AgentCommand {
 }
 
 #[derive(Debug, Args)]
+struct ReplyCommand {
+    msg_id: String,
+    choice: String,
+    #[arg(short = 'r', long = "reason", help = "附带说明")]
+    reason: Option<String>,
+}
+
+#[derive(Debug, Args)]
 struct JoinCommand {
     name: String,
     #[arg(long = "intro", help = "Agent 自我介绍")]
@@ -132,6 +144,13 @@ pub fn print_help() {
         help::cmd(
             "agtalk agent <消息> [选项]",
             "最常用：给 Agent 发任务 / 回复（AI 见 --agent-help）"
+        )
+    );
+    anstream::println!(
+        "{}",
+        help::cmd(
+            "agtalk reply <msg-id> <choice>",
+            "回复审批请求（-r/--reason 附加说明）"
         )
     );
     anstream::println!();
@@ -186,6 +205,7 @@ pub fn print_help() {
     anstream::println!("{}", help::opt("--action-required", "仅显示需要回应的消息"));
     anstream::println!("{}", help::opt("--all", "显示全部消息（包括已完成）"));
     anstream::println!("{}", help::cmd("detail <msg-id>", "查看消息详情"));
+    anstream::println!("{}", help::cmd("wait <msg-id> [--timeout <秒>] [--output json]", "等待审批结果"));
     anstream::println!("{}", help::cmd("attachment <att-id>", "查看附件全文"));
     anstream::println!("{}", help::cmd("chats", "查看对话列表"));
     anstream::println!();
@@ -277,6 +297,7 @@ pub fn dispatch(argv: &[String]) {
             }
             rt.block_on(handle_agent(args))
         }
+        Commands::Reply(cmd) => rt.block_on(handle_reply(&cmd)),
         Commands::Join(cmd) => {
             let args = JoinArgs {
                 name: cmd.name,
@@ -292,6 +313,7 @@ pub fn dispatch(argv: &[String]) {
         Commands::Peers(args) => rt.block_on(handle_peers(&args)),
         Commands::Inbox(args) => rt.block_on(handle_inbox(&args)),
         Commands::Detail(args) => rt.block_on(handle_detail(&args)),
+        Commands::Wait(args) => rt.block_on(handle_wait(&args)),
         Commands::Attachment(args) => rt.block_on(handle_attachment(&args)),
         Commands::Chats => rt.block_on(handle_chats()),
         Commands::Config(args) => rt.block_on(handle_config(&args)),
@@ -368,6 +390,15 @@ struct PeersArgs {
 #[derive(Debug, clap::Args)]
 struct DetailArgs {
     msg_id: String,
+}
+
+#[derive(Debug, clap::Args)]
+struct WaitArgs {
+    msg_id: String,
+    #[arg(short = 't', long = "timeout", default_value = "300", help = "最长等待秒数")]
+    timeout: u64,
+    #[arg(long = "output", default_value = "text", help = "输出格式：text / json")]
+    output: String,
 }
 
 #[derive(Debug, clap::Args)]
@@ -604,7 +635,8 @@ fn print_ask_result(json: &str) {
             }
         }
         Some("ask_timeout") => {
-            println!("[超时] 未在规定时间内收到人类回复");
+            let msg_id = v.get("msg_id").and_then(|m| m.as_str()).unwrap_or("?");
+            println!("[超时] 未在规定时间内收到人类回复: {}", msg_id);
         }
         _ => {
             if let Some(choice) = v
@@ -1134,6 +1166,16 @@ async fn handle_agent(args: AgentArgs) -> Result<()> {
     anyhow::bail!("agtalk agent 缺少消息正文")
 }
 
+async fn handle_reply(args: &ReplyCommand) -> Result<()> {
+    let identity = identity::resolve_identity(None)?;
+    let mut cli =
+        Client::connect_and_auth(&identity.socket, &identity.session_id, &identity.token).await?;
+    let reason = args.reason.clone().unwrap_or_default();
+    let resp = cli.reply(&args.msg_id, &args.choice, &reason).await?;
+    println!("{}", serde_json::to_string_pretty(&resp)?);
+    Ok(())
+}
+
 /// 校验 -f 指定的文件并构建 SendAttachment 列表。
 fn build_send_attachments(paths: &[String]) -> Result<Vec<crate::ipc::SendAttachment>> {
     let mut attachments = Vec::with_capacity(paths.len());
@@ -1256,6 +1298,45 @@ async fn handle_detail(args: &DetailArgs) -> Result<()> {
     let resp = cli.detail(&msg_id).await?;
     println!("{}", serde_json::to_string_pretty(&resp)?);
     Ok(())
+}
+
+async fn handle_wait(args: &WaitArgs) -> Result<()> {
+    let identity = identity::resolve_identity(None)?;
+    let mut cli =
+        Client::connect_and_auth(&identity.socket, &identity.session_id, &identity.token).await?;
+    let resp = cli.wait(&args.msg_id, args.timeout).await?;
+    let output_json = args.output == "json";
+    match resp {
+        ServerMsg::WaitResult {
+            msg_id,
+            status,
+            choice,
+            reason,
+            timed_out,
+        } => {
+            if output_json {
+                let json = serde_json::json!({
+                    "type": "wait_result",
+                    "msg_id": msg_id,
+                    "status": status,
+                    "choice": choice,
+                    "reason": reason,
+                    "timed_out": timed_out,
+                });
+                println!("{}", serde_json::to_string_pretty(&json)?);
+            } else if timed_out || status == "timed_out" {
+                println!("[超时] 未在规定时间内收到人类回复: {}", msg_id);
+            } else {
+                println!("[已回复] {}: {}", msg_id, choice);
+                if !reason.is_empty() {
+                    println!("[原因] {}", reason);
+                }
+            }
+            Ok(())
+        }
+        ServerMsg::Error { code, message } => Err(anyhow!("等待失败 [{}]: {}", code, message)),
+        other => Err(anyhow!("等待返回异常: {:?}", other)),
+    }
 }
 
 async fn resolve_detail_dash(cli: &mut Client, participant_name: &str) -> Result<String> {
