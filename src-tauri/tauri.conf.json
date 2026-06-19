@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.agtalk.app",
   "build": {
-    "frontendDist": "../dist",
+    "frontendDist": "/Users/linxinhong/projects/agtalk-office/dist",
     "devUrl": "http://localhost:1421",
     "beforeDevCommand": "pnpm dev",
     "beforeBuildCommand": "pnpm build"

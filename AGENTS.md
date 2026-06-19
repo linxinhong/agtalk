@@ -55,6 +55,9 @@ pnpm install                # Install frontend dependencies
 pnpm dev                    # Vite dev server (localhost:1421)
 pnpm build                  # Production frontend build (vue-tsc + vite)
 cargo clippy                # Lint Rust code
+make release                # Build frontend + release binary
+make deploy                 # Build release binary and copy to ~/.local/bin/agtalk
+pnpm deploy                 # Same as `make deploy`
 ```
 
 Daemon must be running for CLI/GUI commands that talk to it:
@@ -94,7 +97,7 @@ CLI command reference (`human` / `agent` / `join` / `peers` / `chats` / `inbox` 
 
 Three-process model (same pattern as AskHuman):
 
-1. **Daemon** (`agtalk __daemon`): Unix socket IPC server. Manages SQLite (`~/.config/agtalk2/talk.db`), participant registry, message routing, transport dispatch.
+1. **Daemon** (`agtalk __daemon`): Unix socket IPC server. Manages SQLite (`~/.config/agtalk/agtalk.db`), participant registry, message routing, transport dispatch.
 2. **CLI** (`agtalk <subcommand>`): Thin IPC client connecting to daemon socket.
 3. **GUI** (`agtalk gui`): Tauri window with Vue 3 frontend. Connects to daemon via Tauri commands.
 

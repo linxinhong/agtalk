@@ -8,14 +8,20 @@
 //!   agtalk __daemon           → 隐藏入口：daemon 进程（由 daemon start spawn）
 
 mod cli;
-mod paths;
 mod commands;
+mod config;
+mod identity;
 mod ipc;
+mod join_plugin;
+mod notify;
+mod paths;
 mod server;
+mod session;
 mod storage;
-mod transport;
 #[cfg(test)]
 mod tests;
+mod transport;
+mod workspace;
 
 use std::sync::Arc;
 
@@ -34,6 +40,12 @@ fn main() {
         return;
     }
 
+    // 审批弹窗模式（由 daemon 的 PopupTransport spawn）
+    if argv.len() >= 3 && argv[1] == "__popup" {
+        agtalk_app::run_popup(argv[2].clone());
+        return;
+    }
+
     // 分发到 CLI
     cli::dispatch::dispatch(&argv);
 }
@@ -41,8 +53,7 @@ fn main() {
 fn run_daemon() {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -58,18 +69,21 @@ fn run_daemon() {
         .build()
         .expect("无法创建 tokio runtime");
 
-    let storage = Arc::new(storage::Storage::open().expect("无法打开数据库"));
-
+    let config = Arc::new(config::AgConfig::load().unwrap_or_default());
+    let storage =
+        Arc::new(storage::Storage::open_with_config(config.clone()).expect("无法打开数据库"));
     let mut registry = transport::TransportRegistry::new();
     registry.register(Arc::new(transport::TerminalTransport::new()));
     registry.register(Arc::new(transport::PopupTransport::new()));
     let transports = Arc::new(registry);
 
+    let notify_plugins = Arc::new(notify::NotifyPluginRegistry::from_config(&config.notify));
+
     let socket = paths::socket_path();
 
     tracing::info!("daemon 启动: {}", socket);
     rt.block_on(async {
-        if let Err(e) = server::run(&socket, storage, transports).await {
+        if let Err(e) = server::run(&socket, storage, transports, notify_plugins).await {
             tracing::error!("daemon 异常退出: {}", e);
         }
     });

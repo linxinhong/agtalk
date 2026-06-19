@@ -1,7 +1,13 @@
 // Tauri IPC 封装：调用 Rust 后端 commands，与 daemon 通信
 
 import { invoke } from "@tauri-apps/api/core";
-import type { Conversation, Message, Participant, ServerResponse } from "./types";
+import type {
+  Attachment,
+  Conversation,
+  Message,
+  Participant,
+  ServerResponse,
+} from "./types";
 
 function parseResponse<T>(json: string): T {
   const resp: ServerResponse = JSON.parse(json);
@@ -33,6 +39,17 @@ export async function getMessages(
   return parseResponse<Message[]>(json);
 }
 
+export async function getMessage(msgId: string): Promise<Message> {
+  const json = await invoke<string>("get_message", { msgId });
+  return parseResponse<Message>(json);
+}
+
+export async function getAttachmentContent(attachmentId: string): Promise<string> {
+  const json = await invoke<string>("get_attachment", { attachmentId });
+  const data = parseResponse<{ attachment: Attachment; content: string }>(json);
+  return data.content;
+}
+
 export async function sendMessage(
   to: string,
   body: string,
@@ -43,7 +60,8 @@ export async function sendMessage(
 ): Promise<Message> {
   const json = await invoke<string>("send_message", {
     payload: {
-      to, body,
+      to,
+      body,
       conversation_id: conversationId,
       reply_to: replyTo,
       content_type: contentType,

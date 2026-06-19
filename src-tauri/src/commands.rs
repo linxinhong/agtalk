@@ -4,7 +4,6 @@ use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-
 #[allow(dead_code)]
 async fn daemon_request(req: &str) -> Result<String, String> {
     let path = crate::paths::socket_path();
@@ -14,11 +13,17 @@ async fn daemon_request(req: &str) -> Result<String, String> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
 
-    writer.write_all(req.as_bytes()).await.map_err(|e| e.to_string())?;
+    writer
+        .write_all(req.as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
     writer.flush().await.map_err(|e| e.to_string())?;
 
     let mut line = String::new();
-    reader.read_line(&mut line).await.map_err(|e| e.to_string())?;
+    reader
+        .read_line(&mut line)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(line)
 }
 
@@ -49,6 +54,20 @@ pub async fn get_messages(
     daemon_request(&request_json(&msg)).await
 }
 
+#[tauri::command]
+#[allow(dead_code)]
+pub async fn get_message(msg_id: String) -> Result<String, String> {
+    let msg = crate::ipc::ClientMsg::GetMessage { msg_id };
+    daemon_request(&request_json(&msg)).await
+}
+
+#[tauri::command]
+#[allow(dead_code)]
+pub async fn get_attachment(attachment_id: String) -> Result<String, String> {
+    let msg = crate::ipc::ClientMsg::Attachment { attachment_id };
+    daemon_request(&request_json(&msg)).await
+}
+
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 pub struct SendPayload {
@@ -70,7 +89,7 @@ pub struct SendPayload {
 #[allow(dead_code)]
 pub async fn send_message(payload: SendPayload) -> Result<String, String> {
     let msg = crate::ipc::ClientMsg::Send {
-        sender: payload.sender.unwrap_or_else(|| "me".into()),
+        sender: Some(payload.sender.unwrap_or_else(|| "me".into())),
         to: payload.to,
         body: payload.body,
         conversation_id: payload.conversation_id,
@@ -78,6 +97,9 @@ pub async fn send_message(payload: SendPayload) -> Result<String, String> {
         correlation_id: payload.correlation_id,
         content_type: payload.content_type.unwrap_or_else(|| "text".into()),
         metadata: None,
+        notify: false,
+        send_enter: None,
+        attachments: vec![],
     };
     daemon_request(&request_json(&msg)).await
 }
@@ -85,14 +107,23 @@ pub async fn send_message(payload: SendPayload) -> Result<String, String> {
 #[tauri::command]
 #[allow(dead_code)]
 pub async fn mark_done(msg_id: String, participant: String) -> Result<String, String> {
-    let msg = crate::ipc::ClientMsg::Done { sender: "gui".into(), msg_id, participant };
+    let msg = crate::ipc::ClientMsg::Done {
+        sender: Some("gui".into()),
+        msg_id,
+        participant,
+        attachments: vec![],
+    };
     daemon_request(&request_json(&msg)).await
 }
 
 #[tauri::command]
 #[allow(dead_code)]
 pub async fn mark_read(msg_id: String, participant: String) -> Result<String, String> {
-    let msg = crate::ipc::ClientMsg::Read { sender: "gui".into(), msg_id, participant };
+    let msg = crate::ipc::ClientMsg::Read {
+        sender: Some("gui".into()),
+        msg_id,
+        participant,
+    };
     daemon_request(&request_json(&msg)).await
 }
 
@@ -112,12 +143,22 @@ pub async fn ping_daemon() -> Result<String, String> {
 
 #[tauri::command]
 #[allow(dead_code)]
-pub async fn reply(msg_id: String, choice: String, reason: Option<String>) -> Result<String, String> {
+pub async fn reply(
+    msg_id: String,
+    choice: String,
+    reason: Option<String>,
+) -> Result<String, String> {
     let msg = crate::ipc::ClientMsg::Reply {
-        sender: "me".into(),
+        sender: Some("me".into()),
         msg_id,
         choice,
         reason: reason.unwrap_or_default(),
     };
     daemon_request(&request_json(&msg)).await
+}
+
+#[tauri::command]
+#[allow(dead_code)]
+pub fn get_popup_focus() -> Option<String> {
+    std::env::var("AGTALK_POPUP_MSG_ID").ok()
 }

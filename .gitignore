@@ -7,13 +7,19 @@
 
 # Local agtalk runtime state
 /.agtalk2/
+/.agtalk/
 *.db
 *.db-wal
 *.db-shm
+bootstrap.token
+*.token
+daemon.sock
+daemon.pid
 
 # Logs and local environment
 *.log
-.env.local
+.env*
+!.env.example
 
 # OS and editor files
 .DS_Store

@@ -8,9 +8,35 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
+    /// 连接认证：客户端连接后应首先发送，daemon 校验 session_id + token
+    Auth { session_id: String, token: String },
+    /// 加入 workspace 并创建 session
+    Join {
+        workspace_root: String,
+        workspace_name: String,
+        name: String,
+        #[serde(default)]
+        role: String,
+        #[serde(default)]
+        intro: String,
+        #[serde(default = "default_transport")]
+        transport: String,
+        #[serde(default)]
+        notify_config: serde_json::Value,
+        #[serde(default)]
+        runtime_config: serde_json::Value,
+        #[serde(default)]
+        capabilities: Vec<String>,
+    },
+    /// 离开当前 session
+    Leave {
+        #[serde(default)]
+        session_id: Option<String>,
+    },
     /// 发送消息
     Send {
-        sender: String,
+        #[serde(default)]
+        sender: Option<String>,
         to: String,
         body: String,
         #[serde(default)]
@@ -23,21 +49,33 @@ pub enum ClientMsg {
         content_type: String,
         #[serde(default)]
         metadata: Option<serde_json::Value>,
+        #[serde(default)]
+        notify: bool,
+        #[serde(default)]
+        send_enter: Option<bool>,
+        #[serde(default)]
+        attachments: Vec<SendAttachment>,
     },
     /// 获取收件箱（某参与者的消息列表）
     Inbox {
-        sender: String,
+        #[serde(default)]
+        sender: Option<String>,
         participant: String,
         #[serde(default)]
         status: Option<String>,
         #[serde(default = "default_limit")]
         limit: u32,
+        #[serde(default)]
+        peek: bool,
     },
     /// 标记消息完成
     Done {
-        sender: String,
+        #[serde(default)]
+        sender: Option<String>,
         msg_id: String,
         participant: String,
+        #[serde(default)]
+        attachments: Vec<SendAttachment>,
     },
     /// 注册参与者
     Register {
@@ -71,6 +109,12 @@ pub enum ClientMsg {
         #[serde(default)]
         before: Option<String>,
     },
+    /// 按 id 获取单条消息（审批弹窗用）
+    GetMessage { msg_id: String },
+    /// 查看消息详情（自动标记已读）
+    Detail { msg_id: String },
+    /// 读取附件全文（自动标记已读）
+    Attachment { attachment_id: String },
     /// 获取参与者信息
     WhoAmI,
     /// 创建对话
@@ -81,7 +125,8 @@ pub enum ClientMsg {
     },
     /// 标记消息已读
     Read {
-        sender: String,
+        #[serde(default)]
+        sender: Option<String>,
         msg_id: String,
         participant: String,
     },
@@ -91,7 +136,8 @@ pub enum ClientMsg {
     // ── v0.2 Human-in-the-loop ────────────────
     /// 发起阻塞式审批请求：CLI 会一直等到人类回复或超时
     Ask {
-        sender: String,
+        #[serde(default)]
+        sender: Option<String>,
         to: String,
         body: String,
         choices: Vec<String>,
@@ -100,7 +146,8 @@ pub enum ClientMsg {
     },
     /// 回复审批请求
     Reply {
-        sender: String,
+        #[serde(default)]
+        sender: Option<String>,
         msg_id: String,
         choice: String,
         #[serde(default)]
@@ -118,10 +165,7 @@ pub enum ServerMsg {
         data: serde_json::Value,
     },
     /// 错误响应
-    Error {
-        code: String,
-        message: String,
-    },
+    Error { code: String, message: String },
     /// 事件推送（如新消息通知）
     Event {
         event: String,
@@ -138,13 +182,23 @@ pub enum ServerMsg {
         reason: String,
     },
     /// 审批请求超时
-    AskTimeout {
-        msg_id: String,
-    },
+    AskTimeout { msg_id: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SendAttachment {
+    pub path: String,
+    pub filename: String,
+    pub content_type: String,
+    pub size: usize,
 }
 
 fn default_content_type() -> String {
     "text".to_string()
+}
+
+fn default_transport() -> String {
+    "terminal".to_string()
 }
 
 fn default_limit() -> u32 {

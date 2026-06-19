@@ -12,6 +12,12 @@ path = "src/main.rs"
 name = "agtalk_app"
 path = "src/lib.rs"
 
+[features]
+# 直接 cargo build（不经 tauri CLI）必须启用：否则 tauri build.rs 判定 dev=true，
+# 二进制连 devUrl(localhost) 而非内嵌 dist，导致 GUI 白屏。daemon spawn 的弹窗同理。
+# `pnpm tauri dev` 不启用此特性，仍走 dev server 热重载。
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -34,3 +40,5 @@ clap = { version = "4", features = ["derive"] }
 anstream = "0.6"
 anstyle = "1"
 comfy-table = "7"
+unicode-width = "0.1"
+chrono = { version = "0.4", features = ["serde"] }

@@ -34,9 +34,17 @@ pub struct TransportRegistry {
     transports: Vec<Arc<dyn Transport>>,
 }
 
+impl Default for TransportRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TransportRegistry {
     pub fn new() -> Self {
-        Self { transports: Vec::new() }
+        Self {
+            transports: Vec::new(),
+        }
     }
 
     pub fn register(&mut self, transport: Arc<dyn Transport>) {
@@ -50,6 +58,12 @@ impl TransportRegistry {
 
 /// 终端传输：通过 Zellij/Tmux write-chars 投递消息到目标 pane
 pub struct TerminalTransport;
+
+impl Default for TerminalTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl TerminalTransport {
     pub fn new() -> Self {
@@ -102,6 +116,12 @@ impl Transport for TerminalTransport {
 /// 弹窗传输：触发桌面弹窗通知人类用户
 pub struct PopupTransport;
 
+impl Default for PopupTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PopupTransport {
     pub fn new() -> Self {
         Self
@@ -121,13 +141,27 @@ impl Transport for PopupTransport {
         body: &str,
         _transport_config: &str,
     ) -> Result<()> {
-        // TODO: 通过 daemon → GUI 的 IPC 事件推送弹窗通知
-        tracing::info!(
-            "[popup] deliver msg={} from={} body_len={}",
-            &msg_id[..8.min(msg_id.len())],
-            from,
-            body.len()
-        );
+        // 启动独立审批弹窗进程（agtalk __popup <msg_id>）
+        let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("agtalk"));
+        match std::process::Command::new(&exe)
+            .arg("__popup")
+            .arg(msg_id)
+            .spawn()
+        {
+            Ok(child) => tracing::info!(
+                "[popup] 已启动审批窗口 msg={} from={} pid={}",
+                &msg_id[..8.min(msg_id.len())],
+                from,
+                child.id()
+            ),
+            Err(e) => tracing::error!(
+                "[popup] 启动审批窗口失败 msg={} from={}: {}",
+                &msg_id[..8.min(msg_id.len())],
+                from,
+                e
+            ),
+        }
+        let _ = body;
         Ok(())
     }
 

@@ -3,6 +3,7 @@ import { ref, onMounted, onUnmounted, nextTick } from "vue";
 import {
   listConversations,
   getMessages,
+  getAttachmentContent,
   sendMessage,
   markDone,
   replyApproval,
@@ -17,6 +18,7 @@ const activeConvId = ref<string | null>(null);
 const loading = ref(false);
 const replyText = ref("");
 const currentParticipant = ref("me");
+const expandedBodies = ref<Record<string, string>>({});
 
 let pollTimer: number | undefined;
 
@@ -133,13 +135,28 @@ function repliedChoice(msg: Message): string {
   }
 }
 
+async function expandFullBody(msg: Message) {
+  if (msg.full_body) {
+    expandedBodies.value[msg.id] = msg.full_body;
+    return;
+  }
+  const fullBodyAttachment = msg.attachments.find((a) => a.role === "full_body");
+  if (fullBodyAttachment) {
+    try {
+      expandedBodies.value[msg.id] = await getAttachmentContent(fullBodyAttachment.id);
+    } catch (e) {
+      console.error("加载全文失败:", e);
+    }
+  }
+}
+
 function scrollToBottom() {
   const el = document.querySelector(".message-list");
   if (el) el.scrollTop = el.scrollHeight;
 }
 
-function formatTime(ts: number): string {
-  const d = new Date(ts * 1000);
+function formatTime(ts: string): string {
+  const d = new Date(ts);
   return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
 }
 
@@ -219,7 +236,16 @@ function handleKeydown(e: KeyboardEvent) {
             </div>
 
             <!-- 普通消息 -->
-            <div v-else class="msg-body">{{ msg.body }}</div>
+            <div v-else class="msg-body">
+              <pre style="white-space: pre-wrap; word-break: break-word; margin: 0; font-family: inherit;">{{ expandedBodies[msg.id] || msg.body }}</pre>
+              <button
+                v-if="msg.attachments.some((a) => a.role === 'full_body') && !expandedBodies[msg.id]"
+                @click="expandFullBody(msg)"
+                class="expand-btn"
+              >
+                查看全文
+              </button>
+            </div>
 
             <div class="msg-time">
               {{ formatTime(msg.created_at) }}

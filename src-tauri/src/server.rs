@@ -1,7 +1,8 @@
 //! Unix domain socket IPC 服务器：接受 CLI/GUI 连接，处理 ClientMsg，返回 ServerMsg。
 
 use crate::ipc::{self, ClientMsg, ServerMsg};
-use crate::storage::Storage;
+use crate::notify::{self, NotifyContext, NotifyPluginRegistry, NotifyTransportConfig};
+use crate::storage::{SessionInfo, Storage};
 use crate::transport::TransportRegistry;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -12,7 +13,7 @@ use tokio::sync::oneshot;
 
 /// Ask 的返回结果
 #[derive(Debug, Clone)]
-struct AskResult {
+pub(crate) struct AskResult {
     choice: String,
     reason: String,
 }
@@ -24,6 +25,7 @@ pub async fn run(
     socket_path: &str,
     storage: Arc<Storage>,
     transports: Arc<TransportRegistry>,
+    notify_plugins: Arc<NotifyPluginRegistry>,
 ) -> Result<()> {
     let _ = std::fs::remove_file(socket_path);
     if let Some(parent) = std::path::Path::new(socket_path).parent() {
@@ -39,9 +41,12 @@ pub async fn run(
         let (stream, _addr) = listener.accept().await?;
         let storage = storage.clone();
         let transports = transports.clone();
+        let notify_plugins = notify_plugins.clone();
         let pending = pending_asks.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, storage, transports, pending).await {
+            if let Err(e) =
+                handle_connection(stream, storage, transports, notify_plugins, pending).await
+            {
                 tracing::error!("连接处理错误: {}", e);
             }
         });
@@ -52,11 +57,13 @@ async fn handle_connection(
     stream: UnixStream,
     storage: Arc<Storage>,
     transports: Arc<TransportRegistry>,
+    notify_plugins: Arc<NotifyPluginRegistry>,
     pending_asks: PendingAsks,
 ) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
+    let mut session: Option<SessionInfo> = None;
 
     loop {
         line.clear();
@@ -77,56 +84,304 @@ async fn handle_connection(
             }
         };
 
-        let response = handle_msg(msg, &storage, &transports, &pending_asks).await;
-        writer.write_all(ipc::serialize(&response).as_bytes()).await?;
+        let response = handle_msg(
+            msg,
+            &storage,
+            &transports,
+            &notify_plugins,
+            &pending_asks,
+            &mut session,
+        )
+        .await;
+        writer
+            .write_all(ipc::serialize(&response).as_bytes())
+            .await?;
     }
 
     Ok(())
 }
 
-async fn handle_msg(
+fn sender_from(session: &Option<SessionInfo>, explicit: Option<String>) -> String {
+    // 如果客户端显式传了 sender（旧兼容），先用显式的；否则用 session 身份
+    if let Some(s) = explicit.filter(|s| !s.is_empty()) {
+        return s;
+    }
+    session
+        .as_ref()
+        .map(|s| s.participant_name.clone())
+        .unwrap_or_else(|| "me".into())
+}
+
+fn session_id_from(session: &Option<SessionInfo>) -> Option<String> {
+    session.as_ref().map(|s| s.session_id.clone())
+}
+
+fn participant_from(session: &Option<SessionInfo>) -> String {
+    session
+        .as_ref()
+        .map(|s| s.participant_name.clone())
+        .unwrap_or_else(|| "me".into())
+}
+
+/// 执行一次 notify（按 session 级别 notify_config）
+async fn try_notify(
+    storage: &Storage,
+    notify_plugins: &NotifyPluginRegistry,
+    from: &str,
+    to: &str,
+    body: &str,
+    msg_id: &str,
+    send_enter: Option<bool>,
+) -> Result<(), String> {
+    let participant = storage
+        .get_participant_by_name(to)
+        .map_err(|e| format!("查询接收者失败: {}", e))?
+        .ok_or_else(|| format!("接收者不存在: {}", to))?;
+    let session = storage
+        .get_active_session_for_participant(&participant.id)
+        .map_err(|e| format!("查询 active session 失败: {}", e))?
+        .ok_or_else(|| format!("目标 {} 没有 active session", to))?;
+    let notify_cfg_str = session
+        .notify_config
+        .as_deref()
+        .ok_or_else(|| format!("目标 {} 的 session 没有 notify_config", to))?;
+    let notify_cfg: NotifyTransportConfig = serde_json::from_str(notify_cfg_str)
+        .map_err(|e| format!("notify_config 格式错误: {}", e))?;
+    let plugin = notify_plugins
+        .get(&notify_cfg.plugin)
+        .ok_or_else(|| format!("notify 插件未加载: {}", notify_cfg.plugin))?;
+    let effective_send_enter = send_enter.unwrap_or(notify_cfg.send_enter);
+    let ctx = NotifyContext {
+        message_id: msg_id.to_string(),
+        short_message_id: notify::short_id(msg_id),
+        from: from.to_string(),
+        to: to.to_string(),
+        text: body.to_string(),
+        command: "agtalk detail -".to_string(),
+        send_enter: effective_send_enter,
+        endpoint: notify_cfg.endpoint,
+    };
+    plugin.notify(&ctx).await.map_err(|e| e.to_string())
+}
+
+pub(crate) async fn handle_msg(
     msg: ClientMsg,
     storage: &Storage,
     transports: &TransportRegistry,
+    notify_plugins: &NotifyPluginRegistry,
     pending_asks: &PendingAsks,
+    session: &mut Option<SessionInfo>,
 ) -> ServerMsg {
+    // 已认证连接：每次请求刷新 session 活跃时间
+    if let Some(ref s) = session {
+        let _ = storage.touch_session(&s.session_id);
+    }
+
     match msg {
+        // ── 认证 ──────────────────────────────
+        ClientMsg::Auth { session_id, token } => {
+            match storage.validate_session(&session_id, &token) {
+                Ok(Some(info)) => {
+                    *session = Some(info.clone());
+                    let _ = storage.touch_session(&session_id);
+                    let _ = storage.update_participant_status(&info.participant_name, "online");
+                    ServerMsg::Ok {
+                        data: serde_json::to_value(&info).unwrap_or_default(),
+                    }
+                }
+                Ok(None) => ServerMsg::Error {
+                    code: "auth_failed".into(),
+                    message: "session_id 或 token 无效".into(),
+                },
+                Err(e) => ServerMsg::Error {
+                    code: "auth_error".into(),
+                    message: e.to_string(),
+                },
+            }
+        }
+
+        // ── 加入 workspace / 创建 session ─────
+        ClientMsg::Join {
+            workspace_root,
+            workspace_name,
+            name,
+            role,
+            intro,
+            transport,
+            notify_config,
+            runtime_config,
+            capabilities: _,
+        } => {
+            const RESERVED_NAMES: &[&str] = &["me", "human"];
+            if RESERVED_NAMES.contains(&name.to_ascii_lowercase().as_str()) {
+                return ServerMsg::Error {
+                    code: "reserved_name".into(),
+                    message: format!("'{}' 是保留名称，不能注册为 participant", name),
+                };
+            }
+
+            let workspace_id = match storage.register_workspace(&workspace_name, &workspace_root) {
+                Ok(id) => id,
+                Err(e) => {
+                    return ServerMsg::Error {
+                        code: "join_failed".into(),
+                        message: format!("注册 workspace 失败: {}", e),
+                    }
+                }
+            };
+            let notify_config_str = if notify_config.is_null() {
+                None
+            } else {
+                Some(notify_config.to_string())
+            };
+            let runtime_config_str = if runtime_config.is_null() {
+                None
+            } else {
+                Some(runtime_config.to_string())
+            };
+            let participant = match storage.get_participant_by_name(&name) {
+                Ok(Some(p)) => {
+                    // 已存在则更新 role/intro/transport/status
+                    let _ = storage.update_participant_on_join(&name, &role, &intro, &transport);
+                    p
+                }
+                Ok(None) => match storage.register_participant(
+                    Some(&name),
+                    &name,
+                    "agent",
+                    &name,
+                    &transport,
+                    "{}",
+                    &intro,
+                    &role,
+                ) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return ServerMsg::Error {
+                            code: "join_failed".into(),
+                            message: format!("注册 participant 失败: {}", e),
+                        }
+                    }
+                },
+                Err(e) => {
+                    return ServerMsg::Error {
+                        code: "join_failed".into(),
+                        message: format!("查询 participant 失败: {}", e),
+                    }
+                }
+            };
+            let (session_id, token) = match storage.create_session(
+                &workspace_id,
+                &participant.id,
+                notify_config_str.as_deref(),
+                runtime_config_str.as_deref(),
+            ) {
+                Ok(t) => t,
+                Err(e) => {
+                    return ServerMsg::Error {
+                        code: "join_failed".into(),
+                        message: format!("创建 session 失败: {}", e),
+                    }
+                }
+            };
+
+            // 自动认证当前连接为刚创建的 session
+            if let Ok(Some(info)) = storage.validate_session(&session_id, &token) {
+                *session = Some(info.clone());
+            }
+
+            ServerMsg::Ok {
+                data: serde_json::json!({
+                    "workspace_id": workspace_id,
+                    "participant_id": participant.id,
+                    "session_id": session_id,
+                    "token": token,
+                }),
+            }
+        }
+
+        // ── 离开 session ──────────────────────
+        ClientMsg::Leave { session_id } => {
+            let sid = session_id.or_else(|| session.as_ref().map(|s| s.session_id.clone()));
+            match sid {
+                Some(sid) => match storage.mark_session_left(&sid) {
+                    Ok(()) => {
+                        if session
+                            .as_ref()
+                            .map(|s| s.session_id == sid)
+                            .unwrap_or(false)
+                        {
+                            *session = None;
+                        }
+                        ServerMsg::Ok {
+                            data: serde_json::json!({"session_id": sid, "status": "left"}),
+                        }
+                    }
+                    Err(e) => ServerMsg::Error {
+                        code: "leave_failed".into(),
+                        message: e.to_string(),
+                    },
+                },
+                None => ServerMsg::Error {
+                    code: "leave_failed".into(),
+                    message: "未提供 session_id 且当前未认证".into(),
+                },
+            }
+        }
+
         // ── 阻塞式审批请求 ─────────────────────
-        ClientMsg::Ask { sender, to, body, choices, timeout_secs } => {
-            // 写消息到 DB
+        ClientMsg::Ask {
+            sender,
+            to,
+            body,
+            choices,
+            timeout_secs,
+        } => {
+            let sender = sender_from(session, sender);
             let content_json = serde_json::json!({"choices": &choices, "timeout": timeout_secs});
             let content_json_str = content_json.to_string();
             match storage.send_message(
-                &sender, &[to.clone()], &body, "approval_request",
-                None, None, None, None, Some(&content_json_str),
+                &sender,
+                std::slice::from_ref(&to),
+                &body,
+                "approval_request",
+                None,
+                None,
+                None,
+                None,
+                Some(&content_json_str),
             ) {
                 Ok(message) => {
                     let msg_id = message.id.clone();
 
-                    // 创建 oneshot 通道
                     let (tx, rx) = oneshot::channel();
                     {
                         let mut pending = pending_asks.lock().unwrap();
                         pending.insert(msg_id.clone(), tx);
                     }
 
-                    // TODO: 通过 transport 通知人类（弹窗/PopupTransport）
                     if let Ok(Some(p)) = storage.get_participant_by_name(&to) {
                         if let Some(t) = transports.get(&p.transport) {
-                            let _ = t.deliver(&msg_id, &sender, &body, &p.transport_config).await;
+                            let _ = t
+                                .deliver(&msg_id, &sender, &body, &p.transport_config)
+                                .await;
                         }
                     }
 
-                    // 阻塞等待回复或超时
                     let timeout = std::time::Duration::from_secs(timeout_secs);
                     match tokio::time::timeout(timeout, rx).await {
                         Ok(Ok(result)) => {
-                            // 写入回复消息：body 存 reason（备注），metadata 存 choice（所选选项）
                             let response_meta =
                                 serde_json::json!({"choice": &result.choice}).to_string();
                             let _ = storage.send_message(
-                                &to, &[sender.clone()], &result.reason, "approval_response",
-                                Some(&msg_id), Some(&message.conversation_id), None, None,
+                                &to,
+                                std::slice::from_ref(&sender),
+                                &result.reason,
+                                "approval_response",
+                                Some(&msg_id),
+                                Some(&message.conversation_id),
+                                None,
+                                None,
                                 Some(&response_meta),
                             );
                             ServerMsg::AskResponse {
@@ -136,13 +391,11 @@ async fn handle_msg(
                             }
                         }
                         Ok(Err(_)) => {
-                            // sender dropped
                             let mut pending = pending_asks.lock().unwrap();
                             pending.remove(&msg_id);
                             ServerMsg::AskTimeout { msg_id }
                         }
                         Err(_) => {
-                            // 超时
                             let mut pending = pending_asks.lock().unwrap();
                             pending.remove(&msg_id);
                             ServerMsg::AskTimeout { msg_id }
@@ -157,10 +410,38 @@ async fn handle_msg(
         }
 
         // ── 回复审批请求 ────────────────────
-        ClientMsg::Reply { sender: _, msg_id, choice, reason } => {
+        ClientMsg::Reply {
+            sender,
+            msg_id,
+            choice,
+            reason,
+        } => {
+            let sender = sender_from(session, sender);
             let mut pending = pending_asks.lock().unwrap();
             if let Some(tx) = pending.remove(&msg_id) {
-                let _ = tx.send(AskResult { choice: choice.clone(), reason: reason.clone() });
+                let _ = tx.send(AskResult {
+                    choice: choice.clone(),
+                    reason: reason.clone(),
+                });
+                // 同时写入 approval_response 消息
+                if let Ok(Some(original)) = storage.get_message_by_id(
+                    &msg_id,
+                    Some(&sender),
+                    session_id_from(session).as_deref(),
+                ) {
+                    let response_meta = serde_json::json!({"choice": &choice}).to_string();
+                    let _ = storage.send_message(
+                        &sender,
+                        std::slice::from_ref(&original.sender_name),
+                        &reason,
+                        "approval_response",
+                        Some(&msg_id),
+                        Some(&original.conversation_id),
+                        None,
+                        None,
+                        Some(&response_meta),
+                    );
+                }
                 ServerMsg::Ok {
                     data: serde_json::json!({"msg_id": msg_id, "status": "replied"}),
                 }
@@ -173,22 +454,86 @@ async fn handle_msg(
         }
 
         // ── 普通消息 ──────────────────────────
-        ClientMsg::Send { sender, to, body, conversation_id, reply_to, correlation_id, content_type, metadata } => {
+        ClientMsg::Send {
+            sender,
+            to,
+            body,
+            conversation_id,
+            reply_to,
+            correlation_id,
+            content_type,
+            metadata,
+            notify,
+            send_enter,
+            attachments,
+        } => {
+            let sender = sender_from(session, sender);
             let metadata = metadata.map(|v| v.to_string());
-            match storage.send_message(
-                &sender, &[to.clone()], &body, &content_type,
-                reply_to.as_deref(), conversation_id.as_deref(),
-                correlation_id.as_deref(), None, metadata.as_deref(),
+            match storage.send_message_with_attachments(
+                &sender,
+                std::slice::from_ref(&to),
+                &body,
+                &content_type,
+                reply_to.as_deref(),
+                conversation_id.as_deref(),
+                correlation_id.as_deref(),
+                None,
+                metadata.as_deref(),
+                &attachments,
             ) {
                 Ok(message) => {
                     if let Ok(Some(participant)) = storage.get_participant_by_name(&to) {
                         if let Some(transport) = transports.get(&participant.transport) {
-                            let _ = transport.deliver(&message.id, &sender, &body, &participant.transport_config).await;
+                            let _ = transport
+                                .deliver(&message.id, &sender, &body, &participant.transport_config)
+                                .await;
                             let _ = storage.mark_delivered(&message.id, &to);
                         }
                     }
+
+                    // 回复消息时隐式标记原消息为已读
+                    if let Some(ref reply_to_id) = reply_to {
+                        let _ = storage.mark_read(
+                            reply_to_id,
+                            &sender,
+                            session_id_from(session).as_deref(),
+                        );
+                    }
+
+                    // daemon 内执行 notify（按目标 active session 的 notify_config）
+                    let mut notify_status = serde_json::json!({
+                        "attempted": false,
+                        "delivered": false,
+                        "error": serde_json::Value::Null,
+                    });
+                    if notify {
+                        notify_status["attempted"] = serde_json::Value::Bool(true);
+                        match try_notify(
+                            storage,
+                            notify_plugins,
+                            &sender,
+                            &to,
+                            &body,
+                            &message.id,
+                            send_enter,
+                        )
+                        .await
+                        {
+                            Ok(()) => {
+                                notify_status["delivered"] = serde_json::Value::Bool(true);
+                                let _ = storage.mark_delivered(&message.id, &to);
+                            }
+                            Err(e) => {
+                                notify_status["error"] = serde_json::Value::String(e);
+                            }
+                        }
+                    }
+
                     ServerMsg::Ok {
-                        data: serde_json::to_value(&message).unwrap_or_default(),
+                        data: serde_json::json!({
+                            "message": message,
+                            "notify": notify_status,
+                        }),
                     }
                 }
                 Err(e) => ServerMsg::Error {
@@ -198,43 +543,105 @@ async fn handle_msg(
             }
         }
 
-        ClientMsg::Inbox { sender: _, participant, status: _, limit: _ } => {
-            let conversations = storage.list_conversations(Some(&participant)).unwrap_or_default();
-            ServerMsg::Ok {
-                data: serde_json::to_value(&conversations).unwrap_or_default(),
+        ClientMsg::Inbox {
+            sender: _sender,
+            participant,
+            status,
+            limit,
+            peek,
+        } => {
+            match storage.list_inbox(&participant, status.as_deref(), limit) {
+                Ok(items) => {
+                    // 非 peek 时批量标记本次返回的消息为已读
+                    if !peek {
+                        let msg_ids: Vec<String> = items.iter().map(|i| i.id.clone()).collect();
+                        let _ = storage.mark_messages_read(
+                            &msg_ids,
+                            &participant,
+                            session_id_from(session).as_deref(),
+                        );
+                    }
+                    ServerMsg::Ok {
+                        data: serde_json::to_value(&items).unwrap_or_default(),
+                    }
+                }
+                Err(e) => ServerMsg::Error {
+                    code: "inbox_failed".into(),
+                    message: e.to_string(),
+                },
             }
         }
 
-        ClientMsg::Done { sender: _, msg_id, participant } => {
-            match storage.mark_done(&msg_id, &participant) {
-                Ok(()) => ServerMsg::Ok { data: serde_json::json!({"msg_id": msg_id}) },
-                Err(e) => ServerMsg::Error { code: "done_failed".into(), message: e.to_string() },
+        ClientMsg::Done {
+            sender,
+            msg_id,
+            participant,
+            attachments,
+        } => {
+            let _sender = sender_from(session, sender);
+            match storage.mark_done(
+                &msg_id,
+                &participant,
+                session_id_from(session).as_deref(),
+                &attachments,
+            ) {
+                Ok(()) => ServerMsg::Ok {
+                    data: serde_json::json!({"msg_id": msg_id}),
+                },
+                Err(e) => ServerMsg::Error {
+                    code: "done_failed".into(),
+                    message: e.to_string(),
+                },
             }
         }
 
-        ClientMsg::Register { name, participant_type, display_name, transport, transport_config } => {
+        ClientMsg::Register {
+            name,
+            participant_type,
+            display_name,
+            transport,
+            transport_config,
+        } => {
             let tc = transport_config.to_string();
-            match storage.register_participant(&name, &participant_type, &display_name, &transport, &tc) {
+            match storage.register_participant(
+                None,
+                &name,
+                &participant_type,
+                &display_name,
+                &transport,
+                &tc,
+                "",
+                "agent",
+            ) {
                 Ok(p) => ServerMsg::Ok {
                     data: serde_json::to_value(&p).unwrap_or_default(),
                 },
-                Err(e) => ServerMsg::Error { code: "register_failed".into(), message: e.to_string() },
+                Err(e) => ServerMsg::Error {
+                    code: "register_failed".into(),
+                    message: e.to_string(),
+                },
             }
         }
 
-        ClientMsg::Unregister { name } => {
-            match storage.unregister_participant(&name) {
-                Ok(()) => ServerMsg::Ok { data: serde_json::json!({"name": name}) },
-                Err(e) => ServerMsg::Error { code: "unregister_failed".into(), message: e.to_string() },
-            }
-        }
+        ClientMsg::Unregister { name } => match storage.unregister_participant(&name) {
+            Ok(()) => ServerMsg::Ok {
+                data: serde_json::json!({"name": name}),
+            },
+            Err(e) => ServerMsg::Error {
+                code: "unregister_failed".into(),
+                message: e.to_string(),
+            },
+        },
 
         ClientMsg::ListParticipants { participant_type } => {
-            match storage.list_participants(participant_type.as_deref()) {
+            match storage.list_peers(participant_type.as_deref()) {
                 Ok(list) => ServerMsg::Ok {
                     data: serde_json::to_value(&list).unwrap_or_default(),
                 },
-                Err(e) => ServerMsg::Error { code: "list_failed".into(), message: e.to_string() },
+                Err(e) => ServerMsg::Error {
+                    code: "list_failed".into(),
+                    message: e.to_string(),
+                },
             }
         }
 
@@ -243,42 +650,159 @@ async fn handle_msg(
                 Ok(list) => ServerMsg::Ok {
                     data: serde_json::to_value(&list).unwrap_or_default(),
                 },
-                Err(e) => ServerMsg::Error { code: "list_failed".into(), message: e.to_string() },
-            }
-        }
-
-        ClientMsg::GetMessages { conversation_id, limit, before } => {
-            match storage.get_messages(&conversation_id, limit, before.as_deref()) {
-                Ok(list) => ServerMsg::Ok {
-                    data: serde_json::to_value(&list).unwrap_or_default(),
+                Err(e) => ServerMsg::Error {
+                    code: "list_failed".into(),
+                    message: e.to_string(),
                 },
-                Err(e) => ServerMsg::Error { code: "get_messages_failed".into(), message: e.to_string() },
             }
         }
 
-        ClientMsg::Read { sender: _, msg_id, participant } => {
-            match storage.mark_read(&msg_id, &participant) {
-                Ok(()) => ServerMsg::Ok { data: serde_json::json!({"msg_id": msg_id}) },
-                Err(e) => ServerMsg::Error { code: "read_failed".into(), message: e.to_string() },
+        ClientMsg::GetMessages {
+            conversation_id,
+            limit,
+            before,
+        } => {
+            match storage.get_messages(&conversation_id, limit, before.as_deref()) {
+                Ok(mut list) => {
+                    // 进入 chat detail，自动把当前 viewer 的未读消息标为 read
+                    let viewer = participant_from(session);
+                    let session_id = session_id_from(session);
+                    let unread_ids: Vec<String> = list
+                        .iter()
+                        .filter(|m| {
+                            m.sender_name != viewer
+                                && m.recipients.iter().any(|r| {
+                                    r.recipient_name == viewer
+                                        && r.status != "done"
+                                        && r.read_at.is_none()
+                                })
+                        })
+                        .map(|m| m.id.clone())
+                        .collect();
+                    if !unread_ids.is_empty() {
+                        let _ =
+                            storage.mark_messages_read(&unread_ids, &viewer, session_id.as_deref());
+                        // 刷新 recipients 状态以返回最新值
+                        for msg in &mut list {
+                            msg.recipients = match storage.get_recipients_for_msg_by_id(&msg.id) {
+                                Ok(r) => r,
+                                Err(_) => msg.recipients.clone(),
+                            };
+                        }
+                    }
+                    ServerMsg::Ok {
+                        data: serde_json::to_value(&list).unwrap_or_default(),
+                    }
+                }
+                Err(e) => ServerMsg::Error {
+                    code: "get_messages_failed".into(),
+                    message: e.to_string(),
+                },
             }
         }
 
-        ClientMsg::WhoAmI => {
-            ServerMsg::Ok {
-                data: serde_json::json!({
-                    "version": env!("CARGO_PKG_VERSION"),
-                    "socket": crate::paths::socket_path(),
-                    "participant": std::env::var("AGTALK_AGENT_NAME").unwrap_or_else(|_| "me".into()),
-                }),
+        ClientMsg::GetMessage { msg_id } => {
+            let viewer = participant_from(session);
+            match storage.get_message_by_id(
+                &msg_id,
+                Some(&viewer),
+                session_id_from(session).as_deref(),
+            ) {
+                Ok(Some(msg)) => ServerMsg::Ok {
+                    data: serde_json::to_value(&msg).unwrap_or_default(),
+                },
+                Ok(None) => ServerMsg::Error {
+                    code: "not_found".into(),
+                    message: format!("消息不存在: {}", msg_id),
+                },
+                Err(e) => ServerMsg::Error {
+                    code: "get_message_failed".into(),
+                    message: e.to_string(),
+                },
             }
         }
 
-        ClientMsg::CreateConversation { participants, title } => {
-            ServerMsg::Ok { data: serde_json::json!({"participants": participants, "title": title, "status": "created"}) }
+        ClientMsg::Detail { msg_id } => {
+            let viewer = participant_from(session);
+            match storage.get_message_by_id(
+                &msg_id,
+                Some(&viewer),
+                session_id_from(session).as_deref(),
+            ) {
+                Ok(Some(msg)) => ServerMsg::Ok {
+                    data: serde_json::to_value(&msg).unwrap_or_default(),
+                },
+                Ok(None) => ServerMsg::Error {
+                    code: "not_found".into(),
+                    message: format!("消息不存在: {}", msg_id),
+                },
+                Err(e) => ServerMsg::Error {
+                    code: "detail_failed".into(),
+                    message: e.to_string(),
+                },
+            }
         }
 
-        ClientMsg::Ping => {
-            ServerMsg::Ok { data: serde_json::json!({"pong": true}) }
+        ClientMsg::Attachment { attachment_id } => {
+            match storage.get_attachment(
+                &attachment_id,
+                Some(&participant_from(session)),
+                session_id_from(session).as_deref(),
+            ) {
+                Ok(Some((att, data))) => {
+                    let content = String::from_utf8_lossy(&data).to_string();
+                    ServerMsg::Ok {
+                        data: serde_json::json!({
+                            "attachment": att,
+                            "content": content,
+                        }),
+                    }
+                }
+                Ok(None) => ServerMsg::Error {
+                    code: "not_found".into(),
+                    message: format!("附件不存在: {}", attachment_id),
+                },
+                Err(e) => ServerMsg::Error {
+                    code: "attachment_failed".into(),
+                    message: e.to_string(),
+                },
+            }
         }
+
+        ClientMsg::Read {
+            sender,
+            msg_id,
+            participant,
+        } => {
+            let _sender = sender_from(session, sender);
+            match storage.mark_read(&msg_id, &participant, session_id_from(session).as_deref()) {
+                Ok(()) => ServerMsg::Ok {
+                    data: serde_json::json!({"msg_id": msg_id}),
+                },
+                Err(e) => ServerMsg::Error {
+                    code: "read_failed".into(),
+                    message: e.to_string(),
+                },
+            }
+        }
+
+        ClientMsg::WhoAmI => ServerMsg::Ok {
+            data: serde_json::json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "socket": crate::paths::socket_path(),
+                "participant": session.as_ref().map(|s| s.participant_name.clone()).unwrap_or_else(|| "anonymous".into()),
+            }),
+        },
+
+        ClientMsg::CreateConversation {
+            participants,
+            title,
+        } => ServerMsg::Ok {
+            data: serde_json::json!({"participants": participants, "title": title, "status": "created"}),
+        },
+
+        ClientMsg::Ping => ServerMsg::Ok {
+            data: serde_json::json!({"pong": true}),
+        },
     }
 }

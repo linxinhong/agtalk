@@ -29,9 +29,9 @@ daemon 是所有状态的唯一真相来源。CLI 和 GUI 都是薄客户端。
 |------|------|
 | id | 唯一标识 |
 | name | 如 @me, @security-agent, @codex, @reviewer |
-| kind | human / agent / tool / system |
+| type | human / agent / tool / system |
 | transport | terminal / popup / gui / cli / http / process |
-| endpoint | 传输端点 |
+| transport_config | 传输端点配置 |
 | capabilities | 能力标签 |
 | status | online / offline / busy |
 
@@ -54,9 +54,10 @@ daemon 是所有状态的唯一真相来源。CLI 和 GUI 都是薄客户端。
 | 字段 | 说明 |
 |------|------|
 | correlation_id | 关联请求和响应，跨消息追踪 |
-| message_type | text / markdown / event / command / tool_call / tool_result / approval_request / approval_response / artifact / error |
-| content | 文本内容 |
-| content_json | 结构化数据 |
+| content_type | text / markdown / event / command / tool_call / tool_result / approval_request / approval_response / artifact / error |
+| body | 文本内容 |
+| metadata | 结构化数据 |
+| subject | 消息主题（从 metadata 提取，顶层输出） |
 | status | pending / delivered / read / done / failed / expired |
 
 ### Delivery（投递状态）
@@ -98,6 +99,44 @@ Agent A 发起 task → Agent B 接收 → Agent B 返回 result → Agent A 继
 ```
 
 事件流：`task_created → task_assigned → task_progress → task_result → task_done`
+
+## chats vs inbox 分工
+
+`agtalk chats` 和 `agtalk inbox` 有明确的语义分工：
+
+| 命令 | 语义 | 数据结构 | 展示 |
+|------|------|----------|------|
+| `chats` | 浏览历史会话 | `Conversation[]` | 表格（id, kind, participants, unread, last） |
+| `inbox` | 我需要处理什么（待办中心） | `InboxItem[]` | JSON |
+
+### InboxItem 结构
+
+```json
+{
+  "id": "消息ID",
+  "kind": "message|approval|question|task",
+  "priority": "normal|high",
+  "conversation": { "id": "...", "kind": "...", "title": "..." },
+  "message": {
+    "id": "...",
+    "sender": { "id": "...", "name": "...", "kind": "agent|human" },
+    "content_type": "approval_request",
+    "preview": "正文前80字…",
+    "created_at": "2026-06-18T08:30:00.000Z"
+  },
+  "delivery": {
+    "status": "pending|delivered|read|done",
+    "delivered_at": "...",
+    "read_at": "...",
+    "done_at": "..."
+  },
+  "action_required": true
+}
+```
+
+- `priority` 由 `content_type` 自动判定：`approval_request/question/task` → `high`，其余 → `normal`
+- `action_required` 同为上述三类时为 `true`
+- 支持过滤：`--unread`（未读）、`--pending`（仅 pending）、`--action-required`（需操作）、`--all`（所有未完成）
 
 ## MVP 路线
 

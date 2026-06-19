@@ -8,6 +8,10 @@ use tokio::net::UnixStream;
 pub struct Client {
     reader: BufReader<tokio::net::unix::OwnedReadHalf>,
     writer: tokio::net::unix::OwnedWriteHalf,
+    #[allow(dead_code)]
+    session_id: Option<String>,
+    #[allow(dead_code)]
+    token: Option<String>,
 }
 
 impl Client {
@@ -19,7 +23,29 @@ impl Client {
         Ok(Self {
             reader: BufReader::new(reader),
             writer,
+            session_id: None,
+            token: None,
         })
+    }
+
+    pub async fn connect_and_auth(
+        socket_path: &str,
+        session_id: &str,
+        token: &str,
+    ) -> Result<Self> {
+        let mut client = Self::connect(socket_path).await?;
+        let resp = client.auth(session_id, token).await?;
+        match resp {
+            ServerMsg::Ok { .. } => {
+                client.session_id = Some(session_id.to_string());
+                client.token = Some(token.to_string());
+                Ok(client)
+            }
+            ServerMsg::Error { code, message } => {
+                anyhow::bail!("认证失败 [{}]: {}", code, message)
+            }
+            _ => anyhow::bail!("认证返回异常"),
+        }
     }
 
     async fn request(&mut self, msg: &ClientMsg) -> Result<ServerMsg> {
@@ -29,14 +55,55 @@ impl Client {
 
         let mut line = String::new();
         self.reader.read_line(&mut line).await?;
-        crate::ipc::deserialize::<ServerMsg>(&line)
-            .context("无法解析 daemon 响应")
+        crate::ipc::deserialize::<ServerMsg>(&line).context("无法解析 daemon 响应")
+    }
+
+    pub async fn auth(&mut self, session_id: &str, token: &str) -> Result<ServerMsg> {
+        self.request(&ClientMsg::Auth {
+            session_id: session_id.to_string(),
+            token: token.to_string(),
+        })
+        .await
     }
 
     pub async fn ping(&mut self) -> Result<ServerMsg> {
         self.request(&ClientMsg::Ping).await
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub async fn join(
+        &mut self,
+        workspace_root: &str,
+        workspace_name: &str,
+        name: &str,
+        role: &str,
+        intro: &str,
+        transport: &str,
+        notify_config: serde_json::Value,
+        runtime_config: serde_json::Value,
+    ) -> Result<ServerMsg> {
+        self.request(&ClientMsg::Join {
+            workspace_root: workspace_root.to_string(),
+            workspace_name: workspace_name.to_string(),
+            name: name.to_string(),
+            role: role.to_string(),
+            intro: intro.to_string(),
+            transport: transport.to_string(),
+            notify_config,
+            runtime_config,
+            capabilities: vec![],
+        })
+        .await
+    }
+
+    pub async fn leave(&mut self, session_id: Option<&str>) -> Result<ServerMsg> {
+        self.request(&ClientMsg::Leave {
+            session_id: session_id.map(|s| s.to_string()),
+        })
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub async fn send(
         &mut self,
         to: &str,
@@ -46,10 +113,12 @@ impl Client {
         correlation_id: Option<&str>,
         content_type: Option<&str>,
         metadata: Option<serde_json::Value>,
+        notify: bool,
+        send_enter: Option<bool>,
+        attachments: Vec<crate::ipc::SendAttachment>,
     ) -> Result<ServerMsg> {
-        let sender = std::env::var("AGTALK_AGENT_NAME").unwrap_or_else(|_| "anonymous".into());
         self.request(&ClientMsg::Send {
-            sender,
+            sender: None,
             to: to.to_string(),
             body: body.to_string(),
             conversation_id: conversation_id.map(|s| s.to_string()),
@@ -57,7 +126,11 @@ impl Client {
             correlation_id: correlation_id.map(|s| s.to_string()),
             content_type: content_type.unwrap_or("text").to_string(),
             metadata,
-        }).await
+            notify,
+            send_enter,
+            attachments,
+        })
+        .await
     }
 
     pub async fn inbox(
@@ -65,58 +138,59 @@ impl Client {
         participant: &str,
         status: Option<&str>,
         limit: u32,
+        peek: bool,
     ) -> Result<ServerMsg> {
-        let sender = std::env::var("AGTALK_AGENT_NAME").unwrap_or_else(|_| "anonymous".into());
         self.request(&ClientMsg::Inbox {
-            sender,
+            sender: None,
             participant: participant.to_string(),
             status: status.map(|s| s.to_string()),
             limit,
-        }).await
+            peek,
+        })
+        .await
     }
 
-    pub async fn done(&mut self, msg_id: &str, participant: &str) -> Result<ServerMsg> {
-        let sender = std::env::var("AGTALK_AGENT_NAME").unwrap_or_else(|_| "anonymous".into());
+    pub async fn detail(&mut self, msg_id: &str) -> Result<ServerMsg> {
+        self.request(&ClientMsg::Detail {
+            msg_id: msg_id.to_string(),
+        })
+        .await
+    }
+
+    pub async fn attachment(&mut self, attachment_id: &str) -> Result<ServerMsg> {
+        self.request(&ClientMsg::Attachment {
+            attachment_id: attachment_id.to_string(),
+        })
+        .await
+    }
+
+    pub async fn done(
+        &mut self,
+        msg_id: &str,
+        participant: &str,
+        attachments: Vec<crate::ipc::SendAttachment>,
+    ) -> Result<ServerMsg> {
         self.request(&ClientMsg::Done {
-            sender,
+            sender: None,
             msg_id: msg_id.to_string(),
             participant: participant.to_string(),
-        }).await
-    }
-
-    pub async fn register(
-        &mut self,
-        name: &str,
-        participant_type: &str,
-        display_name: &str,
-        transport: &str,
-        transport_config: &str,
-    ) -> Result<ServerMsg> {
-        self.request(&ClientMsg::Register {
-            name: name.to_string(),
-            participant_type: participant_type.to_string(),
-            display_name: display_name.to_string(),
-            transport: transport.to_string(),
-            transport_config: serde_json::from_str(transport_config).unwrap_or_default(),
-        }).await
-    }
-
-    pub async fn unregister(&mut self, name: &str) -> Result<ServerMsg> {
-        self.request(&ClientMsg::Unregister {
-            name: name.to_string(),
-        }).await
+            attachments,
+        })
+        .await
     }
 
     pub async fn list_participants(&mut self, participant_type: Option<&str>) -> Result<ServerMsg> {
         self.request(&ClientMsg::ListParticipants {
             participant_type: participant_type.map(|s| s.to_string()),
-        }).await
+        })
+        .await
     }
 
     pub async fn list_conversations(&mut self, participant: Option<&str>) -> Result<ServerMsg> {
         self.request(&ClientMsg::ListConversations {
             participant: participant.map(|s| s.to_string()),
-        }).await
+        })
+        .await
     }
 
     #[allow(dead_code)]
@@ -130,7 +204,8 @@ impl Client {
             conversation_id: conversation_id.to_string(),
             limit,
             before: before.map(|s| s.to_string()),
-        }).await
+        })
+        .await
     }
 
     pub async fn whoami(&mut self) -> Result<ServerMsg> {
@@ -145,30 +220,24 @@ impl Client {
         choices: &[String],
         timeout_secs: u64,
     ) -> Result<ServerMsg> {
-        let sender = std::env::var("AGTALK_AGENT_NAME").unwrap_or_else(|_| "anonymous".into());
         self.request(&ClientMsg::Ask {
-            sender,
+            sender: None,
             to: to.to_string(),
             body: body.to_string(),
             choices: choices.to_vec(),
             timeout_secs,
-        }).await
+        })
+        .await
     }
 
     #[allow(dead_code)]
-    pub async fn reply(
-        &mut self,
-        msg_id: &str,
-        choice: &str,
-        reason: &str,
-    ) -> Result<ServerMsg> {
-        let sender = std::env::var("AGTALK_AGENT_NAME").unwrap_or_else(|_| "anonymous".into());
+    pub async fn reply(&mut self, msg_id: &str, choice: &str, reason: &str) -> Result<ServerMsg> {
         self.request(&ClientMsg::Reply {
-            sender,
+            sender: None,
             msg_id: msg_id.to_string(),
             choice: choice.to_string(),
             reason: reason.to_string(),
-        }).await
+        })
+        .await
     }
-
 }

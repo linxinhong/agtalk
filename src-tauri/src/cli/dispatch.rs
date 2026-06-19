@@ -1,8 +1,11 @@
 //! CLI 命令分派：agtalk 单一二进制入口。
 
 use super::client::Client;
-use anyhow::{anyhow, Result};
-use clap::{Args, CommandFactory, Parser, Subcommand};
+use super::help;
+use crate::ipc::ServerMsg;
+use crate::{identity, notify, session, workspace};
+use anyhow::{anyhow, Context, Result};
+use clap::{Args, Parser, Subcommand};
 use comfy_table::{presets::UTF8_FULL, Table};
 use serde_json::json;
 use std::process::exit;
@@ -43,11 +46,17 @@ enum Commands {
     #[command(about = "查看 Agent 自己的信息")]
     Me,
     #[command(about = "列出所有在线参与者")]
-    Peers,
-    #[command(about = "查看收件箱")]
-    Inbox,
+    Peers(PeersArgs),
+    #[command(about = "查看待处理消息（待办中心）")]
+    Inbox(InboxArgs),
+    #[command(about = "查看消息详情")]
+    Detail(DetailArgs),
+    #[command(about = "查看附件全文")]
+    Attachment(AttachmentArgs),
     #[command(about = "查看对话列表")]
     Chats,
+    #[command(about = "管理全局配置")]
+    Config(ConfigArgs),
     #[command(about = "初始化环境")]
     Init,
     #[command(about = "打开设置界面")]
@@ -58,7 +67,11 @@ enum Commands {
 
 #[derive(Debug, Args)]
 struct HumanCommand {
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true, help = "消息正文与选项")]
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        help = "消息正文与选项"
+    )]
     args: Vec<String>,
 }
 
@@ -72,8 +85,12 @@ struct AgentCommand {
     reply_to: Option<String>,
     #[arg(short = 'd', long = "done", help = "标记消息已完成")]
     done: Option<String>,
+    #[arg(short = 'f', long = "file", help = "附件路径，可多次使用")]
+    file: Vec<String>,
     #[arg(short = 'i', long = "notify", help = "提醒 Agent 查收消息")]
     notify: bool,
+    #[arg(long = "no-enter", help = "提醒时不自动发送回车")]
+    no_enter: bool,
     #[arg(help = "消息正文")]
     message: Vec<String>,
 }
@@ -83,8 +100,16 @@ struct JoinCommand {
     name: String,
     #[arg(long = "intro", help = "Agent 自我介绍")]
     intro: Option<String>,
-    #[arg(long = "transport", default_value = "terminal", help = "Agent 的通知方式")]
+    #[arg(long = "role", default_value = "agent", help = "Agent 角色")]
+    role: String,
+    #[arg(
+        long = "transport",
+        default_value = "terminal",
+        help = "Agent 的通知方式"
+    )]
     transport: String,
+    #[arg(long = "print-env", help = "只输出 export AGTALK_NAME=...")]
+    print_env: bool,
 }
 
 #[derive(Debug, Args)]
@@ -97,63 +122,105 @@ fn socket_path() -> String {
     crate::paths::socket_path()
 }
 
-fn current_participant_name() -> String {
-    if let Ok(name) = std::env::var("AGTALK_AGENT_NAME") {
-        if !name.trim().is_empty() {
-            return name;
-        }
-    }
-    std::fs::read_to_string(crate::paths::current_participant_path())
-        .map(|s| s.trim().to_string())
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "me".into())
-}
-
-fn write_current_participant(name: &str) -> Result<()> {
-    let path = crate::paths::current_participant_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, name)?;
-    Ok(())
-}
-
-fn remove_current_participant() -> Result<()> {
-    let path = crate::paths::current_participant_path();
-    if path.exists() {
-        std::fs::remove_file(path)?;
-    }
-    Ok(())
-}
-
-#[allow(dead_code)]
 pub fn print_help() {
-    println!("agtalk 0.1.0");
-    println!("Agent 与 Agent，Agent 与人协作的本地通信工具");
-    println!();
-    println!("用法:");
-    println!("  agtalk <命令> [参数]");
-    println!();
-    println!("常用命令:");
-    println!("  agtalk human <消息>               向人类发送消息或提问");
-    println!("  agtalk agent <消息>               向 Agent 发送任务或回复");
-    println!("  agtalk join  <name>              加入本地通信网络");
-    println!("  agtalk inbox                     查看收件箱");
-    println!("  agtalk chats                     查看对话列表");
-    println!("  agtalk peers                     列出所有在线参与者");
-    println!();
-    println!("环境:");
-    println!("  agtalk init                      初始化环境");
-    println!("  agtalk settings                  打开设置界面");
-    println!("  agtalk daemon <action>           管理后台服务：start, stop, restart, status");
-    println!();
-    println!("帮助:");
-    println!("  agtalk --help, -h                显示帮助信息");
-    println!("  agtalk --agent-help              面向 AI 的精简用法");
+    anstream::println!("agtalk 0.1.0 — Agent 与 Agent，Agent 与人协作的本地通信工具");
+    anstream::println!();
+    anstream::println!("{}", help::section("用法"));
+    anstream::println!("{}", help::cmd("agtalk <命令> [参数]", ""));
+    anstream::println!(
+        "{}",
+        help::cmd(
+            "agtalk agent <消息> [选项]",
+            "最常用：给 Agent 发任务 / 回复（AI 见 --agent-help）"
+        )
+    );
+    anstream::println!();
+    anstream::println!("{}", help::section("Agent 对话（发任务 / 回复）"));
+    anstream::println!("{}", help::cmd("agtalk agent <消息> [选项]", ""));
+    anstream::println!("{}", help::opt("-n, --name <name>", "指定目标 Agent"));
+    anstream::println!("{}", help::opt("-s, --subject <标题>", "消息主题"));
+    anstream::println!("{}", help::opt("-r, --reply-to <msg-id>", "回复指定消息"));
+    anstream::println!("{}", help::opt("-d, --done <msg-id>", "标记消息已完成"));
+    anstream::println!("{}", help::opt("-f, --file <path>", "附件路径，可多次添加"));
+    anstream::println!("{}", help::opt("-i, --notify", "提醒 Agent 查收"));
+    anstream::println!();
+    anstream::println!("{}", help::section("人类对话（向人提问 / 收集回应）"));
+    anstream::println!("{}", help::cmd("agtalk human <消息> [选项]", ""));
+    anstream::println!(
+        "{}",
+        help::opt("-q, --question <text>", "提出问题，可多次出现")
+    );
+    anstream::println!("{}", help::opt("-o, --option <text>", "添加预定义回答选项"));
+    anstream::println!(
+        "{}",
+        help::opt("-o!, --option! <text>", "同 -o，并标记为推荐答案")
+    );
+    anstream::println!("{}", help::opt("--single", "单选（默认多选）"));
+    anstream::println!(
+        "{}",
+        help::opt("--select-only", "严格选择：禁用自由文本（每题必须有选项）")
+    );
+    anstream::println!(
+        "{}",
+        help::opt("--output <text|json>", "输出格式（默认 text）")
+    );
+    anstream::println!();
+    anstream::println!("{}", help::section("参与者"));
+    anstream::println!(
+        "{}",
+        help::cmd("join <name> [--intro ... --transport ...]", "加入网络")
+    );
+    anstream::println!(
+        "{}",
+        help::cmd("leave / me / peers", "离开 / 自己信息 / 在线列表")
+    );
+    anstream::println!();
+    anstream::println!("{}", help::section("收件箱与对话"));
+    anstream::println!(
+        "{}",
+        help::cmd("inbox [选项]", "查看待处理消息（待办中心）")
+    );
+    anstream::println!("{}", help::opt("--peek", "只查看，不标记已读"));
+    anstream::println!("{}", help::opt("--unread", "仅显示未读消息"));
+    anstream::println!("{}", help::opt("--pending", "仅显示待处理消息"));
+    anstream::println!("{}", help::opt("--action-required", "仅显示需要回应的消息"));
+    anstream::println!("{}", help::opt("--all", "显示全部消息（包括已完成）"));
+    anstream::println!("{}", help::cmd("detail <msg-id>", "查看消息详情"));
+    anstream::println!("{}", help::cmd("attachment <att-id>", "查看附件全文"));
+    anstream::println!("{}", help::cmd("chats", "查看对话列表"));
+    anstream::println!();
+    anstream::println!("{}", help::section("环境"));
+    anstream::println!("{}", help::cmd("init", "初始化环境"));
+    anstream::println!("{}", help::cmd("settings", "打开 GUI 设置"));
+    anstream::println!(
+        "{}",
+        help::cmd("config <get|set|list> [key] [value]", "管理全局配置")
+    );
+    anstream::println!(
+        "{}",
+        help::cmd("gui", "启动 GUI（开发：pnpm tauri dev -- gui）")
+    );
+    anstream::println!(
+        "{}",
+        help::cmd("daemon <start|stop|restart|status>", "管理后台 daemon")
+    );
+    anstream::println!();
+    anstream::println!("{}", help::section("帮助"));
+    anstream::println!("{}", help::cmd("--agent-help", "面向 AI 的精简提问用法"));
+    anstream::println!("{}", help::cmd("<命令> --help", "子命令详细用法"));
+    anstream::println!("{}", help::cmd("--help, -h", "显示此帮助"));
+    anstream::println!("{}", help::cmd("--version, -V", "显示版本"));
 }
 
 pub fn dispatch(argv: &[String]) {
+    // 顶层 --help / -h / 无参：打印结构化帮助（比 clap 默认更全面）
+    let wants_help =
+        argv.len() < 2 || (argv.len() >= 2 && matches!(argv[1].as_str(), "--help" | "-h"));
+    if wants_help {
+        print_help();
+        return;
+    }
+
     let cli = Cli::try_parse_from(argv).unwrap_or_else(|err| err.exit());
 
     if cli.agent_help {
@@ -162,10 +229,8 @@ pub fn dispatch(argv: &[String]) {
     }
 
     let Some(command) = cli.command else {
-        let mut cmd = Cli::command();
-        let _ = cmd.print_long_help();
-        println!();
-        exit(1);
+        print_help();
+        return;
     };
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -184,7 +249,12 @@ pub fn dispatch(argv: &[String]) {
                 eprintln!("--select-only 要求每题至少有 -o 选项");
                 exit(1);
             }
-            rt.block_on(handle_ask_flow("me", &questions, is_single, select_only, output_json))
+            rt.block_on(handle_ask_flow(
+                &questions,
+                is_single,
+                select_only,
+                output_json,
+            ))
         }
         Commands::Agent(cmd) => {
             let args = AgentArgs {
@@ -193,7 +263,9 @@ pub fn dispatch(argv: &[String]) {
                 subject: cmd.subject,
                 reply_to: cmd.reply_to,
                 done: cmd.done,
+                files: cmd.file,
                 notify: cmd.notify,
+                no_enter: cmd.no_enter,
             };
             if args.done.is_none() && args.name.is_none() {
                 eprintln!("错误: agtalk agent 发送消息需要 -n <name>");
@@ -209,32 +281,29 @@ pub fn dispatch(argv: &[String]) {
             let args = JoinArgs {
                 name: cmd.name,
                 intro: cmd.intro,
+                role: cmd.role,
                 transport: cmd.transport,
+                print_env: cmd.print_env,
             };
             rt.block_on(handle_join(&args))
         }
-        Commands::Leave => rt.block_on(handle_leave()),
+        Commands::Leave => rt.block_on(handle_leave(None)),
         Commands::Me => rt.block_on(handle_me()),
-        Commands::Peers => rt.block_on(handle_peers()),
-        Commands::Inbox => {
-            let p = current_participant_name();
-            rt.block_on(handle_inbox(&p))
-        }
-        Commands::Chats => {
-            let p = current_participant_name();
-            rt.block_on(handle_chats(Some(&p)))
-        }
+        Commands::Peers(args) => rt.block_on(handle_peers(&args)),
+        Commands::Inbox(args) => rt.block_on(handle_inbox(&args)),
+        Commands::Detail(args) => rt.block_on(handle_detail(&args)),
+        Commands::Attachment(args) => rt.block_on(handle_attachment(&args)),
+        Commands::Chats => rt.block_on(handle_chats()),
+        Commands::Config(args) => rt.block_on(handle_config(&args)),
         Commands::Init => rt.block_on(handle_init()),
-        Commands::Settings => {
-            match std::env::current_exe() {
-                Ok(exe) => std::process::Command::new(exe)
-                    .arg("gui")
-                    .spawn()
-                    .map(|_| ())
-                    .map_err(Into::into),
-                Err(e) => Err(e.into()),
-            }
-        }
+        Commands::Settings => match std::env::current_exe() {
+            Ok(exe) => std::process::Command::new(exe)
+                .arg("gui")
+                .spawn()
+                .map(|_| ())
+                .map_err(Into::into),
+            Err(e) => Err(e.into()),
+        },
         Commands::Daemon(cmd) => {
             let args = vec![cmd.action];
             rt.block_on(handle_daemon(&args))
@@ -262,14 +331,56 @@ struct AgentArgs {
     subject: Option<String>,
     reply_to: Option<String>,
     done: Option<String>,
+    files: Vec<String>,
     notify: bool,
+    no_enter: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 struct JoinArgs {
     name: String,
     intro: Option<String>,
+    role: String,
     transport: String,
+    print_env: bool,
+}
+
+#[derive(Debug, clap::Args)]
+struct InboxArgs {
+    #[arg(long, help = "只查看，不标记已读")]
+    peek: bool,
+    #[arg(long)]
+    unread: bool,
+    #[arg(long)]
+    pending: bool,
+    #[arg(long = "action-required")]
+    action_required: bool,
+    #[arg(long)]
+    all: bool,
+}
+
+#[derive(Debug, clap::Args)]
+struct PeersArgs {
+    #[arg(long, short, help = "显示详细排障信息")]
+    verbose: bool,
+}
+
+#[derive(Debug, clap::Args)]
+struct DetailArgs {
+    msg_id: String,
+}
+
+#[derive(Debug, clap::Args)]
+struct AttachmentArgs {
+    attachment_id: String,
+}
+
+#[derive(Debug, clap::Args)]
+struct ConfigArgs {
+    #[arg(value_parser = ["get", "set", "list"])]
+    action: String,
+    key: Option<String>,
+    value: Option<String>,
 }
 
 fn parse_human_args(argv: &[String]) -> (Vec<QuestionArgs>, bool, bool, bool) {
@@ -286,32 +397,51 @@ fn parse_human_args(argv: &[String]) -> (Vec<QuestionArgs>, bool, bool, bool) {
         match arg.as_str() {
             "-q" | "--question" => {
                 saw_question = true;
-                if i + 1 >= argv.len() { break; }
+                if i + 1 >= argv.len() {
+                    break;
+                }
                 i += 1;
-                questions.push(QuestionArgs { message: argv[i].clone(), options: vec![] });
+                questions.push(QuestionArgs {
+                    message: argv[i].clone(),
+                    options: vec![],
+                });
             }
             "-o" | "--option" | "-o!" | "--option!" => {
-                if i + 1 >= argv.len() { break; }
+                if i + 1 >= argv.len() {
+                    break;
+                }
                 i += 1;
                 let recommended = arg.ends_with('!');
                 if questions.is_empty() {
-                    questions.push(QuestionArgs { message: String::new(), options: vec![] });
+                    questions.push(QuestionArgs {
+                        message: String::new(),
+                        options: vec![],
+                    });
                 }
                 if let Some(q) = questions.last_mut() {
                     q.options.push((argv[i].clone(), recommended));
                 }
             }
-            "--single" => { is_single = true; }
-            "--select-only" => { select_only = true; }
+            "--single" => {
+                is_single = true;
+            }
+            "--select-only" => {
+                select_only = true;
+            }
             "--output" => {
-                if i + 1 >= argv.len() { break; }
+                if i + 1 >= argv.len() {
+                    break;
+                }
                 i += 1;
                 output_json = argv[i] == "json";
             }
             _ => {
                 if !saw_question {
-                    if message_text.is_empty() { message_text = arg.clone(); }
-                    else { message_text = format!("{} {}", message_text, arg); }
+                    if message_text.is_empty() {
+                        message_text = arg.clone();
+                    } else {
+                        message_text = format!("{} {}", message_text, arg);
+                    }
                 }
             }
         }
@@ -320,7 +450,10 @@ fn parse_human_args(argv: &[String]) -> (Vec<QuestionArgs>, bool, bool, bool) {
 
     if !message_text.is_empty() && (questions.is_empty() || questions[0].message.is_empty()) {
         if questions.is_empty() {
-            questions.push(QuestionArgs { message: message_text, options: vec![] });
+            questions.push(QuestionArgs {
+                message: message_text,
+                options: vec![],
+            });
         } else {
             questions[0].message = message_text;
         }
@@ -336,17 +469,57 @@ fn parse_agent_args(argv: &[String]) -> Result<AgentArgs> {
     let mut subject = None;
     let mut reply_to = None;
     let mut done = None;
+    let mut files: Vec<String> = Vec::new();
     let mut notify = false;
+    let mut no_enter = false;
 
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
-            "-n" | "--name" => { i += 1; if i >= argv.len() { return Err(anyhow!("--name 缺少参数")); } name = Some(argv[i].clone()); }
-            "-s" | "--subject" => { i += 1; if i >= argv.len() { return Err(anyhow!("--subject 缺少参数")); } subject = Some(argv[i].clone()); }
-            "-r" | "--reply-to" => { i += 1; if i >= argv.len() { return Err(anyhow!("--reply-to 缺少参数")); } reply_to = Some(argv[i].clone()); }
-            "-d" | "--done" => { i += 1; if i >= argv.len() { return Err(anyhow!("--done 缺少参数")); } done = Some(argv[i].clone()); }
-            "-i" | "--notify" => { notify = true; }
-            arg => { message_parts.push(arg.to_string()); }
+            "-n" | "--name" => {
+                i += 1;
+                if i >= argv.len() {
+                    return Err(anyhow!("--name 缺少参数"));
+                }
+                name = Some(argv[i].clone());
+            }
+            "-s" | "--subject" => {
+                i += 1;
+                if i >= argv.len() {
+                    return Err(anyhow!("--subject 缺少参数"));
+                }
+                subject = Some(argv[i].clone());
+            }
+            "-r" | "--reply-to" => {
+                i += 1;
+                if i >= argv.len() {
+                    return Err(anyhow!("--reply-to 缺少参数"));
+                }
+                reply_to = Some(argv[i].clone());
+            }
+            "-d" | "--done" => {
+                i += 1;
+                if i >= argv.len() {
+                    return Err(anyhow!("--done 缺少参数"));
+                }
+                done = Some(argv[i].clone());
+            }
+            "-f" | "--file" => {
+                i += 1;
+                if i >= argv.len() {
+                    return Err(anyhow!("--file 缺少参数"));
+                }
+                files.push(argv[i].clone());
+            }
+            "-i" | "--notify" => {
+                notify = true;
+            }
+            "--no-enter" => {
+                no_enter = true;
+            }
+            arg => {
+                message_parts.push(arg.to_string());
+            }
         }
         i += 1;
     }
@@ -364,7 +537,9 @@ fn parse_agent_args(argv: &[String]) -> Result<AgentArgs> {
         subject,
         reply_to,
         done,
+        files,
         notify,
+        no_enter,
     })
 }
 
@@ -372,50 +547,49 @@ fn parse_agent_args(argv: &[String]) -> Result<AgentArgs> {
 fn parse_join_args(argv: &[String]) -> JoinArgs {
     let name = argv.first().cloned().unwrap_or_default();
     let mut intro = None;
+    let mut role = "agent".to_string();
     let mut transport = "terminal".to_string();
+    let mut print_env = false;
 
     let mut i = 1;
     while i < argv.len() {
         match argv[i].as_str() {
-            "--intro" => { i += 1; if i < argv.len() { intro = Some(argv[i].clone()); } }
-            "--transport" => { i += 1; if i < argv.len() { transport = argv[i].clone(); } }
+            "--intro" => {
+                i += 1;
+                if i < argv.len() {
+                    intro = Some(argv[i].clone());
+                }
+            }
+            "--role" => {
+                i += 1;
+                if i < argv.len() {
+                    role = argv[i].clone();
+                }
+            }
+            "--transport" => {
+                i += 1;
+                if i < argv.len() {
+                    transport = argv[i].clone();
+                }
+            }
+            "--print-env" => {
+                print_env = true;
+            }
             _ => {}
         }
         i += 1;
     }
 
-    JoinArgs { name, intro, transport }
-}
-
-// ── Ask 流程 ─────────────────────────────────────
-
-async fn handle_ask_flow(
-    to: &str, questions: &[QuestionArgs],
-    _is_single: bool, _select_only: bool, output_json: bool,
-) -> Result<()> {
-    let mut cli = Client::connect(&socket_path()).await?;
-
-    for (i, q) in questions.iter().enumerate() {
-        let choices: Vec<String> = q.options.iter().map(|(t, _)| t.clone()).collect();
-        let prefix = if questions.len() > 1 { format!("# Q{}\n", i + 1) } else { String::new() };
-        let body = format!("{}{}", prefix, q.message);
-
-        if output_json {
-            eprintln!("[agtalk] 等待人类回复: {}", q.message);
-        }
-
-        let resp = cli.ask(to, &body, &choices, 300).await?;
-
-        let resp_str = serde_json::to_string_pretty(&resp)?;
-        if output_json {
-            println!("{}", resp_str);
-        } else {
-            print_ask_result(&resp_str);
-        }
+    JoinArgs {
+        name,
+        intro,
+        role,
+        transport,
+        print_env,
     }
-
-    Ok(())
 }
+
+// ── Ask 结果打印 ──────────────────────────────────
 
 fn print_ask_result(json: &str) {
     let v: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
@@ -445,15 +619,104 @@ fn print_ask_result(json: &str) {
 }
 
 fn print_agent_help() {
-    println!("agtalk — Agent 与人类/Agent 通信的本地命令。");
-    println!();
-    println!("常用:");
-    println!("  agtalk human \"是否继续？\" -o approve -o reject --output json");
-    println!("  agtalk agent \"请 review\" -n reviewer -s \"代码评审\"");
-    println!("  agtalk join agent-x --intro \"CLI agent\" --transport terminal");
-    println!("  agtalk inbox");
-    println!("  agtalk chats");
-    println!("  agtalk peers");
+    anstream::println!("agtalk —— 向人类发起提问并收集回应（面向 AI / 自动化）。");
+    anstream::println!();
+    anstream::println!("{}", help::section("调用方式"));
+    anstream::println!(
+        "{}",
+        help::cmd(
+            "agtalk human \"<消息>\" [-q \"<问题>\" [-o \"<选项>\" ...] ...] [--output json]",
+            ""
+        )
+    );
+    anstream::println!();
+    anstream::println!("{}", help::section("参数"));
+    anstream::println!(
+        "{}",
+        help::opt("<消息>", "共享描述（可选；无 -q 时提升为唯一问题）")
+    );
+    anstream::println!(
+        "{}",
+        help::opt("-q, --question <text>", "提出问题，可多次出现")
+    );
+    anstream::println!(
+        "{}",
+        help::opt("-o, --option <text>", "跟随问题后添加预定义选项")
+    );
+    anstream::println!(
+        "{}",
+        help::opt("-o!, --option! <text>", "同 -o，并标记为你的推荐答案")
+    );
+    anstream::println!("{}", help::opt("--single", "单选（默认多选）"));
+    anstream::println!(
+        "{}",
+        help::opt("--select-only", "严格选择：禁用自由文本（每题必须有 -o）")
+    );
+    anstream::println!(
+        "{}",
+        help::opt("--output <text|json>", "输出格式（默认 text）")
+    );
+    anstream::println!();
+    anstream::println!("{}", help::section("人类回应"));
+    anstream::println!(
+        "{}",
+        help::cmd("[已选择] <选项>", "text 格式：用户勾选的选项")
+    );
+    anstream::println!("{}", help::cmd("[原因] <文本>", "若人类附带了说明"));
+    anstream::println!(
+        "{}",
+        help::cmd(
+            "{\"type\":\"ask_response\",...}",
+            "json 格式（--output json）"
+        )
+    );
+    anstream::println!("{}", help::cmd("[超时]", "未在规定时间内收到回复"));
+    anstream::println!();
+    anstream::println!("{}", help::section("多问题"));
+    anstream::println!(
+        "{}",
+        help::cmd("", "每题以「# Qn」前缀分组，逐题阻塞等待回应")
+    );
+    anstream::println!();
+    anstream::println!("{}", help::section("示例"));
+    anstream::println!("  agtalk human \"要继续部署吗？\" -o! 继续 -o 停止");
+    anstream::println!("  agtalk human -q \"部署目标？\" -o staging -o! production --single --select-only --output json");
+    anstream::println!(
+        "  agtalk human -q \"保留日志？\" -o 保留 -o 清除 -q \"开启缓存？\" -o 开 -o 关"
+    );
+    anstream::println!();
+    anstream::println!("{}", help::section("Agent 命名建议"));
+    anstream::println!("  # 推荐格式：<agent-type>-<role>-<随机名称>");
+    anstream::println!("  #   agent-type 可以是 codex、claude、kimi 等你当前运行 agent 的类别");
+    anstream::println!("  #   随机名称可以是 Alex、Bob、Cathy 等便于区分的名字");
+    anstream::println!("  #   例如：codex-coder-Alex、claude-reviewer-Bob、kimi-planner-Cathy");
+    anstream::println!("  # 保留名不能注册：me、human");
+    anstream::println!();
+    anstream::println!("  # 先查看当前有哪些在线 Agent");
+    anstream::println!("  agtalk peers");
+    anstream::println!();
+    anstream::println!("{}", help::section("Agent 间协作（注册 + 对话）"));
+    anstream::println!("  # 给 Agent 发普通消息 / 回复时建议加 -i 提醒对方查收；标记完成不需要 -i");
+    anstream::println!();
+    anstream::println!("  # agent-a 终端：join 后 session 保持 active，后续命令自动识别该身份");
+    anstream::println!("  agtalk join codex-coder-Alex --intro \"代码生成 Agent\" --role coder");
+    anstream::println!("  # 普通消息（带多附件）");
+    anstream::println!("  agtalk agent \"请 review PR #42\" -n claude-reviewer-Bob -s \"代码评审\" -i -f ./src/main.rs -f ./README.md");
+    anstream::println!();
+    anstream::println!("  # agent-b 终端：join 后同样自动识别");
+    anstream::println!("  agtalk join claude-reviewer-Bob --intro \"代码评审 Agent\" --role reviewer");
+    anstream::println!("  agtalk inbox");
+    anstream::println!("  # 回复消息（带附件）");
+    anstream::println!("  agtalk agent \"已通过，可合并\" -n codex-coder-Alex -r <msg-id> -i -f ./result.log");
+    anstream::println!("  # 标记消息完成（带附件，无需 -i）");
+    anstream::println!("  agtalk agent -d <msg-id> -f ./result.log");
+    anstream::println!();
+    anstream::println!("  # 若一个终端有多个 active session，可为命令指定身份");
+    anstream::println!("  AGTALK_NAME=codex-coder-Alex agtalk me");
+    anstream::println!();
+    anstream::println!("  # 列出在线 Agent / 查看自己");
+    anstream::println!("  agtalk peers");
+    anstream::println!("  agtalk me");
 }
 
 fn short_id(id: &str) -> String {
@@ -469,7 +732,7 @@ fn truncate(s: &str, max: usize) -> String {
     out
 }
 
-fn print_peers(resp: &crate::ipc::ServerMsg) -> Result<()> {
+fn print_peers(resp: &crate::ipc::ServerMsg, verbose: bool) -> Result<()> {
     let crate::ipc::ServerMsg::Ok { data } = resp else {
         println!("{}", serde_json::to_string_pretty(resp)?);
         return Ok(());
@@ -479,19 +742,123 @@ fn print_peers(resp: &crate::ipc::ServerMsg) -> Result<()> {
         return Ok(());
     };
 
+    let endpoint_for = |item: &serde_json::Value| -> String {
+        item.get("sessions")
+            .and_then(|v| v.as_array())
+            .map(|sessions| {
+                let mut parts: Vec<String> = sessions
+                    .iter()
+                    .filter_map(|s| {
+                        let notify = s.get("notify_config").and_then(|v| v.as_str())?;
+                        let cfg: serde_json::Value = serde_json::from_str(notify).ok()?;
+                        let plugin = cfg.get("plugin").and_then(|v| v.as_str())?;
+                        let ep = cfg.get("endpoint").and_then(|v| v.as_object())?;
+                        let session = ep.get("session").and_then(|v| v.as_str())?;
+                        let pane_id = ep.get("pane_id").and_then(|v| v.as_str())?;
+                        Some(format!("{}:{}:{}", plugin, session, pane_id))
+                    })
+                    .collect();
+                parts.sort();
+                parts.dedup();
+                if parts.is_empty() {
+                    "-".to_string()
+                } else {
+                    parts.join(", ")
+                }
+            })
+            .unwrap_or_else(|| "-".to_string())
+    };
+
+    let ts_str = |item: &serde_json::Value, key: &str| -> String {
+        item.get(key)
+            .and_then(|v| v.as_f64())
+            .map(format_iso)
+            .unwrap_or_else(|| "-".to_string())
+    };
+
     let mut table = Table::new();
     table.load_preset(UTF8_FULL);
-    table.set_header(vec!["name", "type", "transport", "status"]);
-    for item in items {
-        table.add_row(vec![
-            item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            item.get("type").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            item.get("transport").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            item.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+    if verbose {
+        table.set_header(vec![
+            "#",
+            "name",
+            "type",
+            "role",
+            "endpoint",
+            "load",
+            "last_seen",
+            "last_sent",
+            "last_read",
+            "session_id",
         ]);
+    } else {
+        table.set_header(vec!["#", "name", "role", "intro", "endpoint", "load", "last_seen"]);
+    }
+    for (idx, item) in items.iter().enumerate() {
+        let idx_str = (idx + 1).to_string();
+        let name = item
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let participant_type = item
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let role = item
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let intro = item
+            .get("intro")
+            .and_then(|v| v.as_str())
+            .map(|s| truncate(s, 24))
+            .unwrap_or_default();
+        let endpoint = endpoint_for(item);
+        let unread = item.get("unread").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let pending = item.get("pending").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let load = format!("{}/{}", unread, pending);
+        let last_seen = ts_str(item, "last_seen_at");
+        let last_sent = ts_str(item, "last_sent_at");
+        let last_read = ts_str(item, "last_read_at");
+        let session_id = item
+            .get("sessions")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|s| s.get("session_id").and_then(|v| v.as_str()).map(short_id))
+            .unwrap_or_default();
+
+        if verbose {
+            table.add_row(vec![
+                idx_str,
+                name,
+                participant_type,
+                role,
+                endpoint,
+                load,
+                last_seen,
+                last_sent,
+                last_read,
+                session_id,
+            ]);
+        } else {
+            table.add_row(vec![idx_str, name, role, intro, endpoint, load, last_seen]);
+        }
     }
     anstream::println!("{}", table);
     Ok(())
+}
+
+fn format_iso(ts: f64) -> String {
+    let secs = ts.trunc() as i64;
+    let nanos = ((ts - ts.trunc()) * 1_000_000_000.0) as u32;
+    chrono::DateTime::<chrono::Utc>::from_timestamp(secs, nanos)
+        .unwrap_or_default()
+        .with_timezone(&chrono::Local)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string()
 }
 
 fn print_chats(resp: &crate::ipc::ServerMsg) -> Result<()> {
@@ -506,10 +873,10 @@ fn print_chats(resp: &crate::ipc::ServerMsg) -> Result<()> {
 
     let mut table = Table::new();
     table.load_preset(UTF8_FULL);
-    table.set_header(vec!["id", "kind", "participants", "unread", "last"]);
+    table.set_header(vec!["id", "kind", "peers", "unread", "pending", "last"]);
     for item in items {
-        let participants = item
-            .get("participants")
+        let peers = item
+            .get("peers")
             .and_then(|v| v.as_array())
             .map(|items| {
                 items
@@ -526,12 +893,152 @@ fn print_chats(resp: &crate::ipc::ServerMsg) -> Result<()> {
             .and_then(|v| v.as_str())
             .map(|s| truncate(s, 36))
             .unwrap_or_default();
+        let (unread, pending) = item
+            .get("counts")
+            .and_then(|v| v.as_object())
+            .map(|c| {
+                (
+                    c.get("unread")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0)
+                        .to_string(),
+                    c.get("pending")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0)
+                        .to_string(),
+                )
+            })
+            .unwrap_or_default();
         table.add_row(vec![
-            item.get("id").and_then(|v| v.as_str()).map(short_id).unwrap_or_default(),
-            item.get("kind").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            participants,
-            item.get("unread_count").map(|v| v.to_string()).unwrap_or_default(),
+            item.get("id")
+                .and_then(|v| v.as_str())
+                .map(short_id)
+                .unwrap_or_default(),
+            item.get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            peers,
+            unread,
+            pending,
             last,
+        ]);
+    }
+    anstream::println!("{}", table);
+    Ok(())
+}
+
+fn print_inbox(
+    me_name: &str,
+    stats_resp: &crate::ipc::ServerMsg,
+    resp: &crate::ipc::ServerMsg,
+) -> Result<()> {
+    let crate::ipc::ServerMsg::Ok { data } = resp else {
+        println!("{}", serde_json::to_string_pretty(resp)?);
+        return Ok(());
+    };
+    let Some(items) = data.as_array() else {
+        println!("{}", serde_json::to_string_pretty(resp)?);
+        return Ok(());
+    };
+
+    // 基于 all 状态响应统计消息数量
+    let (total, read) = if let crate::ipc::ServerMsg::Ok { data: stats_data } = stats_resp {
+        if let Some(all_items) = stats_data.as_array() {
+            let total = all_items.len();
+            let read = all_items
+                .iter()
+                .filter(|item| {
+                    item.get("delivery")
+                        .and_then(|v| v.as_object())
+                        .and_then(|d| d.get("status"))
+                        .and_then(|v| v.as_str())
+                        == Some("read")
+                })
+                .count();
+            (total, read)
+        } else {
+            (items.len(), 0)
+        }
+    } else {
+        (items.len(), 0)
+    };
+    let unread = total.saturating_sub(read);
+
+    anstream::println!("me: {}", me_name);
+    anstream::println!("消息统计: 共 {} 条, 已读 {}, 未读 {}", total, read, unread);
+    anstream::println!();
+
+    let mut table = Table::new();
+    table.load_preset(UTF8_FULL);
+    table.set_header(vec![
+        "id", "kind", "priority", "from", "mode", "preview", "status", "actions",
+    ]);
+    for item in items {
+        let from = item
+            .get("from")
+            .and_then(|v| v.as_object())
+            .and_then(|s| s.get("name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let mode = item
+            .get("content")
+            .and_then(|v| v.as_object())
+            .and_then(|c| c.get("mode"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let preview = item
+            .get("content")
+            .and_then(|v| v.as_object())
+            .and_then(|c| c.get("body"))
+            .and_then(|v| v.as_str())
+            .map(|s| truncate(s, 36))
+            .unwrap_or_default();
+        let truncated = item
+            .get("content")
+            .and_then(|v| v.as_object())
+            .and_then(|c| c.get("truncated"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let preview = if truncated && mode != "full" {
+            format!("{}…", preview)
+        } else {
+            preview
+        };
+        let status = item
+            .get("delivery")
+            .and_then(|v| v.as_object())
+            .and_then(|d| d.get("status"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let actions = item
+            .get("actions")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .unwrap_or_default();
+        table.add_row(vec![
+            item.get("id")
+                .and_then(|v| v.as_str())
+                .map(short_id)
+                .unwrap_or_default(),
+            item.get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            item.get("priority")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            from.to_string(),
+            mode.to_string(),
+            preview,
+            status.to_string(),
+            actions,
         ]);
     }
     anstream::println!("{}", table);
@@ -540,92 +1047,549 @@ fn print_chats(resp: &crate::ipc::ServerMsg) -> Result<()> {
 
 // ── 各 handler ────────────────────────────────────
 
-async fn handle_agent(args: AgentArgs) -> Result<()> {
-    if let Some(msg_id) = args.done {
-        let participant = current_participant_name();
-        return handle_done(&msg_id, &participant).await;
+async fn handle_ask_flow(
+    questions: &[QuestionArgs],
+    _is_single: bool,
+    _select_only: bool,
+    output_json: bool,
+) -> Result<()> {
+    let identity = identity::resolve_identity(None)?;
+    let mut cli =
+        Client::connect_and_auth(&identity.socket, &identity.session_id, &identity.token).await?;
+
+    for (i, q) in questions.iter().enumerate() {
+        let choices: Vec<String> = q.options.iter().map(|(t, _)| t.clone()).collect();
+        let prefix = if questions.len() > 1 {
+            format!("# Q{}\n", i + 1)
+        } else {
+            String::new()
+        };
+        let body = format!("{}{}", prefix, q.message);
+
+        if output_json {
+            eprintln!("[agtalk] 等待人类回复: {}", q.message);
+        }
+
+        let resp = cli.ask("me", &body, &choices, 300).await?;
+
+        let resp_str = serde_json::to_string_pretty(&resp)?;
+        if output_json {
+            println!("{}", resp_str);
+        } else {
+            print_ask_result(&resp_str);
+        }
     }
 
-    let to = args.name.ok_or_else(|| anyhow!("agtalk agent 发送消息需要 -n <name>"))?;
-    let metadata = json!({
-        "subject": args.subject,
-        "notify": args.notify,
-    });
-    let mut cli = Client::connect(&socket_path()).await?;
-    let resp = cli.send(
-        &to,
-        &args.message,
-        None,
-        args.reply_to.as_deref(),
-        None,
-        Some("text"),
-        Some(metadata),
-    ).await?;
+    Ok(())
+}
+
+async fn handle_agent(args: AgentArgs) -> Result<()> {
+    let identity = identity::resolve_identity(None)?;
+    let mut cli =
+        Client::connect_and_auth(&identity.socket, &identity.session_id, &identity.token).await?;
+
+    let attachments = build_send_attachments(&args.files)?;
+
+    // 1. 标记完成（-d）
+    if let Some(ref msg_id) = args.done {
+        let resp = cli
+            .done(msg_id, &identity.participant_name, attachments.clone())
+            .await?;
+        println!("{}", serde_json::to_string_pretty(&resp)?);
+    }
+
+    // 2. 发送消息（-n + 正文），notify/send_enter 由 daemon 处理
+    if args.name.is_some() && !args.message.is_empty() {
+        let to = args.name.unwrap();
+        let metadata = json!({
+            "subject": args.subject,
+        });
+        let send_enter = if args.no_enter { Some(false) } else { None };
+        let resp = cli
+            .send(
+                &to,
+                &args.message,
+                None,
+                args.reply_to.as_deref(),
+                None,
+                Some("text"),
+                Some(metadata),
+                args.notify,
+                send_enter,
+                attachments.clone(),
+            )
+            .await?;
+        println!("{}", serde_json::to_string_pretty(&resp)?);
+        return Ok(());
+    }
+
+    // 只有 -d 没有发送消息时已经处理完
+    if args.done.is_some() {
+        return Ok(());
+    }
+
+    if args.name.is_none() {
+        anyhow::bail!("agtalk agent 发送消息需要 -n <name>");
+    }
+    anyhow::bail!("agtalk agent 缺少消息正文")
+}
+
+/// 校验 -f 指定的文件并构建 SendAttachment 列表。
+fn build_send_attachments(paths: &[String]) -> Result<Vec<crate::ipc::SendAttachment>> {
+    let mut attachments = Vec::with_capacity(paths.len());
+    for p in paths {
+        let path = std::path::Path::new(p);
+        if !path.exists() {
+            anyhow::bail!("附件不存在: {}", p);
+        }
+        if !path.is_file() {
+            anyhow::bail!("附件必须是文件: {}", p);
+        }
+        let meta = std::fs::metadata(path)
+            .with_context(|| format!("无法读取附件元数据: {}", p))?;
+        let abs = std::fs::canonicalize(path)
+            .with_context(|| format!("无法解析附件绝对路径: {}", p))?;
+        let filename = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let content_type = infer_content_type(&filename);
+        attachments.push(crate::ipc::SendAttachment {
+            path: abs.to_string_lossy().to_string(),
+            filename,
+            content_type,
+            size: meta.len() as usize,
+        });
+    }
+    Ok(attachments)
+}
+
+fn infer_content_type(filename: &str) -> String {
+    let ext = std::path::Path::new(filename)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    match ext.as_str() {
+        "txt" | "md" | "markdown" => "text/plain",
+        "rs" => "text/rust",
+        "py" => "text/x-python",
+        "js" => "text/javascript",
+        "ts" => "text/typescript",
+        "json" => "application/json",
+        "yaml" | "yml" => "application/yaml",
+        "toml" => "application/toml",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "xml" => "text/xml",
+        "csv" => "text/csv",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "tar" => "application/x-tar",
+        "gz" => "application/gzip",
+        "mp3" => "audio/mpeg",
+        "mp4" => "video/mp4",
+        "wav" => "audio/wav",
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" => "application/vnd.ms-excel",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}
+
+async fn handle_inbox(args: &InboxArgs) -> Result<()> {
+    let identity = identity::resolve_identity(None)?;
+    let mut cli =
+        Client::connect_and_auth(&identity.socket, &identity.session_id, &identity.token).await?;
+    let status = if args.all {
+        Some("all")
+    } else if args.action_required {
+        Some("action_required")
+    } else if args.pending {
+        Some("pending")
+    } else if args.unread {
+        Some("unread")
+    } else {
+        None // default: all non-done items
+    };
+
+    // 获取当前身份名称
+    let me_name = match cli.whoami().await? {
+        crate::ipc::ServerMsg::Ok { data } => data
+            .get("participant")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&identity.participant_name)
+            .to_string(),
+        _ => identity.participant_name.clone(),
+    };
+
+    // 额外 peek 一次 all 状态用于统计，不修改消息状态
+    let stats_resp = cli
+        .inbox(&identity.participant_name, Some("all"), 50, true)
+        .await?;
+
+    let resp = cli
+        .inbox(&identity.participant_name, status, 50, args.peek)
+        .await?;
+    print_inbox(&me_name, &stats_resp, &resp)?;
+    Ok(())
+}
+
+async fn handle_detail(args: &DetailArgs) -> Result<()> {
+    let identity = identity::resolve_identity(None)?;
+    let mut cli =
+        Client::connect_and_auth(&identity.socket, &identity.session_id, &identity.token).await?;
+    let msg_id = if args.msg_id == "-" {
+        resolve_detail_dash(&mut cli, &identity.participant_name).await?
+    } else {
+        args.msg_id.clone()
+    };
+    let resp = cli.detail(&msg_id).await?;
     println!("{}", serde_json::to_string_pretty(&resp)?);
     Ok(())
 }
 
-async fn handle_inbox(participant: &str) -> Result<()> {
-    let mut cli = Client::connect(&socket_path()).await?;
-    let resp = cli.inbox(participant, None, 50).await?;
-    println!("{}", serde_json::to_string_pretty(&resp)?);
+async fn resolve_detail_dash(cli: &mut Client, participant_name: &str) -> Result<String> {
+    if let Some(msg_id) = latest_inbox_id(cli, participant_name, Some("unread")).await? {
+        return Ok(msg_id);
+    }
+    latest_inbox_id(cli, participant_name, Some("all"))
+        .await?
+        .ok_or_else(|| anyhow!("当前 inbox 没有可查看的消息"))
+}
+
+async fn latest_inbox_id(
+    cli: &mut Client,
+    participant_name: &str,
+    status: Option<&str>,
+) -> Result<Option<String>> {
+    match cli.inbox(participant_name, status, 1, true).await? {
+        ServerMsg::Ok { data } => Ok(data
+            .as_array()
+            .and_then(|items| items.first())
+            .and_then(|item| item.get("id"))
+            .and_then(|id| id.as_str())
+            .map(str::to_string)),
+        ServerMsg::Error { code, message } => {
+            Err(anyhow!("查询 inbox 失败: {}: {}", code, message))
+        }
+        other => Err(anyhow!(
+            "查询 inbox 返回异常: {}",
+            serde_json::to_string(&other)?
+        )),
+    }
+}
+
+async fn handle_attachment(args: &AttachmentArgs) -> Result<()> {
+    let identity = identity::resolve_identity(None)?;
+    let mut cli =
+        Client::connect_and_auth(&identity.socket, &identity.session_id, &identity.token).await?;
+    let resp = cli.attachment(&args.attachment_id).await?;
+    let value = match &resp {
+        ServerMsg::Ok { data } => data.clone(),
+        _ => {
+            println!("{}", serde_json::to_string_pretty(&resp)?);
+            return Ok(());
+        }
+    };
+    if let Some(content) = value.get("content").and_then(|v| v.as_str()) {
+        println!("{}", content);
+    } else {
+        println!("{}", serde_json::to_string_pretty(&resp)?);
+    }
+    Ok(())
+}
+
+async fn handle_config(args: &ConfigArgs) -> Result<()> {
+    use crate::config::AgConfig;
+    match args.action.as_str() {
+        "get" => {
+            let key = args
+                .key
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("config get 需要 key"))?;
+            let cfg = AgConfig::load().unwrap_or_default();
+            match cfg.get(key)? {
+                Some(v) => println!("{}", serde_json::to_string_pretty(&v)?),
+                None => println!("null"),
+            }
+        }
+        "set" => {
+            let key = args
+                .key
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("config set 需要 key"))?;
+            let value = args
+                .value
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("config set 需要 value"))?;
+            let mut cfg = AgConfig::load().unwrap_or_default();
+            cfg.set(key, value)?;
+            cfg.save()?;
+            anstream::println!(
+                "{} 已设置 {} = {}",
+                label("OK", anstyle::AnsiColor::Green),
+                key,
+                value
+            );
+            anstream::println!(
+                "{} 重启 daemon 后新阈值生效",
+                label("INFO", anstyle::AnsiColor::Cyan)
+            );
+        }
+        "list" => {
+            let cfg = AgConfig::load().unwrap_or_default();
+            println!("{}", serde_json::to_string_pretty(&cfg)?);
+        }
+        _ => anyhow::bail!("未知 config 操作: {}", args.action),
+    }
     Ok(())
 }
 
 async fn handle_join(args: &JoinArgs) -> Result<()> {
-    let mut cli = Client::connect(&socket_path()).await?;
-    let transport_config = match &args.intro {
-        Some(intro) => json!({"intro": intro}).to_string(),
-        None => "{}".into(),
+    // 1. 确定 workspace root
+    let root = match crate::paths::find_agtalk_root() {
+        Ok(r) => r,
+        Err(_) => {
+            // 自动以当前目录创建 workspace
+            let cwd = std::env::current_dir().map_err(|e| anyhow!("无法获取当前目录: {}", e))?;
+            let agtalk_dir = cwd.join(crate::paths::AGTALK_DIR_NAME);
+            std::fs::create_dir_all(&agtalk_dir)?;
+            cwd
+        }
     };
-    let resp = cli.register(&args.name, "agent", "", &args.transport, &transport_config).await?;
-    write_current_participant(&args.name)?;
-    println!("{}", serde_json::to_string_pretty(&resp)?);
+    let root_str = root.to_string_lossy().to_string();
+    let workspace_name = root
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "workspace".into());
+
+    // 2. 自动捕获 zellij / tmux endpoint 和 runtime 信息
+    let cfg = crate::config::AgConfig::load().unwrap_or_default();
+    let notify_config = if let Some(endpoint) = notify::detect_zellij_endpoint() {
+        notify::build_notify_config("zellij", &endpoint, cfg.notify.default_send_enter)
+    } else if let Some(endpoint) = notify::detect_tmux_endpoint() {
+        notify::build_notify_config("tmux", &endpoint, cfg.notify.default_send_enter)
+    } else {
+        serde_json::json!({})
+    };
+
+    let runtime_kind = if notify::detect_zellij_endpoint().is_some() {
+        "zellij"
+    } else if notify::detect_tmux_endpoint().is_some() {
+        "tmux"
+    } else {
+        "shell"
+    };
+    let shell = std::env::var("SHELL")
+        .ok()
+        .and_then(|s| std::path::Path::new(&s).file_stem().and_then(|s| s.to_str()).map(String::from))
+        .unwrap_or_else(|| "sh".to_string());
+    let term = std::env::var("TERM").unwrap_or_default();
+    let runtime_config = serde_json::json!({
+        "kind": runtime_kind,
+        "shell": shell,
+        "term": term,
+    });
+
+    // 3. 连接 daemon 并请求 join
+    let mut cli = Client::connect(&crate::paths::socket_path()).await?;
+    let resp = cli
+        .join(
+            &root_str,
+            &workspace_name,
+            &args.name,
+            &args.role,
+            args.intro.as_deref().unwrap_or(""),
+            &args.transport,
+            notify_config.clone(),
+            runtime_config.clone(),
+        )
+        .await?;
+
+    // 3. 解析响应
+    let data = match &resp {
+        ServerMsg::Ok { data } => data.clone(),
+        ServerMsg::Error { code, message } => anyhow::bail!("join 失败 [{}]: {}", code, message),
+        _ => anyhow::bail!("join 返回异常"),
+    };
+
+    let workspace_id = data
+        .get("workspace_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let session_id = data
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let token = data
+        .get("token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    // 4. 构造 join 插件上下文（在 session_id/root_str 被 move 之前）
+    let plugin_ctx = crate::join_plugin::JoinContext {
+        name: args.name.clone(),
+        role: args.role.clone(),
+        session_id: session_id.clone(),
+        workspace_root: root_str.clone(),
+    };
+
+    // 5. 写 workspace.json
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut wf = workspace::WorkspaceFile {
+        version: workspace::WORKSPACE_FILE_VERSION,
+        workspace: workspace::WorkspaceMeta {
+            id: workspace_id,
+            name: workspace_name,
+            root: root_str,
+            detected_by: "cwd-scan".into(),
+            created_at: now.clone(),
+            updated_at: now,
+        },
+        daemon: workspace::DaemonMeta {
+            profile: "default".into(),
+            socket: Some(crate::paths::socket_path()),
+        },
+    };
+    workspace::write_workspace(&mut wf)?;
+
+    // 6. 写 session.json (v2)
+    let notify_mirror = if notify_config.is_object()
+        && notify_config
+            .as_object()
+            .map(|m| !m.is_empty())
+            .unwrap_or(false)
+    {
+        Some(notify_config)
+    } else {
+        None
+    };
+    let mut sf = session::SessionFile {
+        version: session::SESSION_FILE_VERSION,
+        name: args.name.clone(),
+        session: session::SessionMeta {
+            id: session_id,
+            token,
+            status: "active".into(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        },
+        runtime: Some(runtime_config),
+        notify: notify_mirror,
+    };
+
+    session::write_session(&args.name, &mut sf)?;
+
+    // 7. 执行 join 生命周期插件（当前进程内，不重试、不影响 join 成功状态）
+    crate::join_plugin::run_all(&crate::join_plugin::default_plugins(), &plugin_ctx).await;
+
+    // 8. 输出
+    if args.print_env {
+        println!("export AGTALK_NAME={}", args.name);
+    } else {
+        anstream::println!(
+            "{} joined as {}",
+            label("OK", anstyle::AnsiColor::Green),
+            args.name
+        );
+        anstream::println!("  workspace: {}", wf.workspace.root);
+        anstream::println!("  session:   {}", sf.session.id);
+        anstream::println!("\nTo use this identity:");
+        anstream::println!("  # 单条命令指定身份：AGTALK_NAME={} agtalk <cmd>", args.name);
+        anstream::println!("  # 单个 active session 时，后续命令会自动使用该身份");
+    }
+
     Ok(())
 }
 
-async fn handle_leave() -> Result<()> {
-    let name = current_participant_name();
-    let mut cli = Client::connect(&socket_path()).await?;
-    let resp = cli.unregister(&name).await?;
-    remove_current_participant()?;
+async fn handle_leave(as_name: Option<&str>) -> Result<()> {
+    let identity = if let Some(name) = as_name {
+        // 读取指定 session
+        let sf = session::read_session(name)?.ok_or_else(|| anyhow!("session 不存在: {}", name))?;
+        let wf = workspace::read_workspace()?.ok_or_else(|| anyhow!("未找到 workspace.json"))?;
+        identity::ResolvedIdentity {
+            workspace_id: wf.workspace.id,
+            participant_name: sf.name,
+            session_id: sf.session.id,
+            token: sf.session.token,
+            socket: wf.daemon.socket.unwrap_or_else(crate::paths::socket_path),
+        }
+    } else {
+        identity::resolve_identity(None)?
+    };
+
+    let mut cli =
+        Client::connect_and_auth(&identity.socket, &identity.session_id, &identity.token).await?;
+    let resp = cli.leave(None).await?;
+
+    // 本地将 session.json 标记为 left
+    if let Ok(Some(mut sf)) = session::read_session(&identity.participant_name) {
+        sf.session.status = "left".into();
+        let _ = session::write_session(&identity.participant_name, &mut sf);
+    }
+
     println!("{}", serde_json::to_string_pretty(&resp)?);
     Ok(())
 }
 
 async fn handle_me() -> Result<()> {
-    let mut cli = Client::connect(&socket_path()).await?;
+    let identity = identity::resolve_identity(None)?;
+    let mut cli =
+        Client::connect_and_auth(&identity.socket, &identity.session_id, &identity.token).await?;
     let resp = cli.whoami().await?;
     println!("{}", serde_json::to_string_pretty(&resp)?);
     Ok(())
 }
 
-async fn handle_peers() -> Result<()> {
-    let mut cli = Client::connect(&socket_path()).await?;
+async fn handle_peers(args: &PeersArgs) -> Result<()> {
+    // peers 不需要认证，任何人都可以查看在线参与者列表
+    let mut cli = Client::connect(&crate::paths::socket_path()).await?;
     let resp = cli.list_participants(None).await?;
-    print_peers(&resp)?;
+    print_peers(&resp, args.verbose)?;
     Ok(())
 }
 
-async fn handle_chats(participant: Option<&str>) -> Result<()> {
-    let mut cli = Client::connect(&socket_path()).await?;
-    let resp = cli.list_conversations(participant).await?;
+async fn handle_chats() -> Result<()> {
+    let identity = identity::resolve_identity(None)?;
+    let mut cli =
+        Client::connect_and_auth(&identity.socket, &identity.session_id, &identity.token).await?;
+    let resp = cli
+        .list_conversations(Some(&identity.participant_name))
+        .await?;
     print_chats(&resp)?;
     Ok(())
 }
 
-async fn handle_done(msg_id: &str, participant: &str) -> Result<()> {
-    let mut cli = Client::connect(&socket_path()).await?;
-    let resp = cli.done(msg_id, participant).await?;
-    println!("{}", serde_json::to_string_pretty(&resp)?);
-    Ok(())
-}
-
 async fn handle_init() -> Result<()> {
-    anstream::println!("{} 初始化 agtalk 环境...", label("INFO", anstyle::AnsiColor::Cyan));
+    anstream::println!(
+        "{} 初始化 agtalk 环境...",
+        label("INFO", anstyle::AnsiColor::Cyan)
+    );
     let dir = crate::paths::config_dir();
     std::fs::create_dir_all(&dir)?;
     println!("  配置目录: {:?}", dir);
+
+    // 生成默认 config.json（如果不存在）
+    let cfg = crate::config::AgConfig::load()?;
+    println!("  配置文件: {:?}", crate::paths::config_json_path());
+
+    // 生成附件目录
+    let attachment_dir = cfg.attachment_dir()?;
+    std::fs::create_dir_all(&attachment_dir)?;
+    println!("  附件目录: {:?}", attachment_dir);
+
     match Client::connect(&socket_path()).await {
         Ok(mut cli) => {
             let _ = cli.ping().await?;
@@ -650,7 +1614,9 @@ async fn handle_daemon(argv: &[String]) -> Result<()> {
                 .stderr(std::process::Stdio::null())
                 .spawn()?;
             for _ in 0..30 {
-                if pid_path.exists() { break; }
+                if pid_path.exists() {
+                    break;
+                }
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
             anstream::println!("{} daemon 已启动", label("OK", anstyle::AnsiColor::Green));
@@ -661,27 +1627,36 @@ async fn handle_daemon(argv: &[String]) -> Result<()> {
                 Ok(pid) => {
                     let pid = pid.trim();
                     let _ = std::process::Command::new("kill")
-                        .arg("-TERM").arg(pid)
+                        .arg("-TERM")
+                        .arg(pid)
                         .status();
                     for _ in 0..30 {
-                        if !pid_path.exists() { break; }
+                        if !pid_path.exists() {
+                            break;
+                        }
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     }
                     let _ = std::fs::remove_file(&pid_path);
                     let _ = std::fs::remove_file(socket_path());
                     anstream::println!("{} daemon 已停止", label("OK", anstyle::AnsiColor::Green));
                 }
-                Err(_) => anstream::println!("{} daemon 未运行（无 PID 文件）", label("WARN", anstyle::AnsiColor::Yellow)),
+                Err(_) => anstream::println!(
+                    "{} daemon 未运行（无 PID 文件）",
+                    label("WARN", anstyle::AnsiColor::Yellow)
+                ),
             }
             Ok(())
         }
         "restart" => {
             if let Ok(pid) = std::fs::read_to_string(&pid_path) {
                 let _ = std::process::Command::new("kill")
-                    .arg("-TERM").arg(pid.trim())
+                    .arg("-TERM")
+                    .arg(pid.trim())
                     .status();
                 for _ in 0..30 {
-                    if !pid_path.exists() { break; }
+                    if !pid_path.exists() {
+                        break;
+                    }
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
             }
@@ -695,7 +1670,9 @@ async fn handle_daemon(argv: &[String]) -> Result<()> {
                 .stderr(std::process::Stdio::null())
                 .spawn()?;
             for _ in 0..30 {
-                if pid_path.exists() { break; }
+                if pid_path.exists() {
+                    break;
+                }
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
             anstream::println!("{} daemon 已重启", label("OK", anstyle::AnsiColor::Green));
@@ -704,19 +1681,33 @@ async fn handle_daemon(argv: &[String]) -> Result<()> {
         "status" => {
             let pid_alive = match std::fs::read_to_string(&pid_path) {
                 Ok(pid) => std::process::Command::new("kill")
-                    .arg("-0").arg(pid.trim())
-                    .status().map(|s| s.success()).unwrap_or(false),
+                    .arg("-0")
+                    .arg(pid.trim())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false),
                 Err(_) => false,
             };
             match Client::connect(&socket_path()).await {
                 Ok(mut cli) => {
                     let _ = cli.ping().await?;
-                    anstream::println!("daemon: {} ({})", label("运行中", anstyle::AnsiColor::Green), crate::paths::socket_path());
+                    anstream::println!(
+                        "daemon: {} ({})",
+                        label("运行中", anstyle::AnsiColor::Green),
+                        crate::paths::socket_path()
+                    );
                 }
                 Err(_) if pid_alive => {
-                    anstream::println!("daemon: {}", label("启动中（PID 存在但未就绪）", anstyle::AnsiColor::Yellow));
+                    anstream::println!(
+                        "daemon: {}",
+                        label("启动中（PID 存在但未就绪）", anstyle::AnsiColor::Yellow)
+                    );
                 }
-                Err(e) => anstream::println!("daemon: {} ({})", label("未运行", anstyle::AnsiColor::Yellow), e),
+                Err(e) => anstream::println!(
+                    "daemon: {} ({})",
+                    label("未运行", anstyle::AnsiColor::Yellow),
+                    e
+                ),
             }
             Ok(())
         }
@@ -737,15 +1728,25 @@ mod tests {
 
     #[test]
     fn parse_human_message_with_options() {
-        let (questions, _, _, output_json) =
-            parse_human_args(&args(&["是否部署？", "-o", "approve", "-o", "reject", "--output", "json"]));
+        let (questions, _, _, output_json) = parse_human_args(&args(&[
+            "是否部署？",
+            "-o",
+            "approve",
+            "-o",
+            "reject",
+            "--output",
+            "json",
+        ]));
         assert!(output_json);
         assert_eq!(questions.len(), 1);
         assert_eq!(questions[0].message, "是否部署？");
-        assert_eq!(questions[0].options, vec![
-            ("approve".to_string(), false),
-            ("reject".to_string(), false),
-        ]);
+        assert_eq!(
+            questions[0].options,
+            vec![
+                ("approve".to_string(), false),
+                ("reject".to_string(), false),
+            ]
+        );
     }
 
     #[test]
@@ -759,23 +1760,37 @@ mod tests {
     #[test]
     fn parse_human_multiple_questions() {
         let (questions, _, _, _) = parse_human_args(&args(&[
-            "-q", "部署环境？", "-o", "staging", "-o!", "production",
-            "-q", "是否清缓存？", "-o", "yes", "-o", "no",
+            "-q",
+            "部署环境？",
+            "-o",
+            "staging",
+            "-o!",
+            "production",
+            "-q",
+            "是否清缓存？",
+            "-o",
+            "yes",
+            "-o",
+            "no",
         ]));
         assert_eq!(questions.len(), 2);
-        assert_eq!(questions[0].options, vec![
-            ("staging".to_string(), false),
-            ("production".to_string(), true),
-        ]);
-        assert_eq!(questions[1].options, vec![
-            ("yes".to_string(), false),
-            ("no".to_string(), false),
-        ]);
+        assert_eq!(
+            questions[0].options,
+            vec![
+                ("staging".to_string(), false),
+                ("production".to_string(), true),
+            ]
+        );
+        assert_eq!(
+            questions[1].options,
+            vec![("yes".to_string(), false), ("no".to_string(), false),]
+        );
     }
 
     #[test]
     fn parse_human_select_only_without_options_keeps_empty_options_for_validation() {
-        let (questions, _, select_only, _) = parse_human_args(&args(&["是否部署？", "--select-only"]));
+        let (questions, _, select_only, _) =
+            parse_human_args(&args(&["是否部署？", "--select-only"]));
         assert!(select_only);
         assert_eq!(questions.len(), 1);
         assert_eq!(questions[0].message, "是否部署？");
@@ -785,8 +1800,17 @@ mod tests {
     #[test]
     fn parse_agent_send() {
         let parsed = parse_agent_args(&args(&[
-            "请", "review", "-n", "reviewer", "-s", "代码评审", "-r", "msg-1", "-i",
-        ])).unwrap();
+            "请",
+            "review",
+            "-n",
+            "reviewer",
+            "-s",
+            "代码评审",
+            "-r",
+            "msg-1",
+            "-i",
+        ]))
+        .unwrap();
         assert_eq!(parsed.message, "请 review");
         assert_eq!(parsed.name.as_deref(), Some("reviewer"));
         assert_eq!(parsed.subject.as_deref(), Some("代码评审"));
@@ -801,8 +1825,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_agent_files() {
+        let parsed = parse_agent_args(&args(&[
+            "请 review",
+            "-n",
+            "reviewer",
+            "-f",
+            "./src/main.rs",
+            "--file",
+            "README.md",
+        ]))
+        .unwrap();
+        assert_eq!(parsed.files, vec!["./src/main.rs", "README.md"]);
+    }
+
+    #[test]
     fn parse_join() {
-        let parsed = parse_join_args(&args(&["agent-x", "--intro", "CLI agent", "--transport", "popup"]));
+        let parsed = parse_join_args(&args(&[
+            "agent-x",
+            "--intro",
+            "CLI agent",
+            "--transport",
+            "popup",
+        ]));
         assert_eq!(parsed.name, "agent-x");
         assert_eq!(parsed.intro.as_deref(), Some("CLI agent"));
         assert_eq!(parsed.transport, "popup");
