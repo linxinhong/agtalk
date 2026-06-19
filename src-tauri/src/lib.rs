@@ -32,6 +32,7 @@ fn run_tauri(mode: GuiMode) {
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             commands::list_conversations,
+            commands::list_inbox,
             commands::get_messages,
             commands::get_message,
             commands::get_attachment,

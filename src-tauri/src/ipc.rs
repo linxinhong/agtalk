@@ -108,13 +108,27 @@ pub enum ClientMsg {
         limit: u32,
         #[serde(default)]
         before: Option<String>,
+        #[serde(default)]
+        participant: Option<String>,
     },
     /// 按 id 获取单条消息（审批弹窗用）
-    GetMessage { msg_id: String },
+    GetMessage {
+        msg_id: String,
+        #[serde(default)]
+        participant: Option<String>,
+    },
     /// 查看消息详情（自动标记已读）
-    Detail { msg_id: String },
+    Detail {
+        msg_id: String,
+        #[serde(default)]
+        participant: Option<String>,
+    },
     /// 读取附件全文（自动标记已读）
-    Attachment { attachment_id: String },
+    Attachment {
+        attachment_id: String,
+        #[serde(default)]
+        participant: Option<String>,
+    },
     /// 获取参与者信息
     WhoAmI,
     /// 创建对话

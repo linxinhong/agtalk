@@ -41,30 +41,59 @@ pub async fn list_conversations(participant: Option<String>) -> Result<String, S
 
 #[tauri::command]
 #[allow(dead_code)]
-pub async fn get_messages(
-    conversation_id: String,
+pub async fn list_inbox(
+    participant: String,
+    status: Option<String>,
     limit: Option<u32>,
-    before: Option<String>,
+    peek: Option<bool>,
 ) -> Result<String, String> {
-    let msg = crate::ipc::ClientMsg::GetMessages {
-        conversation_id,
+    let msg = crate::ipc::ClientMsg::Inbox {
+        sender: Some("gui".into()),
+        participant,
+        status,
         limit: limit.unwrap_or(50),
-        before,
+        peek: peek.unwrap_or(true),
     };
     daemon_request(&request_json(&msg)).await
 }
 
 #[tauri::command]
 #[allow(dead_code)]
-pub async fn get_message(msg_id: String) -> Result<String, String> {
-    let msg = crate::ipc::ClientMsg::GetMessage { msg_id };
+pub async fn get_messages(
+    conversation_id: String,
+    limit: Option<u32>,
+    before: Option<String>,
+    participant: Option<String>,
+) -> Result<String, String> {
+    let msg = crate::ipc::ClientMsg::GetMessages {
+        conversation_id,
+        limit: limit.unwrap_or(50),
+        before,
+        participant,
+    };
     daemon_request(&request_json(&msg)).await
 }
 
 #[tauri::command]
 #[allow(dead_code)]
-pub async fn get_attachment(attachment_id: String) -> Result<String, String> {
-    let msg = crate::ipc::ClientMsg::Attachment { attachment_id };
+pub async fn get_message(
+    msg_id: String,
+    participant: Option<String>,
+) -> Result<String, String> {
+    let msg = crate::ipc::ClientMsg::GetMessage { msg_id, participant };
+    daemon_request(&request_json(&msg)).await
+}
+
+#[tauri::command]
+#[allow(dead_code)]
+pub async fn get_attachment(
+    attachment_id: String,
+    participant: Option<String>,
+) -> Result<String, String> {
+    let msg = crate::ipc::ClientMsg::Attachment {
+        attachment_id,
+        participant,
+    };
     daemon_request(&request_json(&msg)).await
 }
 
@@ -147,9 +176,10 @@ pub async fn reply(
     msg_id: String,
     choice: String,
     reason: Option<String>,
+    sender: Option<String>,
 ) -> Result<String, String> {
     let msg = crate::ipc::ClientMsg::Reply {
-        sender: Some("me".into()),
+        sender: Some(sender.unwrap_or_else(|| "me".into())),
         msg_id,
         choice,
         reason: reason.unwrap_or_default(),

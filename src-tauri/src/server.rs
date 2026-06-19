@@ -122,10 +122,11 @@ fn session_id_from(session: &Option<SessionInfo>) -> Option<String> {
     session.as_ref().map(|s| s.session_id.clone())
 }
 
-fn participant_from(session: &Option<SessionInfo>) -> String {
-    session
-        .as_ref()
-        .map(|s| s.participant_name.clone())
+/// 优先使用客户端显式指定的 viewer，否则回退到 session 身份。
+fn viewer_from(session: &Option<SessionInfo>, explicit: Option<String>) -> String {
+    explicit
+        .filter(|s| !s.is_empty())
+        .or_else(|| session.as_ref().map(|s| s.participant_name.clone()))
         .unwrap_or_else(|| "me".into())
 }
 
@@ -825,11 +826,12 @@ pub(crate) async fn handle_msg(
             conversation_id,
             limit,
             before,
+            participant,
         } => {
             match storage.get_messages(&conversation_id, limit, before.as_deref()) {
                 Ok(mut list) => {
                     // 进入 chat detail，自动把当前 viewer 的未读消息标为 read
-                    let viewer = participant_from(session);
+                    let viewer = viewer_from(session, participant);
                     let session_id = session_id_from(session);
                     let unread_ids: Vec<String> = list
                         .iter()
@@ -865,8 +867,8 @@ pub(crate) async fn handle_msg(
             }
         }
 
-        ClientMsg::GetMessage { msg_id } => {
-            let viewer = participant_from(session);
+        ClientMsg::GetMessage { msg_id, participant } => {
+            let viewer = viewer_from(session, participant);
             match storage.get_message_by_id(
                 &msg_id,
                 Some(&viewer),
@@ -886,8 +888,8 @@ pub(crate) async fn handle_msg(
             }
         }
 
-        ClientMsg::Detail { msg_id } => {
-            let viewer = participant_from(session);
+        ClientMsg::Detail { msg_id, participant } => {
+            let viewer = viewer_from(session, participant);
             match storage.get_message_by_id(
                 &msg_id,
                 Some(&viewer),
@@ -907,10 +909,14 @@ pub(crate) async fn handle_msg(
             }
         }
 
-        ClientMsg::Attachment { attachment_id } => {
+        ClientMsg::Attachment {
+            attachment_id,
+            participant,
+        } => {
+            let viewer = viewer_from(session, participant);
             match storage.get_attachment(
                 &attachment_id,
-                Some(&participant_from(session)),
+                Some(&viewer),
                 session_id_from(session).as_deref(),
             ) {
                 Ok(Some((att, data))) => {

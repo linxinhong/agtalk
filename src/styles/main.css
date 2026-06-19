@@ -1,54 +1,101 @@
 :root {
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+
+  --accent: #0a84ff;
+  --accent-orange: #ff9500;
+  --accent-green: #34c759;
+  --danger: #ff3b30;
+
+  --radius: 8px;
+  --radius-sm: 6px;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+:root,
+.theme-light {
   --bg: #ffffff;
   --bg-sidebar: #f5f5f7;
   --bg-hover: #ebebed;
   --bg-active: #e0e0e2;
-  --bg-bubble-self: #007aff;
+  --bg-bubble-self: #0a84ff;
   --bg-bubble-other: #e9e9eb;
   --text: #1d1d1f;
-  --text-secondary: #86868b;
+  --text-primary: #1d1d1f;
+  --text-secondary: rgba(0, 0, 0, 0.55);
+  --text-tertiary: rgba(0, 0, 0, 0.38);
+  --border: rgba(0, 0, 0, 0.14);
   --text-bubble-self: #ffffff;
-  --border: #d2d2d7;
-  --accent: #007aff;
-  --danger: #ff3b30;
-  --radius: 8px;
-  --shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+
+.theme-dark {
+  --bg: #1e1e1e;
+  --bg-sidebar: #2c2c2e;
+  --bg-hover: #3a3a3c;
+  --bg-active: #48484a;
+  --bg-bubble-self: #0a84ff;
+  --bg-bubble-other: #2c2c2e;
+  --text: #f5f5f7;
+  --text-primary: #f5f5f7;
+  --text-secondary: rgba(255, 255, 255, 0.62);
+  --text-tertiary: rgba(255, 255, 255, 0.4);
+  --border: rgba(255, 255, 255, 0.16);
+  --text-bubble-self: #ffffff;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #1c1c1e;
+  :root:not(.theme-light) {
+    --bg: #1e1e1e;
     --bg-sidebar: #2c2c2e;
     --bg-hover: #3a3a3c;
     --bg-active: #48484a;
     --bg-bubble-self: #0a84ff;
     --bg-bubble-other: #2c2c2e;
     --text: #f5f5f7;
-    --text-secondary: #98989d;
+    --text-primary: #f5f5f7;
+    --text-secondary: rgba(255, 255, 255, 0.62);
+    --text-tertiary: rgba(255, 255, 255, 0.4);
+    --border: rgba(255, 255, 255, 0.16);
     --text-bubble-self: #ffffff;
-    --border: #38383a;
   }
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
-body {
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
-  background: var(--bg);
-  color: var(--text);
+html, body, #app {
+  height: 100%;
+  font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.5;
-  overflow: hidden;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
 }
 
 #app {
   width: 100vw;
   height: 100vh;
-  display: flex;
+  overflow: hidden;
 }
 
-/* 两栏布局 */
-.app-layout {
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+}
+
+.main-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+/* 两栏布局（ConversationView 内部） */
+.conv-layout {
   display: flex;
   width: 100%;
   height: 100%;
@@ -64,9 +111,9 @@ body {
 }
 
 .sidebar-header {
-  padding: 16px;
+  padding: 12px 16px;
   font-weight: 600;
-  font-size: 16px;
+  font-size: 14px;
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
@@ -79,10 +126,10 @@ body {
 }
 
 .conversation-item {
-  padding: 12px 16px;
+  padding: 10px 14px;
   cursor: pointer;
   border-bottom: 1px solid var(--border);
-  transition: background 0.15s;
+  transition: background 0.12s;
 }
 
 .conversation-item:hover { background: var(--bg-hover); }
@@ -94,6 +141,7 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-size: 13px;
 }
 
 .conversation-item .conv-preview {
@@ -125,31 +173,25 @@ body {
 }
 
 /* 消息区 */
-.main-area {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-}
-
 .message-header {
-  padding: 12px 20px;
+  padding: 10px 18px;
   border-bottom: 1px solid var(--border);
   font-weight: 500;
-  font-size: 15px;
+  font-size: 14px;
 }
 
 .message-list {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 20px;
+  padding: 14px 18px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 
 .message-bubble {
   max-width: 70%;
-  padding: 10px 14px;
+  padding: 9px 12px;
   border-radius: var(--radius);
   font-size: 14px;
   line-height: 1.45;
@@ -201,7 +243,7 @@ body {
 
 /* 输入区 */
 .reply-area {
-  padding: 12px 20px;
+  padding: 10px 18px;
   border-top: 1px solid var(--border);
   display: flex;
   gap: 10px;
@@ -209,7 +251,7 @@ body {
 
 .reply-area textarea {
   flex: 1;
-  padding: 10px 14px;
+  padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   resize: none;
@@ -219,17 +261,17 @@ body {
   background: var(--bg);
   color: var(--text);
   outline: none;
-  min-height: 40px;
+  min-height: 38px;
   max-height: 120px;
 }
 
 .reply-area textarea:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(0,122,255,0.15);
+  box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.15);
 }
 
 .reply-area button {
-  padding: 10px 20px;
+  padding: 8px 18px;
   background: var(--accent);
   color: white;
   border: none;
@@ -241,7 +283,7 @@ body {
   white-space: nowrap;
 }
 
-.reply-area button:hover { opacity: 0.85; }
+.reply-area button:hover { opacity: 0.9; }
 .reply-area button:disabled { opacity: 0.4; cursor: default; }
 
 /* 空状态 */
@@ -251,29 +293,31 @@ body {
   align-items: center;
   justify-content: center;
   color: var(--text-secondary);
-  font-size: 15px;
+  font-size: 14px;
 }
 
 /* 设置页 */
 .settings-view {
-  padding: 32px;
+  padding: 24px;
   max-width: 560px;
   margin: 0 auto;
+  overflow-y: auto;
 }
 
 .settings-view h2 {
-  font-size: 20px;
-  margin-bottom: 24px;
+  font-size: 18px;
+  margin-bottom: 20px;
 }
 
 .setting-group {
-  margin-bottom: 24px;
+  margin-bottom: 20px;
 }
 
 .setting-group label {
   display: block;
   font-weight: 500;
   margin-bottom: 6px;
+  font-size: 13px;
 }
 
 .setting-group input,
@@ -287,18 +331,23 @@ body {
   color: var(--text);
 }
 
+.setting-group input:disabled {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+
 /* 审批卡片 */
 .approval-card {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 12px;
+  padding: 10px;
   margin: 4px 0;
 }
 
 .approval-q {
   font-weight: 600;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
   color: var(--text);
 }
 
@@ -309,7 +358,7 @@ body {
 }
 
 .approval-choices button {
-  padding: 6px 16px;
+  padding: 5px 14px;
   border: 1px solid var(--accent);
   border-radius: var(--radius);
   background: var(--accent);
@@ -320,7 +369,7 @@ body {
   transition: opacity 0.15s;
 }
 
-.approval-choices button:hover { opacity: 0.85; }
+.approval-choices button:hover { opacity: 0.9; }
 .approval-choices button:disabled {
   opacity: 0.5;
   cursor: default;
@@ -331,4 +380,20 @@ body {
   color: var(--text-secondary);
   font-style: italic;
   padding-top: 4px;
+}
+
+/* 展开按钮 */
+.expand-btn {
+  margin-top: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.expand-btn:hover {
+  background: var(--bg-hover);
 }

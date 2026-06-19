@@ -153,6 +153,7 @@ impl Client {
     pub async fn detail(&mut self, msg_id: &str) -> Result<ServerMsg> {
         self.request(&ClientMsg::Detail {
             msg_id: msg_id.to_string(),
+            participant: None,
         })
         .await
     }
@@ -160,6 +161,7 @@ impl Client {
     pub async fn attachment(&mut self, attachment_id: &str) -> Result<ServerMsg> {
         self.request(&ClientMsg::Attachment {
             attachment_id: attachment_id.to_string(),
+            participant: None,
         })
         .await
     }
@@ -204,6 +206,7 @@ impl Client {
             conversation_id: conversation_id.to_string(),
             limit,
             before: before.map(|s| s.to_string()),
+            participant: None,
         })
         .await
     }

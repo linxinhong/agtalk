@@ -9,6 +9,7 @@ export interface Participant {
   capabilities: string;
   transport: string;
   transport_config: string;
+  role?: string;
   status: "online" | "offline";
   last_seen_at: string;
   created_at: string;

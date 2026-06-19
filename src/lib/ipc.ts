@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   Attachment,
   Conversation,
+  InboxItem,
   Message,
   Participant,
   ServerResponse,
@@ -26,26 +27,55 @@ export async function listConversations(
   return parseResponse<Conversation[]>(json);
 }
 
+export async function listInbox(
+  participant: string,
+  status?: string | null,
+  limit?: number,
+  peek?: boolean
+): Promise<InboxItem[]> {
+  const json = await invoke<string>("list_inbox", {
+    participant,
+    status: status ?? null,
+    limit: limit ?? null,
+    peek: peek ?? null,
+  });
+  return parseResponse<InboxItem[]>(json);
+}
+
 export async function getMessages(
   conversationId: string,
   limit?: number,
-  before?: string
+  before?: string,
+  participant?: string
 ): Promise<Message[]> {
   const json = await invoke<string>("get_messages", {
     conversationId,
     limit: limit || 50,
     before: before || null,
+    participant: participant || null,
   });
   return parseResponse<Message[]>(json);
 }
 
-export async function getMessage(msgId: string): Promise<Message> {
-  const json = await invoke<string>("get_message", { msgId });
+export async function getMessage(
+  msgId: string,
+  participant?: string
+): Promise<Message> {
+  const json = await invoke<string>("get_message", {
+    msgId,
+    participant: participant || null,
+  });
   return parseResponse<Message>(json);
 }
 
-export async function getAttachmentContent(attachmentId: string): Promise<string> {
-  const json = await invoke<string>("get_attachment", { attachmentId });
+export async function getAttachmentContent(
+  attachmentId: string,
+  participant?: string
+): Promise<string> {
+  const json = await invoke<string>("get_attachment", {
+    attachmentId,
+    participant: participant || null,
+  });
   const data = parseResponse<{ attachment: Attachment; content: string }>(json);
   return data.content;
 }
@@ -115,12 +145,14 @@ export async function pingDaemon(): Promise<boolean> {
 export async function replyApproval(
   msgId: string,
   choice: string,
-  reason?: string
+  reason?: string,
+  sender?: string
 ): Promise<void> {
   const json = await invoke<string>("reply", {
     msgId,
     choice,
     reason: reason ?? null,
+    sender: sender || null,
   });
   parseResponse(json);
 }

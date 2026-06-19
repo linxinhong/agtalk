@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick } from "vue";
+import { ref, onMounted, onUnmounted, nextTick, watch } from "vue";
 import {
   listConversations,
   getMessages,
@@ -10,14 +10,13 @@ import {
 } from "../lib/ipc";
 import type { Conversation, Message } from "../lib/types";
 
-const props = defineProps<{ daemonOnline: boolean }>();
+const props = defineProps<{ daemonOnline: boolean; currentParticipant: string }>();
 
 const conversations = ref<Conversation[]>([]);
 const messages = ref<Message[]>([]);
 const activeConvId = ref<string | null>(null);
 const loading = ref(false);
 const replyText = ref("");
-const currentParticipant = ref("me");
 const expandedBodies = ref<Record<string, string>>({});
 
 let pollTimer: number | undefined;
@@ -38,9 +37,19 @@ onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer);
 });
 
+watch(
+  () => props.currentParticipant,
+  async () => {
+    activeConvId.value = null;
+    messages.value = [];
+    await loadConversations();
+  }
+);
+
 async function loadConversations() {
+  if (!props.currentParticipant) return;
   try {
-    conversations.value = await listConversations("me");
+    conversations.value = await listConversations(props.currentParticipant);
   } catch (e) {
     console.error("加载对话列表失败:", e);
   }
@@ -50,7 +59,7 @@ async function selectConversation(id: string) {
   activeConvId.value = id;
   loading.value = true;
   try {
-    messages.value = await getMessages(id);
+    messages.value = await getMessages(id, 50, undefined, props.currentParticipant);
   } catch (e) {
     console.error("加载消息失败:", e);
     messages.value = [];
@@ -68,12 +77,12 @@ async function handleSend() {
   if (!conv) return;
 
   const other = conv.participants.find(
-    (p) => p !== currentParticipant.value
+    (p) => p !== props.currentParticipant
   ) || conv.participants[0];
 
   replyText.value = "";
   try {
-    await sendMessage(other, text, activeConvId.value, undefined, undefined, currentParticipant.value);
+    await sendMessage(other, text, activeConvId.value, undefined, undefined, props.currentParticipant);
     await selectConversation(activeConvId.value);
     await loadConversations();
   } catch (e) {
@@ -83,7 +92,7 @@ async function handleSend() {
 
 async function handleDone(msgId: string) {
   try {
-    await markDone(msgId, currentParticipant.value);
+    await markDone(msgId, props.currentParticipant);
     if (activeConvId.value) {
       await selectConversation(activeConvId.value);
     }
@@ -95,9 +104,10 @@ async function handleDone(msgId: string) {
 
 async function handleReply(msgId: string, choice: string) {
   try {
-    await replyApproval(msgId, choice);
+    await replyApproval(msgId, choice, undefined, props.currentParticipant);
+    await markDone(msgId, props.currentParticipant);
     if (activeConvId.value) {
-      messages.value = await getMessages(activeConvId.value);
+      messages.value = await getMessages(activeConvId.value, 50, undefined, props.currentParticipant);
     }
     await loadConversations();
   } catch (e) {
@@ -143,7 +153,7 @@ async function expandFullBody(msg: Message) {
   const fullBodyAttachment = msg.attachments.find((a) => a.role === "full_body");
   if (fullBodyAttachment) {
     try {
-      expandedBodies.value[msg.id] = await getAttachmentContent(fullBodyAttachment.id);
+      expandedBodies.value[msg.id] = await getAttachmentContent(fullBodyAttachment.id, props.currentParticipant);
     } catch (e) {
       console.error("加载全文失败:", e);
     }
@@ -169,7 +179,7 @@ function handleKeydown(e: KeyboardEvent) {
 </script>
 
 <template>
-  <div class="app-layout">
+  <div class="conv-layout">
     <!-- 对话列表 -->
     <aside class="sidebar">
       <div class="sidebar-header">

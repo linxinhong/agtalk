@@ -1978,4 +1978,154 @@ mod tests {
             }
         }
     }
+
+    #[tokio::test]
+    async fn test_inbox_peek_does_not_mark_read() {
+        let s = storage();
+        s.register_participant(None, "alice", "agent", "A", "terminal", "{}", "", "agent")
+            .unwrap();
+        s.register_participant(None, "bob", "human", "B", "terminal", "{}", "", "human")
+            .unwrap();
+
+        let pending = empty_pending_asks();
+        let transports = TransportRegistry::new();
+        let notify = NotifyPluginRegistry::new();
+        let mut session: Option<crate::storage::SessionInfo> = None;
+
+        async fn call_inbox(
+            storage: &Storage,
+            pending: &crate::server::PendingAsks,
+            transports: &TransportRegistry,
+            notify: &NotifyPluginRegistry,
+            session: &mut Option<crate::storage::SessionInfo>,
+            participant: &str,
+            peek: bool,
+        ) {
+            let resp = handle_msg(
+                ClientMsg::Inbox {
+                    sender: Some("gui".into()),
+                    participant: participant.to_string(),
+                    status: None,
+                    limit: 50,
+                    peek,
+                },
+                storage,
+                transports,
+                notify,
+                pending,
+                session,
+            )
+            .await;
+            assert!(matches!(resp, crate::ipc::ServerMsg::Ok { .. }));
+        }
+
+        let msg_id = s
+            .send_message("alice", &["bob".into()], "hi", "text", None, None, None, None, None)
+            .unwrap()
+            .id;
+
+        // peek=true 不应改变未读状态
+        call_inbox(&s, &pending, &transports, &notify, &mut session, "bob", true).await;
+        let status = s
+            .get_recipients_for_msg_by_id(&msg_id)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.recipient_name == "bob")
+            .map(|r| r.status)
+            .unwrap_or_default();
+        assert_eq!(status, "pending");
+
+        // peek=false 才会标已读
+        call_inbox(&s, &pending, &transports, &notify, &mut session, "bob", false).await;
+        let status = s
+            .get_recipients_for_msg_by_id(&msg_id)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.recipient_name == "bob")
+            .map(|r| r.status)
+            .unwrap_or_default();
+        assert_eq!(status, "read");
+    }
+
+    #[tokio::test]
+    async fn test_get_messages_with_explicit_participant_marks_only_that_viewer() {
+        let s = storage();
+        s.register_participant(None, "alice", "agent", "A", "terminal", "{}", "", "agent")
+            .unwrap();
+        s.register_participant(None, "bob", "human", "B", "terminal", "{}", "", "human")
+            .unwrap();
+
+        let msg = s
+            .send_message("alice", &["bob".into()], "hi", "text", None, None, None, None, None)
+            .unwrap();
+
+        let pending = empty_pending_asks();
+        let transports = TransportRegistry::new();
+        let notify = NotifyPluginRegistry::new();
+        let mut session: Option<crate::storage::SessionInfo> = None;
+
+        // 以 bob 身份请求 messages
+        let resp = handle_msg(
+            ClientMsg::GetMessages {
+                conversation_id: msg.conversation_id.clone(),
+                limit: 50,
+                before: None,
+                participant: Some("bob".into()),
+            },
+            &s,
+            &transports,
+            &notify,
+            &pending,
+            &mut session,
+        )
+        .await;
+
+        assert!(matches!(resp, crate::ipc::ServerMsg::Ok { .. }));
+
+        let recipients = s.get_recipients_for_msg_by_id(&msg.id).unwrap();
+        let bob = recipients.iter().find(|r| r.recipient_name == "bob").unwrap();
+        assert_eq!(bob.status, "read");
+    }
+
+    #[test]
+    fn test_approval_request_mark_done_excludes_from_inbox() {
+        let s = storage();
+        s.register_participant(None, "alice", "agent", "A", "terminal", "{}", "", "agent")
+            .unwrap();
+        s.register_participant(None, "bob", "human", "B", "terminal", "{}", "", "human")
+            .unwrap();
+
+        let ask = s
+            .send_message(
+                "alice",
+                &["bob".into()],
+                "ok?",
+                "approval_request",
+                None,
+                None,
+                None,
+                None,
+                Some(r#"{"choices":["yes","no"]}"#),
+            )
+            .unwrap();
+
+        assert_eq!(s.list_inbox("bob", None, 50).unwrap().len(), 1);
+
+        // 模拟人类回复后再把原请求标记完成
+        s.send_message(
+            "bob",
+            &["alice".into()],
+            "yes",
+            "approval_response",
+            Some(&ask.id),
+            Some(&ask.conversation_id),
+            None,
+            None,
+            Some(r#"{"choice":"yes"}"#),
+        )
+        .unwrap();
+        s.mark_done(&ask.id, "bob", None, &[]).unwrap();
+
+        assert!(s.list_inbox("bob", None, 50).unwrap().is_empty());
+    }
 }
