@@ -118,7 +118,7 @@ pub struct SendPayload {
 #[allow(dead_code)]
 pub async fn send_message(payload: SendPayload) -> Result<String, String> {
     let msg = crate::ipc::ClientMsg::Send {
-        sender: Some(payload.sender.unwrap_or_else(|| "me".into())),
+        sender: Some(payload.sender.unwrap_or_else(|| "human".into())),
         to: payload.to,
         body: payload.body,
         conversation_id: payload.conversation_id,
@@ -179,7 +179,7 @@ pub async fn reply(
     sender: Option<String>,
 ) -> Result<String, String> {
     let msg = crate::ipc::ClientMsg::Reply {
-        sender: Some(sender.unwrap_or_else(|| "me".into())),
+        sender: Some(sender.unwrap_or_else(|| "human".into())),
         msg_id,
         choice,
         reason: reason.unwrap_or_default(),

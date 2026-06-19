@@ -11,9 +11,14 @@ const loading = ref(true);
 const error = ref("");
 const submitting = ref(false);
 
+const HUMAN_PARTICIPANT = "human";
+
 onMounted(async () => {
   try {
-    msg.value = await getMessage(props.msgId);
+    if (!props.msgId) {
+      throw new Error("缺少审批消息 ID");
+    }
+    msg.value = await getMessage(props.msgId, HUMAN_PARTICIPANT);
   } catch (e) {
     error.value = String(e);
   }
@@ -34,7 +39,7 @@ async function handleReply(choice: string) {
   submitting.value = true;
   error.value = "";
   try {
-    await replyApproval(props.msgId, choice);
+    await replyApproval(props.msgId, choice, undefined, HUMAN_PARTICIPANT);
     await getCurrentWindow().close();
   } catch (e) {
     error.value = `审批失败: ${e}`;
@@ -58,6 +63,7 @@ async function handleReply(choice: string) {
           @click="handleReply(c)"
         >{{ c }}</button>
       </div>
+      <div v-if="parseChoices(msg).length === 0" class="state error">无可用选项，请检查消息元数据</div>
     </template>
   </div>
 </template>

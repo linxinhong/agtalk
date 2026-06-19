@@ -115,7 +115,7 @@ fn sender_from(session: &Option<SessionInfo>, explicit: Option<String>) -> Strin
     session
         .as_ref()
         .map(|s| s.participant_name.clone())
-        .unwrap_or_else(|| "me".into())
+        .unwrap_or_else(|| "human".into())
 }
 
 fn session_id_from(session: &Option<SessionInfo>) -> Option<String> {
@@ -123,11 +123,12 @@ fn session_id_from(session: &Option<SessionInfo>) -> Option<String> {
 }
 
 /// 优先使用客户端显式指定的 viewer，否则回退到 session 身份。
+/// GUI / popup 进程没有 session，人类相关查看默认以 "human" 身份进行。
 fn viewer_from(session: &Option<SessionInfo>, explicit: Option<String>) -> String {
     explicit
         .filter(|s| !s.is_empty())
         .or_else(|| session.as_ref().map(|s| s.participant_name.clone()))
-        .unwrap_or_else(|| "me".into())
+        .unwrap_or_else(|| "human".into())
 }
 
 /// 从 storage 读取已持久化的 approval_response，返回 (choice, reason)。

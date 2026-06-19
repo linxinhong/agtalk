@@ -11,7 +11,7 @@ async function main() {
   } catch {
     popupMsgId = null;
   }
-  if (popupMsgId) {
+  if (popupMsgId !== null) {
     // 审批弹窗模式：daemon spawn 的 __popup 进程
     createApp(ApprovalView, { msgId: popupMsgId }).mount("#app");
   } else {
@@ -19,4 +19,12 @@ async function main() {
   }
 }
 
-main();
+main().catch((e) => {
+  const app = document.getElementById("app");
+  const text = `启动失败: ${String(e)}`;
+  if (app) {
+    app.textContent = text;
+  } else {
+    document.body.textContent = text;
+  }
+});
