@@ -227,6 +227,9 @@ pub fn print_help() {
         "{}",
         help::cmd("run [file.yaml]", "从 YAML 文件执行 agtalk 命令")
     );
+    anstream::println!(
+        "  省略 file.yaml 时读取 .agtalk/runs/<当前agent-name>.yaml；适合固定授权入口"
+    );
     anstream::println!();
     anstream::println!("{}", help::section("环境"));
     anstream::println!("{}", help::cmd("init", "初始化环境"));
