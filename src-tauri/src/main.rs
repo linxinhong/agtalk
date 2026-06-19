@@ -72,6 +72,9 @@ fn run_daemon() {
     let config = Arc::new(config::AgConfig::load().unwrap_or_default());
     let storage =
         Arc::new(storage::Storage::open_with_config(config.clone()).expect("无法打开数据库"));
+    if let Err(e) = storage.ensure_human_participant() {
+        tracing::warn!("无法创建默认人类参与者 human: {}", e);
+    }
     let mut registry = transport::TransportRegistry::new();
     registry.register(Arc::new(transport::TerminalTransport::new()));
     registry.register(Arc::new(transport::PopupTransport::new()));

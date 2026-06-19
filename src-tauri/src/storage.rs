@@ -490,6 +490,24 @@ impl Storage {
         Ok(())
     }
 
+    /// 确保默认人类参与者 human 存在（transport=popup，触发审批弹窗 / GUI Inbox 显示）。
+    ///
+    /// `human` 是 `agtalk human` 命令的投递目标，daemon 启动时必须保证该行存在。
+    pub fn ensure_human_participant(&self) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT OR IGNORE INTO participants (id, name, type, display_name, transport, transport_config, intro, status)
+             VALUES ('human', 'human', 'human', 'Human', 'popup', '{}', 'default human', 'online')",
+            [],
+        )?;
+        // 兼容旧数据：若 human 已存在，强制修正为 human/popup
+        conn.execute(
+            "UPDATE participants SET type='human', transport='popup', intro='default human' WHERE name='human'",
+            [],
+        )?;
+        Ok(())
+    }
+
     pub fn unregister_participant(&self, name: &str) -> Result<()> {
         self.conn()
             .execute("DELETE FROM participants WHERE name = ?1", params![name])?;

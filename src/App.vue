@@ -56,14 +56,14 @@ function resolveCurrentParticipant() {
     currentParticipant.value = saved;
     return;
   }
-  const me = participants.value.find((p) => p.name === "me");
-  if (me) {
-    currentParticipant.value = me.name;
-    return;
-  }
-  const human = participants.value.find((p) => p.type === "human");
+  const human = participants.value.find((p) => p.name === "human");
   if (human) {
     currentParticipant.value = human.name;
+    return;
+  }
+  const humanByType = participants.value.find((p) => p.type === "human");
+  if (humanByType) {
+    currentParticipant.value = humanByType.name;
     return;
   }
   currentParticipant.value = participants.value[0].name;

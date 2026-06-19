@@ -1226,7 +1226,7 @@ pub(crate) async fn handle_ask_flow(
             eprintln!("[agtalk] 等待人类回复: {}", q.message);
         }
 
-        let resp = cli.ask("me", &body, &choices, 300).await?;
+        let resp = cli.ask("human", &body, &choices, 300).await?;
 
         let resp_str = serde_json::to_string_pretty(&resp)?;
         if output_json {

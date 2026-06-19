@@ -666,6 +666,45 @@ mod tests {
     }
 
     #[test]
+    fn test_ensure_human_participant_delivery() {
+        let storage = storage();
+        storage.ensure_human_participant().unwrap();
+        storage
+            .register_participant(
+                Some("agent-a"),
+                "agent-a",
+                "agent",
+                "Agent A",
+                "terminal",
+                "{}",
+                "coding assistant",
+                "agent",
+            )
+            .unwrap();
+
+        // 向固定 human 参与者发送 approval_request
+        storage
+            .send_message(
+                "agent-a",
+                &["human".to_string()],
+                "Delete target dir?",
+                "approval_request",
+                None,
+                None,
+                None,
+                None,
+                Some(r#"{"choices":["yes","no"]}"#),
+            )
+            .unwrap();
+
+        // human 的 inbox 能查到 action_required 消息
+        let items = storage.list_inbox("human", Some("action_required"), 50).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, "approval");
+        assert!(items[0].action_required);
+    }
+
+    #[test]
     fn test_inbox_filters() {
         let storage = storage();
         storage.ensure_default_human().unwrap();
