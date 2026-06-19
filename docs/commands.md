@@ -53,7 +53,7 @@ agtalk config set message.attachment_threshold_bytes 4096
 agtalk <命令> [参数]
 agtalk agent <消息> [选项]      最常用：给 Agent 发任务 / 回复
 agtalk reply <msg-id> <choice>  回复审批请求
-agtalk run <file.yaml>           从 YAML 文件执行 agtalk 命令
+agtalk run [file.yaml]           从 YAML 文件执行 agtalk 命令
 ```
 
 ### Agent 对话
@@ -139,12 +139,12 @@ agtalk daemon <start|stop|restart|status>   管理后台 daemon
 ### YAML Runner
 
 ```bash
-agtalk run <file.yaml>
+agtalk run [file.yaml]
 ```
 
-`run` 读取 YAML 文件并执行等价 agtalk 命令。Runner 只执行 agtalk 内部命令，不执行任意 shell。YAML 中的相对路径按 YAML 文件所在目录解析。
+`run` 读取 YAML 文件并执行等价 agtalk 命令。Runner 只执行 agtalk 内部命令，不执行任意 shell。YAML 中的相对路径按 YAML 文件所在目录解析。省略 `file.yaml` 时，默认读取 `.agtalk/runs/<当前agent-name>.yaml`。
 
-**授权与路径建议**：如果你运行在需要沙箱授权的环境（或想固定工作流入口），建议把复杂指令始终写入同一个文件，例如 `.agtalk/runs/<当前agent-name>.yaml`。每次只需覆盖该文件再执行 `agtalk run .agtalk/runs/<当前agent-name>.yaml`，路径不变，方便一次性授权。
+**授权与路径建议**：如果你运行在需要沙箱授权的环境（或想固定工作流入口），建议把复杂指令始终写入同一个文件，例如 `.agtalk/runs/<当前agent-name>.yaml`。每次只需覆盖该文件再执行 `agtalk run`，路径不变，方便一次性授权；多 active session 时可用 `AGTALK_NAME=<agent-name> agtalk run` 指定身份。
 
 支持的顶层协议：
 

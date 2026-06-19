@@ -77,6 +77,19 @@ pub fn sessions_dir() -> anyhow::Result<PathBuf> {
     Ok(agtalk_dir()?.join("sessions"))
 }
 
+/// <root>/.agtalk/runs/
+pub fn runs_dir() -> anyhow::Result<PathBuf> {
+    Ok(agtalk_dir()?.join("runs"))
+}
+
+/// <root>/.agtalk/runs/<name>.yaml（校验 name 无路径分隔符，防注入）
+pub fn run_yaml_path(name: &str) -> anyhow::Result<PathBuf> {
+    if name.is_empty() || name.contains('/') || name.contains('\\') || name == ".." || name == "." {
+        anyhow::bail!("非法 agent 名: {:?}", name);
+    }
+    Ok(runs_dir()?.join(format!("{}.yaml", name)))
+}
+
 /// <root>/.agtalk/sessions/<name>.json（校验 name 无路径分隔符，防注入）
 pub fn session_json_path(name: &str) -> anyhow::Result<PathBuf> {
     if name.is_empty() || name.contains('/') || name.contains('\\') || name == ".." || name == "." {

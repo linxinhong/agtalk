@@ -83,8 +83,8 @@ struct HumanCommand {
 
 #[derive(Debug, Args)]
 struct RunCommand {
-    #[arg(help = "YAML runner 文件路径")]
-    file: String,
+    #[arg(help = "YAML runner 文件路径；省略时读取 .agtalk/runs/<当前agent-name>.yaml")]
+    file: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -164,8 +164,8 @@ pub fn print_help() {
     anstream::println!(
         "{}",
         help::cmd(
-            "agtalk run <file.yaml>",
-            "从 YAML 文件执行 agtalk 命令（避免复杂引号与多附件）"
+            "agtalk run [file.yaml]",
+            "从 YAML 文件执行 agtalk 命令；省略时读取 .agtalk/runs/<当前agent-name>.yaml"
         )
     );
     anstream::println!();
@@ -225,7 +225,7 @@ pub fn print_help() {
     anstream::println!("{}", help::cmd("chats", "查看对话列表"));
     anstream::println!(
         "{}",
-        help::cmd("run <file.yaml>", "从 YAML 文件执行 agtalk 命令")
+        help::cmd("run [file.yaml]", "从 YAML 文件执行 agtalk 命令")
     );
     anstream::println!();
     anstream::println!("{}", help::section("环境"));
@@ -316,7 +316,19 @@ pub fn dispatch(argv: &[String]) {
             }
             rt.block_on(handle_agent(args))
         }
-        Commands::Run(cmd) => rt.block_on(super::run::handle_run(&cmd.file)),
+        Commands::Run(cmd) => {
+            let file = match cmd.file {
+                Some(file) => file,
+                None => match super::run::default_run_file() {
+                    Ok(path) => path.to_string_lossy().to_string(),
+                    Err(e) => {
+                        eprintln!("错误: 无法确定默认 YAML runner 文件: {}", e);
+                        exit(1);
+                    }
+                },
+            };
+            rt.block_on(super::run::handle_run(&file))
+        }
         Commands::Reply(cmd) => rt.block_on(handle_reply(&cmd)),
         Commands::Join(cmd) => {
             let args = JoinArgs {
@@ -777,15 +789,15 @@ fn print_agent_help() {
     anstream::println!("{}", help::section("YAML Runner（复杂指令）"));
     anstream::println!(
         "{}",
-        help::cmd("agtalk run <file.yaml>", "复杂请求一次执行，免去 shell 长命令与引号")
+        help::cmd("agtalk run [file.yaml]", "复杂请求一次执行，免去 shell 长命令与引号")
     );
     anstream::println!("  # Runner 只执行 agtalk 内部命令，不执行任意 shell");
     anstream::println!("  # YAML 中的相对路径按 YAML 文件所在目录解析");
     anstream::println!("  # version 必须为 1；command 支持 10 种 snake_case 命令");
     anstream::println!("  #");
     anstream::println!("  # 建议：把复杂指令固定写入 .agtalk/runs/<当前agent-name>.yaml");
-    anstream::println!("  # 每次只需覆盖同一文件再执行，路径不变，方便沙箱或工作流一次性授权");
-    anstream::println!("  # 例：agt=Quinn; cat > .agtalk/runs/$agt.yaml <<'YAML' && agtalk run .agtalk/runs/$agt.yaml");
+    anstream::println!("  # 每次只需覆盖同一文件再执行；agtalk run 不带参数时会读取该文件");
+    anstream::println!("  # 例：cat > .agtalk/runs/codex-coder-Alex.yaml <<'YAML' && AGTALK_NAME=codex-coder-Alex agtalk run");
     anstream::println!();
     anstream::println!("  version: 1");
     anstream::println!(

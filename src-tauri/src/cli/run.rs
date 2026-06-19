@@ -165,6 +165,15 @@ pub async fn handle_run(file: &str) -> Result<()> {
     }
 }
 
+/// 当前 Agent 的固定 YAML Runner 路径。
+///
+/// Agent 可反复覆盖该文件，再运行 `agtalk run`。这样命令入口保持不变，
+/// 适合需要对固定命令做授权的执行环境。
+pub fn default_run_file() -> Result<PathBuf> {
+    let identity = crate::identity::resolve_identity(None)?;
+    crate::paths::run_yaml_path(&identity.participant_name)
+}
+
 async fn run_agent(base_dir: &Path, spec: AgentSpec, file: &str) -> Result<()> {
     if spec.done.is_none() && spec.name.is_none() {
         anyhow::bail!("{}: agent 命令在 done 为空时缺少必填字段 'name'", file);

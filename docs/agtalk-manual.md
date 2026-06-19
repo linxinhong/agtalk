@@ -224,8 +224,10 @@ codex$ agtalk detail <msg-id>
 
 把复杂请求写入 YAML 文件，通过 `agtalk run` 执行，避免 shell 长正文、复杂引号、多附件和沙箱授权问题。Runner 只执行 agtalk 内部命令，不执行任意 shell；YAML 中的相对路径按 YAML 文件所在目录解析。
 
+建议把每个 Agent 生成的复杂指令固定写入 `.agtalk/runs/<agent-name>.yaml`。省略文件参数时，`agtalk run` 会读取当前 Agent 对应的固定文件，方便对同一个命令入口做授权。
+
 ```yaml
-# task.yaml
+# .agtalk/runs/codex-coder-Alex.yaml
 version: 1
 command: agent
 name: reviewer
@@ -243,7 +245,7 @@ files:
 ```
 
 ```bash
-agtalk run task.yaml
+AGTALK_NAME=codex-coder-Alex agtalk run
 ```
 
 YAML 也支持向人类提问：
