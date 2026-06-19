@@ -782,6 +782,10 @@ fn print_agent_help() {
     anstream::println!("  # Runner 只执行 agtalk 内部命令，不执行任意 shell");
     anstream::println!("  # YAML 中的相对路径按 YAML 文件所在目录解析");
     anstream::println!("  # version 必须为 1；command 支持 10 种 snake_case 命令");
+    anstream::println!("  #");
+    anstream::println!("  # 建议：把复杂指令固定写入 .agtalk/runs/<当前agent-name>.yaml");
+    anstream::println!("  # 每次只需覆盖同一文件再执行，路径不变，方便沙箱或工作流一次性授权");
+    anstream::println!("  # 例：agt=Quinn; cat > .agtalk/runs/$agt.yaml <<'YAML' && agtalk run .agtalk/runs/$agt.yaml");
     anstream::println!();
     anstream::println!("  version: 1");
     anstream::println!(

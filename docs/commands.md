@@ -144,6 +144,8 @@ agtalk run <file.yaml>
 
 `run` 读取 YAML 文件并执行等价 agtalk 命令。Runner 只执行 agtalk 内部命令，不执行任意 shell。YAML 中的相对路径按 YAML 文件所在目录解析。
 
+**授权与路径建议**：如果你运行在需要沙箱授权的环境（或想固定工作流入口），建议把复杂指令始终写入同一个文件，例如 `.agtalk/runs/<当前agent-name>.yaml`。每次只需覆盖该文件再执行 `agtalk run .agtalk/runs/<当前agent-name>.yaml`，路径不变，方便一次性授权。
+
 支持的顶层协议：
 
 ```yaml
