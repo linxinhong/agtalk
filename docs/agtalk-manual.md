@@ -220,6 +220,51 @@ codex$ agtalk inbox
 codex$ agtalk detail <msg-id>
 ```
 
+### 模式四：YAML Runner 执行复杂任务
+
+把复杂请求写入 YAML 文件，通过 `agtalk run` 执行，避免 shell 长正文、复杂引号、多附件和沙箱授权问题。Runner 只执行 agtalk 内部命令，不执行任意 shell；YAML 中的相对路径按 YAML 文件所在目录解析。
+
+```yaml
+# task.yaml
+version: 1
+command: agent
+name: reviewer
+subject: "TASK: 重构 storage.rs"
+message: |
+  请 review 附件中的改动，重点关注：
+  1. session 校验逻辑是否完整
+  2. 错误处理是否清晰
+reply_to: null
+done: null
+notify: true
+files:
+  - ./src/storage.rs
+  - ./docs/changelog.md
+```
+
+```bash
+agtalk run task.yaml
+```
+
+YAML 也支持向人类提问：
+
+```yaml
+version: 1
+command: human
+message: "部署前确认"
+single: true
+select_only: true
+output: json
+questions:
+  - text: "是否继续部署？"
+    options:
+      - text: "继续"
+        recommended: true
+      - text: "停止"
+```
+
+更多命令的 YAML schema 见 `docs/commands.md`。
+
 ## 最佳实践
 
 1. **不要手动维护 read 状态**：用 `inbox` / `detail` / `attachment` / `reply` / `done` 让 daemon 自动处理。

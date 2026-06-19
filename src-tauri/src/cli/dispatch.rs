@@ -39,6 +39,8 @@ enum Commands {
     Human(HumanCommand),
     #[command(about = "向 Agent 发送任务或回复")]
     Agent(AgentCommand),
+    #[command(about = "从 YAML 文件执行 agtalk 命令")]
+    Run(RunCommand),
     #[command(about = "回复审批请求")]
     Reply(ReplyCommand),
     #[command(about = "加入本地通信网络")]
@@ -80,6 +82,12 @@ struct HumanCommand {
 }
 
 #[derive(Debug, Args)]
+struct RunCommand {
+    #[arg(help = "YAML runner 文件路径")]
+    file: String,
+}
+
+#[derive(Debug, Args)]
 struct AgentCommand {
     #[arg(short = 'n', long = "name", help = "指定 Agent")]
     name: Option<String>,
@@ -100,11 +108,11 @@ struct AgentCommand {
 }
 
 #[derive(Debug, Args)]
-struct ReplyCommand {
-    msg_id: String,
-    choice: String,
+pub(crate) struct ReplyCommand {
+    pub(crate) msg_id: String,
+    pub(crate) choice: String,
     #[arg(short = 'r', long = "reason", help = "附带说明")]
-    reason: Option<String>,
+    pub(crate) reason: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -151,6 +159,13 @@ pub fn print_help() {
         help::cmd(
             "agtalk reply <msg-id> <choice>",
             "回复审批请求（-r/--reason 附加说明）"
+        )
+    );
+    anstream::println!(
+        "{}",
+        help::cmd(
+            "agtalk run <file.yaml>",
+            "从 YAML 文件执行 agtalk 命令（避免复杂引号与多附件）"
         )
     );
     anstream::println!();
@@ -208,6 +223,10 @@ pub fn print_help() {
     anstream::println!("{}", help::cmd("wait <msg-id> [--timeout <秒>] [--output json]", "等待审批结果"));
     anstream::println!("{}", help::cmd("attachment <att-id>", "查看附件全文"));
     anstream::println!("{}", help::cmd("chats", "查看对话列表"));
+    anstream::println!(
+        "{}",
+        help::cmd("run <file.yaml>", "从 YAML 文件执行 agtalk 命令")
+    );
     anstream::println!();
     anstream::println!("{}", help::section("环境"));
     anstream::println!("{}", help::cmd("init", "初始化环境"));
@@ -297,6 +316,7 @@ pub fn dispatch(argv: &[String]) {
             }
             rt.block_on(handle_agent(args))
         }
+        Commands::Run(cmd) => rt.block_on(super::run::handle_run(&cmd.file)),
         Commands::Reply(cmd) => rt.block_on(handle_reply(&cmd)),
         Commands::Join(cmd) => {
             let args = JoinArgs {
@@ -341,21 +361,21 @@ pub fn dispatch(argv: &[String]) {
 // ── 参数解析 ──────────────────────────────────────
 
 #[derive(Debug, PartialEq, Eq)]
-struct QuestionArgs {
-    message: String,
-    options: Vec<(String, bool)>, // (text, recommended)
+pub(crate) struct QuestionArgs {
+    pub(crate) message: String,
+    pub(crate) options: Vec<(String, bool)>, // (text, recommended)
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct AgentArgs {
-    message: String,
-    name: Option<String>,
-    subject: Option<String>,
-    reply_to: Option<String>,
-    done: Option<String>,
-    files: Vec<String>,
-    notify: bool,
-    no_enter: bool,
+pub(crate) struct AgentArgs {
+    pub(crate) message: String,
+    pub(crate) name: Option<String>,
+    pub(crate) subject: Option<String>,
+    pub(crate) reply_to: Option<String>,
+    pub(crate) done: Option<String>,
+    pub(crate) files: Vec<String>,
+    pub(crate) notify: bool,
+    pub(crate) no_enter: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -368,42 +388,44 @@ struct JoinArgs {
 }
 
 #[derive(Debug, clap::Args)]
-struct InboxArgs {
+pub(crate) struct InboxArgs {
     #[arg(long, help = "只查看，不标记已读")]
-    peek: bool,
+    pub(crate) peek: bool,
     #[arg(long)]
-    unread: bool,
+    pub(crate) unread: bool,
     #[arg(long)]
-    pending: bool,
+    pub(crate) pending: bool,
     #[arg(long = "action-required")]
-    action_required: bool,
+    pub(crate) action_required: bool,
     #[arg(long)]
-    all: bool,
+    pub(crate) all: bool,
+    #[arg(long, default_value = "50", help = "返回条数上限")]
+    pub(crate) limit: u32,
 }
 
 #[derive(Debug, clap::Args)]
-struct PeersArgs {
+pub(crate) struct PeersArgs {
     #[arg(long, short, help = "显示详细排障信息")]
-    verbose: bool,
+    pub(crate) verbose: bool,
 }
 
 #[derive(Debug, clap::Args)]
-struct DetailArgs {
-    msg_id: String,
+pub(crate) struct DetailArgs {
+    pub(crate) msg_id: String,
 }
 
 #[derive(Debug, clap::Args)]
-struct WaitArgs {
-    msg_id: String,
+pub(crate) struct WaitArgs {
+    pub(crate) msg_id: String,
     #[arg(short = 't', long = "timeout", default_value = "300", help = "最长等待秒数")]
-    timeout: u64,
+    pub(crate) timeout: u64,
     #[arg(long = "output", default_value = "text", help = "输出格式：text / json")]
-    output: String,
+    pub(crate) output: String,
 }
 
 #[derive(Debug, clap::Args)]
-struct AttachmentArgs {
-    attachment_id: String,
+pub(crate) struct AttachmentArgs {
+    pub(crate) attachment_id: String,
 }
 
 #[derive(Debug, clap::Args)]
@@ -734,6 +756,9 @@ fn print_agent_help() {
     anstream::println!("  agtalk join codex-coder-Alex --intro \"代码生成 Agent\" --role coder");
     anstream::println!("  # 普通消息（带多附件）");
     anstream::println!("  agtalk agent \"请 review PR #42\" -n claude-reviewer-Bob -s \"代码评审\" -i -f ./src/main.rs -f ./README.md");
+    anstream::println!();
+    anstream::println!("  # 复杂请求写入 YAML 后执行（避免 shell 引号与多附件问题）");
+    anstream::println!("  agtalk run task.yaml");
     anstream::println!();
     anstream::println!("  # agent-b 终端：join 后同样自动识别");
     anstream::println!("  agtalk join claude-reviewer-Bob --intro \"代码评审 Agent\" --role reviewer");
@@ -1079,7 +1104,7 @@ fn print_inbox(
 
 // ── 各 handler ────────────────────────────────────
 
-async fn handle_ask_flow(
+pub(crate) async fn handle_ask_flow(
     questions: &[QuestionArgs],
     _is_single: bool,
     _select_only: bool,
@@ -1115,7 +1140,7 @@ async fn handle_ask_flow(
     Ok(())
 }
 
-async fn handle_agent(args: AgentArgs) -> Result<()> {
+pub(crate) async fn handle_agent(args: AgentArgs) -> Result<()> {
     let identity = identity::resolve_identity(None)?;
     let mut cli =
         Client::connect_and_auth(&identity.socket, &identity.session_id, &identity.token).await?;
@@ -1166,7 +1191,7 @@ async fn handle_agent(args: AgentArgs) -> Result<()> {
     anyhow::bail!("agtalk agent 缺少消息正文")
 }
 
-async fn handle_reply(args: &ReplyCommand) -> Result<()> {
+pub(crate) async fn handle_reply(args: &ReplyCommand) -> Result<()> {
     let identity = identity::resolve_identity(None)?;
     let mut cli =
         Client::connect_and_auth(&identity.socket, &identity.session_id, &identity.token).await?;
@@ -1248,7 +1273,7 @@ fn infer_content_type(filename: &str) -> String {
     .to_string()
 }
 
-async fn handle_inbox(args: &InboxArgs) -> Result<()> {
+pub(crate) async fn handle_inbox(args: &InboxArgs) -> Result<()> {
     let identity = identity::resolve_identity(None)?;
     let mut cli =
         Client::connect_and_auth(&identity.socket, &identity.session_id, &identity.token).await?;
@@ -1274,19 +1299,21 @@ async fn handle_inbox(args: &InboxArgs) -> Result<()> {
         _ => identity.participant_name.clone(),
     };
 
+    let limit = args.limit.max(1);
+
     // 额外 peek 一次 all 状态用于统计，不修改消息状态
     let stats_resp = cli
-        .inbox(&identity.participant_name, Some("all"), 50, true)
+        .inbox(&identity.participant_name, Some("all"), limit, true)
         .await?;
 
     let resp = cli
-        .inbox(&identity.participant_name, status, 50, args.peek)
+        .inbox(&identity.participant_name, status, limit, args.peek)
         .await?;
     print_inbox(&me_name, &stats_resp, &resp)?;
     Ok(())
 }
 
-async fn handle_detail(args: &DetailArgs) -> Result<()> {
+pub(crate) async fn handle_detail(args: &DetailArgs) -> Result<()> {
     let identity = identity::resolve_identity(None)?;
     let mut cli =
         Client::connect_and_auth(&identity.socket, &identity.session_id, &identity.token).await?;
@@ -1300,7 +1327,7 @@ async fn handle_detail(args: &DetailArgs) -> Result<()> {
     Ok(())
 }
 
-async fn handle_wait(args: &WaitArgs) -> Result<()> {
+pub(crate) async fn handle_wait(args: &WaitArgs) -> Result<()> {
     let identity = identity::resolve_identity(None)?;
     let mut cli =
         Client::connect_and_auth(&identity.socket, &identity.session_id, &identity.token).await?;
@@ -1370,7 +1397,7 @@ async fn latest_inbox_id(
     }
 }
 
-async fn handle_attachment(args: &AttachmentArgs) -> Result<()> {
+pub(crate) async fn handle_attachment(args: &AttachmentArgs) -> Result<()> {
     let identity = identity::resolve_identity(None)?;
     let mut cli =
         Client::connect_and_auth(&identity.socket, &identity.session_id, &identity.token).await?;
@@ -1625,7 +1652,7 @@ async fn handle_leave(as_name: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-async fn handle_me() -> Result<()> {
+pub(crate) async fn handle_me() -> Result<()> {
     let identity = identity::resolve_identity(None)?;
     let mut cli =
         Client::connect_and_auth(&identity.socket, &identity.session_id, &identity.token).await?;
@@ -1634,7 +1661,7 @@ async fn handle_me() -> Result<()> {
     Ok(())
 }
 
-async fn handle_peers(args: &PeersArgs) -> Result<()> {
+pub(crate) async fn handle_peers(args: &PeersArgs) -> Result<()> {
     // peers 不需要认证，任何人都可以查看在线参与者列表
     let mut cli = Client::connect(&crate::paths::socket_path()).await?;
     let resp = cli.list_participants(None).await?;
@@ -1642,7 +1669,7 @@ async fn handle_peers(args: &PeersArgs) -> Result<()> {
     Ok(())
 }
 
-async fn handle_chats() -> Result<()> {
+pub(crate) async fn handle_chats() -> Result<()> {
     let identity = identity::resolve_identity(None)?;
     let mut cli =
         Client::connect_and_auth(&identity.socket, &identity.session_id, &identity.token).await?;

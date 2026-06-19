@@ -53,6 +53,7 @@ agtalk config set message.attachment_threshold_bytes 4096
 agtalk <命令> [参数]
 agtalk agent <消息> [选项]      最常用：给 Agent 发任务 / 回复
 agtalk reply <msg-id> <choice>  回复审批请求
+agtalk run <file.yaml>           从 YAML 文件执行 agtalk 命令
 ```
 
 ### Agent 对话
@@ -133,6 +134,129 @@ agtalk daemon <start|stop|restart|status>   管理后台 daemon
   "priority": "normal",
   "kind": "message"
 }
+```
+
+### YAML Runner
+
+```bash
+agtalk run <file.yaml>
+```
+
+`run` 读取 YAML 文件并执行等价 agtalk 命令。Runner 只执行 agtalk 内部命令，不执行任意 shell。YAML 中的相对路径按 YAML 文件所在目录解析。
+
+支持的顶层协议：
+
+```yaml
+version: 1
+command: agent | human | reply | wait | inbox | detail | attachment | chats | peers | me
+```
+
+`version` 必须为 `1`，未知 `command` 会报错。
+
+#### agent
+
+```yaml
+version: 1
+command: agent
+name: kimi-coder-Kimi
+subject: "TASK: 实现功能"
+message: "请阅读附件并实现。"
+reply_to: null
+done: null
+notify: true
+no_enter: false
+files:
+  - .agtalk/kimi-handoff.md
+```
+
+字段映射：
+- `name` -> `-n/--name`
+- `subject` -> `-s/--subject`
+- `message` -> 正文
+- `reply_to` -> `-r/--reply-to`
+- `done` -> `-d/--done`
+- `notify` -> `-i/--notify`
+- `no_enter` -> `--no-enter`
+- `files` -> 多个 `-f`（相对路径按 YAML 文件目录解析）
+
+#### human
+
+```yaml
+version: 1
+command: human
+message: "部署前确认"
+single: true
+select_only: true
+output: json
+questions:
+  - text: "是否继续部署？"
+    options:
+      - text: "继续"
+        recommended: true
+      - text: "停止"
+```
+
+字段映射：
+- `message`：共享描述；`questions` 为空时提升为唯一问题
+- `single` -> `--single`
+- `select_only` -> `--select-only`
+- `output` -> `text | json`，默认 `text`
+- `questions[].text` -> `-q`
+- `questions[].options[].text` -> `-o`
+- `recommended: true` -> `-o!`
+
+#### reply / wait / detail / attachment / chats / peers / me
+
+```yaml
+version: 1
+command: reply
+msg_id: 12345678
+choice: "允许"
+reason: "已确认"
+```
+
+```yaml
+version: 1
+command: wait
+msg_id: 12345678
+timeout: 60
+output: json
+```
+
+```yaml
+version: 1
+command: inbox
+status: action_required   # unread | pending | action_required | all
+limit: 50
+peek: true
+```
+
+```yaml
+version: 1
+command: detail
+msg_id: 12345678
+```
+
+```yaml
+version: 1
+command: attachment
+attachment_id: abcdef12
+```
+
+```yaml
+version: 1
+command: chats
+```
+
+```yaml
+version: 1
+command: peers
+verbose: false
+```
+
+```yaml
+version: 1
+command: me
 ```
 
 ### 环境
