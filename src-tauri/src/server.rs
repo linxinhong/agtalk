@@ -544,9 +544,50 @@ pub(crate) async fn handle_msg(
 
                     if let Ok(Some(p)) = storage.get_participant_by_name(&to) {
                         if let Some(t) = transports.get(&p.transport) {
-                            let _ = t
-                                .deliver(&msg_id, &sender, &body, &p.transport_config)
-                                .await;
+                            match t.deliver(&msg_id, &sender, &body, &p.transport_config).await {
+                                Ok(Some(monitor)) => {
+                                    // 监控子进程：若弹窗被关闭且尚未收到回复，
+                                    // 立即通知所有 waiter 视为 dismissed。
+                                    let pending = pending_asks.clone();
+                                    let msg_id2 = msg_id.clone();
+                                    tokio::spawn(async move {
+                                        match monitor.wait().await {
+                                            Ok(_status) => {
+                                                {
+                                                    let map = pending.lock().unwrap();
+                                                    if !map.contains_key(&msg_id2) {
+                                                        return;
+                                                    }
+                                                }
+                                                notify_waiters(
+                                                    &pending,
+                                                    &msg_id2,
+                                                    AskResult {
+                                                        choice: "__dismissed__".into(),
+                                                        reason: "人类关闭了弹窗，未作出选择".into(),
+                                                    },
+                                                );
+                                            }
+                                            Err(e) => {
+                                                tracing::error!(
+                                                    "监控弹窗子进程失败 msg={}: {}",
+                                                    msg_id2,
+                                                    e
+                                                );
+                                            }
+                                        }
+                                    });
+                                }
+                                Ok(None) => {}
+                                Err(e) => {
+                                    tracing::error!(
+                                        "deliver 失败 msg={} transport={}: {}",
+                                        msg_id,
+                                        p.transport,
+                                        e
+                                    );
+                                }
+                            }
                         }
                     }
 
@@ -555,11 +596,17 @@ pub(crate) async fn handle_msg(
                     remove_waiter(pending_asks, &msg_id, &waiter_id);
 
                     match result {
-                        Some((choice, reason)) => ServerMsg::AskResponse {
-                            msg_id,
-                            choice,
-                            reason,
-                        },
+                        Some((choice, reason)) => {
+                            if choice == "__dismissed__" {
+                                ServerMsg::AskDismissed { msg_id }
+                            } else {
+                                ServerMsg::AskResponse {
+                                    msg_id,
+                                    choice,
+                                    reason,
+                                }
+                            }
+                        }
                         None => ServerMsg::AskTimeout { msg_id },
                     }
                 }

@@ -709,6 +709,9 @@ fn print_ask_result(json: &str) {
             let msg_id = v.get("msg_id").and_then(|m| m.as_str()).unwrap_or("?");
             println!("[超时] 未在规定时间内收到人类回复: {}", msg_id);
         }
+        Some("ask_dismissed") => {
+            println!("[已关闭] 人类关闭了弹窗，未作出选择");
+        }
         _ => {
             if let Some(choice) = v
                 .get("data")
@@ -1515,6 +1518,8 @@ pub(crate) async fn handle_wait(args: &WaitArgs) -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&json)?);
             } else if timed_out || status == "timed_out" {
                 println!("[超时] 未在规定时间内收到人类回复: {}", msg_id);
+            } else if choice == "__dismissed__" {
+                println!("[已关闭] 人类关闭了弹窗，未作出选择");
             } else {
                 println!("[已回复] {}: {}", msg_id, choice);
                 if !reason.is_empty() {

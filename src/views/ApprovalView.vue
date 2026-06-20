@@ -23,6 +23,19 @@ onMounted(async () => {
     error.value = String(e);
   }
   loading.value = false;
+
+  // 兜底：用户直接关闭窗口时向 daemon 发送 dismissed 标记，
+  // 避免 CLI 端苦等超时。若 daemon 已通过子进程监控处理，此调用无实际副作用。
+  const unlisten = await getCurrentWindow().onCloseRequested(async (event) => {
+    if (submitting.value || !props.msgId) return;
+    try {
+      await replyApproval(props.msgId, "__dismissed__", undefined, HUMAN_PARTICIPANT);
+    } catch (e) {
+      // 关闭窗口优先级高于报错，静默忽略。
+    }
+  });
+  // Vue 组件卸载时理论上窗口已关闭，无需显式 cleanup；保留返回值以提升类型提示。
+  unlisten;
 });
 
 function parseChoices(m: Message): string[] {

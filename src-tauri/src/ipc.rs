@@ -212,6 +212,8 @@ pub enum ServerMsg {
     },
     /// 审批请求超时
     AskTimeout { msg_id: String },
+    /// 人类关闭弹窗，未作出选择
+    AskDismissed { msg_id: String },
     /// 等待审批的结果（Wait 命令返回）
     WaitResult {
         msg_id: String,
