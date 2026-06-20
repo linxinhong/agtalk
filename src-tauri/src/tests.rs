@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::config::AgConfig;
-    use crate::ipc::ClientMsg;
+    use crate::ipc::{ClientMsg, ServerMsg};
     use crate::notify::{NotifyContext, NotifyPlugin, NotifyPluginRegistry};
     use crate::server::handle_msg;
     use crate::storage::Storage;
@@ -1525,8 +1525,11 @@ mod tests {
             .get_participant_by_name(participant_name)
             .unwrap()
             .unwrap();
+        let endpoint_key = crate::storage::endpoint_key_from_notify_config(
+            &serde_json::from_str(notify_cfg).unwrap_or(serde_json::Value::Null),
+        );
         storage
-            .create_session(&workspace_id, &participant.id, Some(notify_cfg), None)
+            .create_session(&workspace_id, &participant.id, &endpoint_key, Some(notify_cfg), None)
             .unwrap();
     }
 
@@ -2166,5 +2169,87 @@ mod tests {
         s.mark_done(&ask.id, "bob", None, &[]).unwrap();
 
         assert!(s.list_inbox("bob", None, 50).unwrap().is_empty());
+    }
+
+    // ─── session takeover 集成测试 ──────────────────────
+
+    async fn join_via_server(
+        storage: &Storage,
+        notify_plugins: &NotifyPluginRegistry,
+        name: &str,
+        notify_config: serde_json::Value,
+        takeover: bool,
+        session: &mut Option<crate::storage::SessionInfo>,
+    ) -> crate::ipc::ServerMsg {
+        let transports = TransportRegistry::new();
+        let pending = empty_pending_asks();
+        handle_msg(
+            ClientMsg::Join {
+                workspace_root: "/tmp/ws".to_string(),
+                workspace_name: "ws".to_string(),
+                name: name.to_string(),
+                role: "agent".to_string(),
+                intro: "".to_string(),
+                transport: "terminal".to_string(),
+                notify_config,
+                runtime_config: serde_json::json!({}),
+                capabilities: vec![],
+                takeover,
+            },
+            storage,
+            &transports,
+            notify_plugins,
+            &pending,
+            session,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn test_join_conflict_requires_takeover() {
+        let s = storage();
+        let mut registry = NotifyPluginRegistry::new();
+        let fake = Arc::new(FakeNotifyPlugin::default());
+        registry.register(fake.clone());
+
+        let notify = serde_json::json!({
+            "plugin": "fake",
+            "endpoint": { "session": "s", "pane_id": "p" },
+            "send_enter": true,
+        });
+
+        let mut session1: Option<crate::storage::SessionInfo> = None;
+        let resp1 = join_via_server(&s, &registry, "alice", notify.clone(), false, &mut session1).await;
+        assert!(matches!(resp1, ServerMsg::Ok { .. }), "第一次 join 应成功");
+
+        // 未 takeover 时同 endpoint 冲突
+        let mut session2: Option<crate::storage::SessionInfo> = None;
+        let resp2 = join_via_server(&s, &registry, "alice", notify.clone(), false, &mut session2).await;
+        match resp2 {
+            ServerMsg::Error { code, .. } => assert_eq!(code, "session_conflict"),
+            _ => panic!("同 endpoint 未 takeover 应返回冲突"),
+        }
+
+        // takeover=true 成功，旧 session 失效
+        let mut session3: Option<crate::storage::SessionInfo> = None;
+        let resp3 = join_via_server(&s, &registry, "alice", notify.clone(), true, &mut session3).await;
+        assert!(matches!(resp3, ServerMsg::Ok { .. }), "takeover 应成功");
+
+        // 用旧 session 发请求会被拒绝
+        let transports = TransportRegistry::new();
+        let pending = empty_pending_asks();
+        let resp4 = handle_msg(
+            ClientMsg::Ping,
+            &s,
+            &transports,
+            &registry,
+            &pending,
+            &mut session1,
+        )
+        .await;
+        match resp4 {
+            ServerMsg::Error { code, .. } => assert_eq!(code, "session_inactive"),
+            _ => panic!("旧 session 应被标记为 inactive"),
+        }
     }
 }

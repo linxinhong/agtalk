@@ -100,6 +100,7 @@ impl Client {
         transport: &str,
         notify_config: serde_json::Value,
         runtime_config: serde_json::Value,
+        takeover: bool,
     ) -> Result<ServerMsg> {
         self.request(&ClientMsg::Join {
             workspace_root: workspace_root.to_string(),
@@ -111,6 +112,7 @@ impl Client {
             notify_config,
             runtime_config,
             capabilities: vec![],
+            takeover,
         })
         .await
     }
@@ -120,6 +122,10 @@ impl Client {
             session_id: session_id.map(|s| s.to_string()),
         })
         .await
+    }
+
+    pub async fn cleanup(&mut self, dry_run: bool) -> Result<ServerMsg> {
+        self.request(&ClientMsg::Cleanup { dry_run }).await
     }
 
     #[allow(clippy::too_many_arguments)]

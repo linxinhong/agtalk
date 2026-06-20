@@ -27,6 +27,13 @@ pub enum ClientMsg {
         runtime_config: serde_json::Value,
         #[serde(default)]
         capabilities: Vec<String>,
+        #[serde(default)]
+        takeover: bool,
+    },
+    /// 清理 inactive session
+    Cleanup {
+        #[serde(default)]
+        dry_run: bool,
     },
     /// 离开当前 session
     Leave {

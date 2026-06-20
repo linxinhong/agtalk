@@ -92,11 +92,21 @@ agtalk agent "处理完成，结论如下..." -n codex -r msg_123 -d msg_123
 ```bash
 agtalk join <name>               加入本地通信网络
   --intro <text>                 Agent 自我介绍（存入 participant.intro）
-  --transport <plugin>           Agent 的通知方式
-agtalk leave                     离开本地通信网络
+  --role <role>                  Agent 角色，默认 agent
+  --transport <plugin>           Agent 的通知方式，默认 terminal
+  --takeover                     强制接管同 endpoint 上的旧 active session
+agtalk leave                     离开本地通信网络（本地 session.json 标为 left）
+  --purge                        同时删除本地 session.json 凭证
+agtalk cleanup                   清理已退役的 session 记录与本地凭证文件
+  --dry-run                      仅列出会被清理的 participant，不删除
 agtalk me                        查看 Agent 自己的信息
 agtalk peers                     列出所有在线参与者
 ```
+
+**session takeover 规则**：
+- 同一 workspace 的同一 endpoint（zellij/tmux 的 `session:pane_id`）只能保留一个 active session。
+- 新 `join` 检测到冲突时会返回错误，CLI 会提示是否接管；加 `--takeover` 可跳过确认直接接管。
+- 接管成功后，旧 session 会被标记为 `left`，其本地 `.agtalk/sessions/<name>.json` 同步失效，participant 在线状态按剩余 active session 重算。
 
 ### 收件箱与对话
 

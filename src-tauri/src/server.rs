@@ -2,7 +2,7 @@
 
 use crate::ipc::{self, ClientMsg, ServerMsg};
 use crate::notify::{self, NotifyContext, NotifyPluginRegistry, NotifyTransportConfig};
-use crate::storage::{SessionInfo, Storage};
+use crate::storage::{endpoint_key_from_notify_config, SessionInfo, Storage};
 use crate::transport::TransportRegistry;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -26,6 +26,15 @@ pub(crate) struct Waiter {
 
 /// 共享的待处理 Ask：msg_id → 所有在等待的 waiter
 pub(crate) type PendingAsks = Arc<Mutex<HashMap<String, Vec<Waiter>>>>;
+
+/// 将本地 .agtalk/sessions/<name>.json 的状态标记为 left。
+fn mark_local_session_left(name: &str) -> Result<()> {
+    if let Some(mut sf) = crate::session::read_session(name)? {
+        sf.session.status = "left".into();
+        crate::session::write_session(name, &mut sf)?;
+    }
+    Ok(())
+}
 
 pub async fn run(
     socket_path: &str,
@@ -243,9 +252,26 @@ pub(crate) async fn handle_msg(
     pending_asks: &PendingAsks,
     session: &mut Option<SessionInfo>,
 ) -> ServerMsg {
-    // 已认证连接：每次请求刷新 session 活跃时间
+    // 已认证连接：每次请求重新校验 session 仍 active，并刷新活跃时间
     if let Some(ref s) = session {
-        let _ = storage.touch_session(&s.session_id);
+        match storage.is_session_active(&s.session_id) {
+            Ok(true) => {
+                let _ = storage.touch_session(&s.session_id);
+            }
+            Ok(false) => {
+                *session = None;
+                return ServerMsg::Error {
+                    code: "session_inactive".into(),
+                    message: "当前 session 已被退役或接管".into(),
+                };
+            }
+            Err(e) => {
+                return ServerMsg::Error {
+                    code: "session_error".into(),
+                    message: format!("校验 session 失败: {}", e),
+                };
+            }
+        }
     }
 
     match msg {
@@ -282,6 +308,7 @@ pub(crate) async fn handle_msg(
             notify_config,
             runtime_config,
             capabilities: _,
+            takeover,
         } => {
             const RESERVED_NAMES: &[&str] = &["me", "human"];
             if RESERVED_NAMES.contains(&name.to_ascii_lowercase().as_str()) {
@@ -310,6 +337,53 @@ pub(crate) async fn handle_msg(
             } else {
                 Some(runtime_config.to_string())
             };
+            let endpoint_key = endpoint_key_from_notify_config(&notify_config);
+
+            // takeover 前检查同 endpoint active session 冲突
+            match storage.get_active_sessions_by_endpoint(&workspace_id, &endpoint_key) {
+                Ok(existing) if !existing.is_empty() => {
+                    if !takeover {
+                        return ServerMsg::Error {
+                            code: "session_conflict".into(),
+                            message: format!(
+                                "endpoint {} 上已有 {} 个 active session；如要接管请重试并设置 takeover=true",
+                                endpoint_key,
+                                existing.len()
+                            ),
+                        };
+                    }
+                    // takeover：先退役同 endpoint 旧 session
+                    match storage.retire_sessions_by_endpoint_except(
+                        &workspace_id,
+                        &endpoint_key,
+                        "", // 新 session 尚未创建，因此无需排除
+                    ) {
+                        Ok(retired) => {
+                            // 同步旧 session 本地文件为 left
+                            for old in retired {
+                                if let Some(participant_name) = Some(old.participant_name) {
+                                    let _ = mark_local_session_left(&participant_name);
+                                }
+                                let _ = storage.recompute_participant_status(&old.participant_id);
+                            }
+                        }
+                        Err(e) => {
+                            return ServerMsg::Error {
+                                code: "takeover_failed".into(),
+                                message: format!("接管旧 session 失败: {}", e),
+                            };
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    return ServerMsg::Error {
+                        code: "join_failed".into(),
+                        message: format!("查询 endpoint 冲突失败: {}", e),
+                    };
+                }
+            }
+
             let participant = match storage.get_participant_by_name(&name) {
                 Ok(Some(p)) => {
                     // 已存在则更新 role/intro/transport/status
@@ -344,6 +418,7 @@ pub(crate) async fn handle_msg(
             let (session_id, token) = match storage.create_session(
                 &workspace_id,
                 &participant.id,
+                &endpoint_key,
                 notify_config_str.as_deref(),
                 runtime_config_str.as_deref(),
             ) {
@@ -361,6 +436,8 @@ pub(crate) async fn handle_msg(
                 *session = Some(info.clone());
             }
 
+            let _ = storage.update_participant_status(&name, "online");
+
             ServerMsg::Ok {
                 data: serde_json::json!({
                     "workspace_id": workspace_id,
@@ -375,19 +452,31 @@ pub(crate) async fn handle_msg(
         ClientMsg::Leave { session_id } => {
             let sid = session_id.or_else(|| session.as_ref().map(|s| s.session_id.clone()));
             match sid {
-                Some(sid) => match storage.mark_session_left(&sid) {
-                    Ok(()) => {
-                        if session
-                            .as_ref()
-                            .map(|s| s.session_id == sid)
-                            .unwrap_or(false)
-                        {
-                            *session = None;
+                Some(sid) => match storage.get_session_by_id(&sid) {
+                    Ok(Some(info)) => match storage.mark_session_left(&sid) {
+                        Ok(()) => {
+                            if session
+                                .as_ref()
+                                .map(|s| s.session_id == sid)
+                                .unwrap_or(false)
+                            {
+                                *session = None;
+                            }
+                            let _ = mark_local_session_left(&info.participant_name);
+                            let _ = storage.recompute_participant_status(&info.participant_id);
+                            ServerMsg::Ok {
+                                data: serde_json::json!({"session_id": sid, "status": "left"}),
+                            }
                         }
-                        ServerMsg::Ok {
-                            data: serde_json::json!({"session_id": sid, "status": "left"}),
-                        }
-                    }
+                        Err(e) => ServerMsg::Error {
+                            code: "leave_failed".into(),
+                            message: e.to_string(),
+                        },
+                    },
+                    Ok(None) => ServerMsg::Error {
+                        code: "leave_failed".into(),
+                        message: format!("session {} 不存在", sid),
+                    },
                     Err(e) => ServerMsg::Error {
                         code: "leave_failed".into(),
                         message: e.to_string(),
@@ -396,6 +485,22 @@ pub(crate) async fn handle_msg(
                 None => ServerMsg::Error {
                     code: "leave_failed".into(),
                     message: "未提供 session_id 且当前未认证".into(),
+                },
+            }
+        }
+
+        // ── 清理 inactive session ─────────────
+        ClientMsg::Cleanup { dry_run } => {
+            match storage.cleanup_inactive_sessions(dry_run) {
+                Ok(names) => ServerMsg::Ok {
+                    data: serde_json::json!({
+                        "dry_run": dry_run,
+                        "removed": names,
+                    }),
+                },
+                Err(e) => ServerMsg::Error {
+                    code: "cleanup_failed".into(),
+                    message: e.to_string(),
                 },
             }
         }

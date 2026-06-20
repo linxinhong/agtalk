@@ -1,14 +1,14 @@
 //! SQLite 存储层：schema migration 和数据库操作。
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::config::AgConfig;
 
-const CURRENT_VERSION: u32 = 8;
+const CURRENT_VERSION: u32 = 9;
 
 pub struct Storage {
     conn: Mutex<Connection>,
@@ -140,6 +140,9 @@ impl Storage {
         // v8: peers 调度视图所需字段
         ensure_column(&conn, "participants", "role", "TEXT NOT NULL DEFAULT 'agent'")?;
         ensure_column(&conn, "agent_sessions", "runtime_config", "TEXT")?;
+        // v9: session takeover 所需的 endpoint 标识
+        ensure_column(&conn, "agent_sessions", "endpoint_key", "TEXT")?;
+        conn.execute_batch(SCHEMA_V9_ADDITIONS)?;
         if version < CURRENT_VERSION {
             conn.pragma_update(None, "user_version", CURRENT_VERSION)?;
         }
@@ -258,6 +261,10 @@ CREATE TABLE IF NOT EXISTS attachments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id);
+"#;
+
+const SCHEMA_V9_ADDITIONS: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_sessions_endpoint ON agent_sessions(workspace_id, endpoint_key, status);
 "#;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1619,6 +1626,21 @@ fn derive_actions(
     actions
 }
 
+/// 从 notify_config JSON 中提取稳定的 endpoint key。
+///
+/// 形如：`<plugin>:<session>:<pane_id>`，例如 `zellij:agtalk-office:1`。
+/// 没有 endpoint 时回退到 `<plugin>::`。
+pub fn endpoint_key_from_notify_config(notify_config: &serde_json::Value) -> String {
+    let plugin = notify_config
+        .get("plugin")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let endpoint = notify_config.get("endpoint").unwrap_or(&serde_json::Value::Null);
+    let session = endpoint.get("session").and_then(|v| v.as_str()).unwrap_or("");
+    let pane_id = endpoint.get("pane_id").and_then(|v| v.as_str()).unwrap_or("");
+    format!("{}:{}:{}", plugin, session, pane_id)
+}
+
 // ─── workspace / session（v4）──────────────────────────
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1697,6 +1719,7 @@ impl Storage {
         &self,
         workspace_id: &str,
         participant_id: &str,
+        endpoint_key: &str,
         notify_config: Option<&str>,
         runtime_config: Option<&str>,
     ) -> Result<(String, String)> {
@@ -1704,9 +1727,9 @@ impl Storage {
         let id = uuid::Uuid::new_v4().to_string();
         let token = format!("agt_{}", uuid::Uuid::new_v4().to_string().replace('-', ""));
         conn.execute(
-            "INSERT INTO agent_sessions (id, workspace_id, participant_id, token, status, notify_config, runtime_config)
-             VALUES (?1, ?2, ?3, ?4, 'active', ?5, ?6)",
-            params![id, workspace_id, participant_id, token, notify_config, runtime_config],
+            "INSERT INTO agent_sessions (id, workspace_id, participant_id, token, status, endpoint_key, notify_config, runtime_config)
+             VALUES (?1, ?2, ?3, ?4, 'active', ?5, ?6, ?7)",
+            params![id, workspace_id, participant_id, token, endpoint_key, notify_config, runtime_config],
         )?;
         Ok((id, token))
     }
@@ -1742,6 +1765,156 @@ impl Storage {
             params![session_id],
         )?;
         Ok(())
+    }
+
+    /// 检查指定 session 是否仍是 active。
+    pub fn is_session_active(&self, session_id: &str) -> Result<bool> {
+        let conn = self.conn();
+        let status: Option<String> = conn
+            .query_row(
+                "SELECT status FROM agent_sessions WHERE id = ?1",
+                params![session_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(status.as_deref() == Some("active"))
+    }
+
+    /// 查询 workspace + endpoint 上的所有 active session。
+    pub fn get_active_sessions_by_endpoint(
+        &self,
+        workspace_id: &str,
+        endpoint_key: &str,
+    ) -> Result<Vec<SessionInfo>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT s.id, s.workspace_id, s.participant_id, p.name, s.status, s.notify_config
+             FROM agent_sessions s JOIN participants p ON s.participant_id = p.id
+             WHERE s.workspace_id = ?1 AND s.endpoint_key = ?2 AND s.status = 'active'",
+        )?;
+        let rows = stmt.query_map(params![workspace_id, endpoint_key], |r| {
+            Ok(SessionInfo {
+                session_id: r.get(0)?,
+                workspace_id: r.get(1)?,
+                participant_id: r.get(2)?,
+                participant_name: r.get(3)?,
+                status: r.get(4)?,
+                notify_config: r.get(5)?,
+            })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// 退役 workspace + endpoint 上除 except_session_id 外的所有 active session。
+    /// 返回被退役的 session 信息（用于更新本地 session 文件）。
+    pub fn retire_sessions_by_endpoint_except(
+        &self,
+        workspace_id: &str,
+        endpoint_key: &str,
+        except_session_id: &str,
+    ) -> Result<Vec<SessionInfo>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT s.id, s.workspace_id, s.participant_id, p.name, s.status, s.notify_config
+             FROM agent_sessions s JOIN participants p ON s.participant_id = p.id
+             WHERE s.workspace_id = ?1 AND s.endpoint_key = ?2 AND s.status = 'active' AND s.id != ?3",
+        )?;
+        let rows = stmt.query_map(params![workspace_id, endpoint_key, except_session_id], |r| {
+            Ok(SessionInfo {
+                session_id: r.get(0)?,
+                workspace_id: r.get(1)?,
+                participant_id: r.get(2)?,
+                participant_name: r.get(3)?,
+                status: r.get(4)?,
+                notify_config: r.get(5)?,
+            })
+        })?;
+        let retired: Vec<SessionInfo> = rows.filter_map(|r| r.ok()).collect();
+        conn.execute(
+            "UPDATE agent_sessions SET status = 'left' WHERE workspace_id = ?1 AND endpoint_key = ?2 AND status = 'active' AND id != ?3",
+            params![workspace_id, endpoint_key, except_session_id],
+        )?;
+        Ok(retired)
+    }
+
+    /// 根据 participant 的 active session 数量重新设置 online/offline。
+    pub fn recompute_participant_status(&self, participant_id: &str) -> Result<()> {
+        let conn = self.conn();
+        let active_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM agent_sessions WHERE participant_id = ?1 AND status = 'active'",
+            params![participant_id],
+            |r| r.get(0),
+        )?;
+        let status = if active_count > 0 { "online" } else { "offline" };
+        conn.execute(
+            "UPDATE participants SET status = ?1 WHERE id = ?2",
+            params![status, participant_id],
+        )?;
+        Ok(())
+    }
+
+    /// 清理 inactive session。
+    ///
+    /// dry_run=true 时仅返回会被清理的 participant 名称；
+    /// dry_run=false 时删除 DB 中 inactive session，并返回需要删除本地 session 文件的 participant。
+    pub fn cleanup_inactive_sessions(&self, dry_run: bool) -> Result<Vec<String>> {
+        let conn = self.conn();
+        // 所有 inactive session 的 participant
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT s.participant_id, p.name
+             FROM agent_sessions s JOIN participants p ON s.participant_id = p.id
+             WHERE s.status != 'active'",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        let participants: Vec<(String, String)> = rows.filter_map(|r| r.ok()).collect();
+
+        let mut to_clean = Vec::new();
+        for (participant_id, name) in participants {
+            let active_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM agent_sessions WHERE participant_id = ?1 AND status = 'active'",
+                params![participant_id],
+                |r| r.get(0),
+            )?;
+            if active_count == 0 {
+                to_clean.push(name);
+            }
+        }
+
+        if !dry_run {
+            conn.execute(
+                "DELETE FROM agent_sessions WHERE status != 'active'",
+                [],
+            )?;
+        }
+
+        Ok(to_clean)
+    }
+
+    /// 按 id 查询 session 信息。
+    pub fn get_session_by_id(&self, session_id: &str) -> Result<Option<SessionInfo>> {
+        let conn = self.conn();
+        match conn.query_row(
+            "SELECT s.id, s.workspace_id, s.participant_id, p.name, s.status, s.notify_config
+             FROM agent_sessions s JOIN participants p ON s.participant_id = p.id
+             WHERE s.id = ?1",
+            params![session_id],
+            |r| {
+                Ok(SessionInfo {
+                    session_id: r.get(0)?,
+                    workspace_id: r.get(1)?,
+                    participant_id: r.get(2)?,
+                    participant_name: r.get(3)?,
+                    status: r.get(4)?,
+                    notify_config: r.get(5)?,
+                })
+            },
+        ) {
+            Ok(info) => Ok(Some(info)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     #[allow(dead_code)]
@@ -1892,5 +2065,144 @@ mod migration_tests {
         assert_eq!(messages[0].body, "hello");
         assert_eq!(messages[0].metadata, "{}");
         assert_eq!(messages[0].created_at, 30.0);
+    }
+}
+
+#[cfg(test)]
+mod takeover_tests {
+    use super::*;
+
+    fn storage() -> Storage {
+        Storage::open_memory().unwrap()
+    }
+
+    fn register_alice(storage: &Storage) -> Participant {
+        storage
+            .register_participant(None, "alice", "agent", "Alice", "terminal", "{}", "", "agent")
+            .unwrap()
+    }
+
+    fn make_notify(plugin: &str, session: &str, pane_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "plugin": plugin,
+            "endpoint": { "session": session, "pane_id": pane_id },
+            "send_enter": true,
+        })
+    }
+
+    #[test]
+    fn test_create_session_stores_endpoint_key() {
+        let s = storage();
+        let p = register_alice(&s);
+        let ws = s.register_workspace("ws", "/tmp/ws").unwrap();
+        let notify = make_notify("zellij", "main", "1");
+        let key = endpoint_key_from_notify_config(&notify);
+        let (sid, _) = s
+            .create_session(&ws, &p.id, &key, Some(&notify.to_string()), None)
+            .unwrap();
+
+        let info = s.get_session_by_id(&sid).unwrap().unwrap();
+        assert_eq!(info.participant_name, "alice");
+        assert_eq!(info.status, "active");
+    }
+
+    #[test]
+    fn test_same_endpoint_conflict_and_takeover() {
+        let s = storage();
+        let p = register_alice(&s);
+        let ws = s.register_workspace("ws", "/tmp/ws").unwrap();
+        let notify = make_notify("zellij", "main", "1");
+        let key = endpoint_key_from_notify_config(&notify);
+
+        let (old_sid, _) = s
+            .create_session(&ws, &p.id, &key, Some(&notify.to_string()), None)
+            .unwrap();
+
+        // 同 endpoint 上应能查到 active session
+        let existing = s.get_active_sessions_by_endpoint(&ws, &key).unwrap();
+        assert_eq!(existing.len(), 1);
+        assert_eq!(existing[0].session_id, old_sid);
+
+        // takeover 会退役旧 session
+        let retired = s
+            .retire_sessions_by_endpoint_except(&ws, &key, "")
+            .unwrap();
+        assert_eq!(retired.len(), 1);
+        assert_eq!(retired[0].session_id, old_sid);
+
+        // 旧 session 已 left
+        assert!(!s.is_session_active(&old_sid).unwrap());
+    }
+
+    #[test]
+    fn test_recompute_participant_status_after_leave() {
+        let s = storage();
+        let p = register_alice(&s);
+        let ws = s.register_workspace("ws", "/tmp/ws").unwrap();
+        let notify1 = make_notify("zellij", "main", "1");
+        let key1 = endpoint_key_from_notify_config(&notify1);
+        let notify2 = make_notify("zellij", "main", "2");
+        let key2 = endpoint_key_from_notify_config(&notify2);
+
+        let (sid1, _) = s
+            .create_session(&ws, &p.id, &key1, Some(&notify1.to_string()), None)
+            .unwrap();
+        let (sid2, _) = s
+            .create_session(&ws, &p.id, &key2, Some(&notify2.to_string()), None)
+            .unwrap();
+
+        s.update_participant_status("alice", "online").unwrap();
+        s.mark_session_left(&sid1).unwrap();
+        s.recompute_participant_status(&p.id).unwrap();
+
+        let p = s.get_participant_by_name("alice").unwrap().unwrap();
+        assert_eq!(p.status, "online");
+
+        s.mark_session_left(&sid2).unwrap();
+        s.recompute_participant_status(&p.id).unwrap();
+
+        let p = s.get_participant_by_name("alice").unwrap().unwrap();
+        assert_eq!(p.status, "offline");
+    }
+
+    #[test]
+    fn test_cleanup_inactive_sessions_only() {
+        let s = storage();
+        let p = register_alice(&s);
+        let ws = s.register_workspace("ws", "/tmp/ws").unwrap();
+        let notify = make_notify("zellij", "main", "1");
+        let key = endpoint_key_from_notify_config(&notify);
+
+        let (inactive_sid, _) = s
+            .create_session(&ws, &p.id, &key, Some(&notify.to_string()), None)
+            .unwrap();
+        s.mark_session_left(&inactive_sid).unwrap();
+
+        // 干跑返回 alice，但不删除
+        let dry = s.cleanup_inactive_sessions(true).unwrap();
+        assert_eq!(dry, vec!["alice"]);
+        assert!(s.get_session_by_id(&inactive_sid).unwrap().is_some());
+
+        // 真正清理
+        let removed = s.cleanup_inactive_sessions(false).unwrap();
+        assert_eq!(removed, vec!["alice"]);
+        assert!(s.get_session_by_id(&inactive_sid).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_cleanup_keeps_active_session() {
+        let s = storage();
+        let p = register_alice(&s);
+        let ws = s.register_workspace("ws", "/tmp/ws").unwrap();
+        let notify = make_notify("zellij", "main", "1");
+        let key = endpoint_key_from_notify_config(&notify);
+
+        let (active_sid, _) = s
+            .create_session(&ws, &p.id, &key, Some(&notify.to_string()), None)
+            .unwrap();
+
+        let removed = s.cleanup_inactive_sessions(false).unwrap();
+        assert!(removed.is_empty());
+        assert!(s.is_session_active(&active_sid).unwrap());
     }
 }

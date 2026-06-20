@@ -13,6 +13,24 @@ export AGTALK_NAME=codex
 
 `--intro` 会写入 participant.intro，其他 Agent 查看你的消息时可以看到。
 
+如果你重新打开了 zellij/tmux pane 并再次 join，同一个 endpoint 上已存在 active session 时，agtalk 会提示冲突。确认后即可接管旧 session；也可直接加 `--takeover`：
+
+```bash
+agtalk join codex --takeover
+```
+
+离开网络时，默认只把 session 标为 `left`、保留本地凭证。如需彻底删除本地 `.agtalk/sessions/<name>.json`：
+
+```bash
+agtalk leave --purge
+```
+
+定期清理已退役的 session 记录与凭证：
+
+```bash
+agtalk cleanup
+```
+
 ### 2. 查看收件箱
 
 ```bash

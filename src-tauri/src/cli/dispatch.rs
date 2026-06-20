@@ -47,7 +47,9 @@ enum Commands {
     #[command(about = "加入本地通信网络")]
     Join(JoinCommand),
     #[command(about = "离开本地通信网络")]
-    Leave,
+    Leave(LeaveCommand),
+    #[command(about = "清理已退役 session")]
+    Cleanup(CleanupCommand),
     #[command(about = "查看 Agent 自己的信息")]
     Me,
     #[command(about = "列出所有在线参与者")]
@@ -129,8 +131,22 @@ struct JoinCommand {
         help = "Agent 的通知方式"
     )]
     transport: String,
+    #[arg(long = "takeover", help = "接管同 endpoint 上的旧 active session")]
+    takeover: bool,
     #[arg(long = "print-env", help = "只输出 export AGTALK_NAME=...")]
     print_env: bool,
+}
+
+#[derive(Debug, Args)]
+struct LeaveCommand {
+    #[arg(long = "purge", help = "同时删除本地 session 凭证文件")]
+    purge: bool,
+}
+
+#[derive(Debug, Args)]
+struct CleanupCommand {
+    #[arg(long = "dry-run", help = "仅列出会被清理的 session，不实际删除")]
+    dry_run: bool,
 }
 
 #[derive(Debug, Args)]
@@ -205,9 +221,18 @@ pub fn print_help() {
         "{}",
         help::cmd("join <name> [--intro ... --transport ...]", "加入网络")
     );
+    anstream::println!("{}", help::opt("--takeover", "强制接管同 endpoint 上的旧 session"));
     anstream::println!(
         "{}",
-        help::cmd("leave / me / peers", "离开 / 自己信息 / 在线列表")
+        help::cmd("leave [--purge]", "离开网络；--purge 同时删除本地凭证")
+    );
+    anstream::println!(
+        "{}",
+        help::cmd("cleanup [--dry-run]", "清理已退役的 session 记录与本地文件")
+    );
+    anstream::println!(
+        "{}",
+        help::cmd("me / peers", "自己信息 / 在线列表")
     );
     anstream::println!();
     anstream::println!("{}", help::section("收件箱与对话"));
@@ -340,11 +365,13 @@ pub fn dispatch(argv: &[String]) {
                 intro: cmd.intro,
                 role: cmd.role,
                 transport: cmd.transport,
+                takeover: cmd.takeover,
                 print_env: cmd.print_env,
             };
             rt.block_on(handle_join(&args))
         }
-        Commands::Leave => rt.block_on(handle_leave(None)),
+        Commands::Leave(cmd) => rt.block_on(handle_leave(cmd.purge)),
+        Commands::Cleanup(cmd) => rt.block_on(handle_cleanup(cmd.dry_run)),
         Commands::Me => rt.block_on(handle_me()),
         Commands::Peers(args) => rt.block_on(handle_peers(&args)),
         Commands::Inbox(args) => rt.block_on(handle_inbox(&args)),
@@ -400,6 +427,7 @@ struct JoinArgs {
     intro: Option<String>,
     role: String,
     transport: String,
+    takeover: bool,
     print_env: bool,
 }
 
@@ -618,6 +646,7 @@ fn parse_join_args(argv: &[String]) -> JoinArgs {
     let mut intro = None;
     let mut role = "agent".to_string();
     let mut transport = "terminal".to_string();
+    let mut takeover = false;
     let mut print_env = false;
 
     let mut i = 1;
@@ -641,6 +670,9 @@ fn parse_join_args(argv: &[String]) -> JoinArgs {
                     transport = argv[i].clone();
                 }
             }
+            "--takeover" => {
+                takeover = true;
+            }
             "--print-env" => {
                 print_env = true;
             }
@@ -654,6 +686,7 @@ fn parse_join_args(argv: &[String]) -> JoinArgs {
         intro,
         role,
         transport,
+        takeover,
         print_env,
     }
 }
@@ -777,6 +810,13 @@ fn print_agent_help() {
     anstream::println!();
     anstream::println!("  # agent-b 终端：join 后同样自动识别");
     anstream::println!("  agtalk join claude-reviewer-Bob --intro \"代码评审 Agent\" --role reviewer");
+    anstream::println!("  # 同一 endpoint 已存在 active session 时会提示冲突；可加 --takeover 强制接管");
+    anstream::println!("  agtalk join codex-coder-Alex --takeover");
+    anstream::println!("  # 离开并保留凭证（默认）；--purge 删除本地 session.json");
+    anstream::println!("  agtalk leave");
+    anstream::println!("  agtalk leave --purge");
+    anstream::println!("  # 清理已退役 session 记录与本地文件");
+    anstream::println!("  agtalk cleanup");
     anstream::println!("  agtalk inbox");
     anstream::println!("  # 回复消息（带附件）");
     anstream::println!("  agtalk agent \"已通过，可合并\" -n codex-coder-Alex -r <msg-id> -i -f ./result.log");
@@ -881,6 +921,25 @@ fn print_agent_help() {
 
 fn short_id(id: &str) -> String {
     id.chars().take(8).collect()
+}
+
+/// 从 stdin 读取 y/n 确认。
+fn read_yes_no() -> Option<bool> {
+    use std::io::Write;
+    let mut input = String::new();
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+    let _ = stdout.flush();
+    if stdin.read_line(&mut input).is_ok() {
+        let trimmed = input.trim().to_ascii_lowercase();
+        if trimmed == "y" || trimmed == "yes" {
+            return Some(true);
+        }
+        if trimmed == "n" || trimmed == "no" || trimmed.is_empty() {
+            return Some(false);
+        }
+    }
+    None
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -1614,7 +1673,7 @@ async fn handle_join(args: &JoinArgs) -> Result<()> {
 
     // 3. 连接 daemon 并请求 join
     let mut cli = Client::connect(&crate::paths::socket_path()).await?;
-    let resp = cli
+    let mut resp = cli
         .join(
             &root_str,
             &workspace_name,
@@ -1624,10 +1683,46 @@ async fn handle_join(args: &JoinArgs) -> Result<()> {
             &args.transport,
             notify_config.clone(),
             runtime_config.clone(),
+            args.takeover,
         )
         .await?;
 
-    // 3. 解析响应
+    // 4. 处理 session_conflict：显式确认后重试 takeover
+    if let ServerMsg::Error { code, message } = &resp {
+        if code == "session_conflict" {
+            let confirm = if args.takeover {
+                true
+            } else {
+                anstream::println!(
+                    "{} {}",
+                    label("WARN", anstyle::AnsiColor::Yellow),
+                    message
+                );
+                anstream::println!(
+                    "{} 是否接管同 endpoint 上的旧 session？(y/N)",
+                    label("?", anstyle::AnsiColor::Cyan)
+                );
+                read_yes_no().unwrap_or(false)
+            };
+            if confirm {
+                resp = cli
+                    .join(
+                        &root_str,
+                        &workspace_name,
+                        &args.name,
+                        &args.role,
+                        args.intro.as_deref().unwrap_or(""),
+                        &args.transport,
+                        notify_config.clone(),
+                        runtime_config.clone(),
+                        true,
+                    )
+                    .await?;
+            }
+        }
+    }
+
+    // 5. 解析响应
     let data = match &resp {
         ServerMsg::Ok { data } => data.clone(),
         ServerMsg::Error { code, message } => anyhow::bail!("join 失败 [{}]: {}", code, message),
@@ -1725,33 +1820,76 @@ async fn handle_join(args: &JoinArgs) -> Result<()> {
     Ok(())
 }
 
-async fn handle_leave(as_name: Option<&str>) -> Result<()> {
-    let identity = if let Some(name) = as_name {
-        // 读取指定 session
-        let sf = session::read_session(name)?.ok_or_else(|| anyhow!("session 不存在: {}", name))?;
-        let wf = workspace::read_workspace()?.ok_or_else(|| anyhow!("未找到 workspace.json"))?;
-        identity::ResolvedIdentity {
-            workspace_id: wf.workspace.id,
-            participant_name: sf.name,
-            session_id: sf.session.id,
-            token: sf.session.token,
-            socket: wf.daemon.socket.unwrap_or_else(crate::paths::socket_path),
-        }
-    } else {
-        identity::resolve_identity(None)?
-    };
+async fn handle_leave(purge: bool) -> Result<()> {
+    let identity = identity::resolve_identity(None)?;
 
     let mut cli =
         Client::connect_and_auth(&identity.socket, &identity.session_id, &identity.token).await?;
     let resp = cli.leave(None).await?;
 
-    // 本地将 session.json 标记为 left
-    if let Ok(Some(mut sf)) = session::read_session(&identity.participant_name) {
-        sf.session.status = "left".into();
-        let _ = session::write_session(&identity.participant_name, &mut sf);
+    if purge {
+        let _ = session::remove_session(&identity.participant_name);
+        anstream::println!(
+            "{} 已离开并清除本地 session 凭证: {}",
+            label("OK", anstyle::AnsiColor::Green),
+            identity.participant_name
+        );
+    } else {
+        // 本地将 session.json 标记为 left
+        if let Ok(Some(mut sf)) = session::read_session(&identity.participant_name) {
+            sf.session.status = "left".into();
+            let _ = session::write_session(&identity.participant_name, &mut sf);
+        }
     }
 
     println!("{}", serde_json::to_string_pretty(&resp)?);
+    Ok(())
+}
+
+async fn handle_cleanup(dry_run: bool) -> Result<()> {
+    let mut cli = Client::connect(&crate::paths::socket_path()).await?;
+    let resp = cli.cleanup(dry_run).await?;
+    let data = match &resp {
+        ServerMsg::Ok { data } => data,
+        ServerMsg::Error { code, message } => anyhow::bail!("cleanup 失败 [{}]: {}", code, message),
+        _ => anyhow::bail!("cleanup 返回异常"),
+    };
+    let removed = data
+        .get("removed")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if dry_run {
+        anstream::println!(
+            "{} 干跑模式，以下 participant 的 inactive session 将被清理：",
+            label("INFO", anstyle::AnsiColor::Cyan)
+        );
+    } else {
+        // 删除返回的本地 session 文件
+        for name in &removed {
+            if let Err(e) = session::remove_session(name) {
+                anstream::println!(
+                    "{} 无法删除 {} 的本地 session 文件: {}",
+                    label("WARN", anstyle::AnsiColor::Yellow),
+                    name,
+                    e
+                );
+            }
+        }
+        anstream::println!(
+            "{} 已清理 {} 个 inactive session",
+            label("OK", anstyle::AnsiColor::Green),
+            removed.len()
+        );
+    }
+    for name in &removed {
+        println!("  - {}", name);
+    }
     Ok(())
 }
 
