@@ -32,6 +32,7 @@ pub enum ClientMsg {
     },
     /// 清理 inactive session
     Cleanup {
+        workspace_id: String,
         #[serde(default)]
         dry_run: bool,
     },

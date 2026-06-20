@@ -2252,4 +2252,24 @@ mod tests {
             _ => panic!("旧 session 应被标记为 inactive"),
         }
     }
+
+    #[tokio::test]
+    async fn test_shell_join_no_conflict() {
+        let s = storage();
+        let mut registry = NotifyPluginRegistry::new();
+        let fake = Arc::new(FakeNotifyPlugin::default());
+        registry.register(fake.clone());
+
+        // 没有 endpoint 的 shell notify_config
+        let shell_notify = serde_json::json!({ "plugin": "terminal" });
+
+        let mut session1: Option<crate::storage::SessionInfo> = None;
+        let resp1 = join_via_server(&s, &registry, "alice", shell_notify.clone(), false, &mut session1).await;
+        assert!(matches!(resp1, ServerMsg::Ok { .. }), "shell join 应成功");
+
+        // 同 workspace 另一个 agent 用相同空 endpoint 不应冲突
+        let mut session2: Option<crate::storage::SessionInfo> = None;
+        let resp2 = join_via_server(&s, &registry, "bob", shell_notify.clone(), false, &mut session2).await;
+        assert!(matches!(resp2, ServerMsg::Ok { .. }), "无 endpoint 的不同 agent 不应冲突");
+    }
 }

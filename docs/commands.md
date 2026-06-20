@@ -97,7 +97,7 @@ agtalk join <name>               加入本地通信网络
   --takeover                     强制接管同 endpoint 上的旧 active session
 agtalk leave                     离开本地通信网络（本地 session.json 标为 left）
   --purge                        同时删除本地 session.json 凭证
-agtalk cleanup                   清理已退役的 session 记录与本地凭证文件
+agtalk cleanup                   清理当前 workspace 已退役的 session 记录与本地凭证文件
   --dry-run                      仅列出会被清理的 participant，不删除
 agtalk me                        查看 Agent 自己的信息
 agtalk peers                     列出所有在线参与者
@@ -106,7 +106,11 @@ agtalk peers                     列出所有在线参与者
 **session takeover 规则**：
 - 同一 workspace 的同一 endpoint（zellij/tmux 的 `session:pane_id`）只能保留一个 active session。
 - 新 `join` 检测到冲突时会返回错误，CLI 会提示是否接管；加 `--takeover` 可跳过确认直接接管。
+- takeover 为原子操作：新 session 创建与旧 session 退役在单次事务中完成；若创建失败，旧 session 仍保持 active。
+- shell / 无 endpoint 的 join 不参与冲突桶，不同 Agent 可在普通终端同时在线。
 - 接管成功后，旧 session 会被标记为 `left`，其本地 `.agtalk/sessions/<name>.json` 同步失效，participant 在线状态按剩余 active session 重算。
+- `leave --purge` 不依赖当前 session 仍可认证：即使 session 已被接管或 daemon 端失效，仍可删除本地 `.agtalk/sessions/<name>.json` 凭证。
+- `cleanup` 仅清理当前 workspace 的 inactive session，不会扫描其他 workspace。
 
 ### 收件箱与对话
 

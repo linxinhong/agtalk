@@ -97,3 +97,32 @@ fn set_permissions_0600(path: &std::path::Path) {
 
 #[cfg(not(unix))]
 fn set_permissions_0600(_path: &std::path::Path) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::paths::session_json_path;
+    use std::io::Write;
+
+    #[test]
+    fn test_remove_session_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agtalk_dir = tmp.path().join(".agtalk");
+        std::fs::create_dir_all(&agtalk_dir).unwrap();
+        std::env::set_var("AGTALK_ROOT", agtalk_dir.parent().unwrap());
+
+        let name = "purge-test-agent";
+        let path = session_json_path(name).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(b"{}").unwrap();
+        drop(f);
+        assert!(path.exists());
+
+        remove_session(name).unwrap();
+        assert!(!path.exists());
+
+        // 重复删除不应报错
+        remove_session(name).unwrap();
+    }
+}

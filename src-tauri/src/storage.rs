@@ -1629,7 +1629,7 @@ fn derive_actions(
 /// 从 notify_config JSON 中提取稳定的 endpoint key。
 ///
 /// 形如：`<plugin>:<session>:<pane_id>`，例如 `zellij:agtalk-office:1`。
-/// 没有 endpoint 时回退到 `<plugin>::`。
+/// 没有 endpoint 信息时返回空字符串，避免 shell / 无 endpoint 的 session 被折叠进同一个冲突桶。
 pub fn endpoint_key_from_notify_config(notify_config: &serde_json::Value) -> String {
     let plugin = notify_config
         .get("plugin")
@@ -1638,7 +1638,11 @@ pub fn endpoint_key_from_notify_config(notify_config: &serde_json::Value) -> Str
     let endpoint = notify_config.get("endpoint").unwrap_or(&serde_json::Value::Null);
     let session = endpoint.get("session").and_then(|v| v.as_str()).unwrap_or("");
     let pane_id = endpoint.get("pane_id").and_then(|v| v.as_str()).unwrap_or("");
-    format!("{}:{}:{}", plugin, session, pane_id)
+    if session.is_empty() && pane_id.is_empty() {
+        String::new()
+    } else {
+        format!("{}:{}:{}", plugin, session, pane_id)
+    }
 }
 
 // ─── workspace / session（v4）──────────────────────────
@@ -1734,6 +1738,58 @@ impl Storage {
         Ok((id, token))
     }
 
+    /// 原子地创建 session 并在需要时接管同 endpoint 旧 session。
+    ///
+    /// 整个流程在一个 SQLite 事务中完成：创建新 session → 退役同 endpoint 旧 active session。
+    /// 若创建失败或事务回滚，旧 session 仍保持 active，满足 takeover 原子性要求。
+    /// 返回 (session_id, token, 被退役的旧 session 列表)。
+    pub fn create_session_with_takeover(
+        &self,
+        workspace_id: &str,
+        participant_id: &str,
+        endpoint_key: &str,
+        notify_config: Option<&str>,
+        runtime_config: Option<&str>,
+    ) -> Result<(String, String, Vec<SessionInfo>)> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+
+        let id = uuid::Uuid::new_v4().to_string();
+        let token = format!("agt_{}", uuid::Uuid::new_v4().to_string().replace('-', ""));
+        tx.execute(
+            "INSERT INTO agent_sessions (id, workspace_id, participant_id, token, status, endpoint_key, notify_config, runtime_config)
+             VALUES (?1, ?2, ?3, ?4, 'active', ?5, ?6, ?7)",
+            params![id, workspace_id, participant_id, token, endpoint_key, notify_config, runtime_config],
+        )?;
+
+        // 在同一事务中退役同 endpoint 的其他 active session（新 session 已创建，排除自己）
+        let mut stmt = tx.prepare(
+            "SELECT s.id, s.workspace_id, s.participant_id, p.name, s.status, s.notify_config
+             FROM agent_sessions s JOIN participants p ON s.participant_id = p.id
+             WHERE s.workspace_id = ?1 AND s.endpoint_key = ?2 AND s.status = 'active' AND s.id != ?3",
+        )?;
+        let rows = stmt.query_map(params![workspace_id, endpoint_key, &id], |r| {
+            Ok(SessionInfo {
+                session_id: r.get(0)?,
+                workspace_id: r.get(1)?,
+                participant_id: r.get(2)?,
+                participant_name: r.get(3)?,
+                status: r.get(4)?,
+                notify_config: r.get(5)?,
+            })
+        })?;
+        let retired: Vec<SessionInfo> = rows.filter_map(|r| r.ok()).collect();
+        drop(stmt);
+
+        tx.execute(
+            "UPDATE agent_sessions SET status = 'left' WHERE workspace_id = ?1 AND endpoint_key = ?2 AND status = 'active' AND id != ?3",
+            params![workspace_id, endpoint_key, &id],
+        )?;
+
+        tx.commit()?;
+        Ok((id, token, retired))
+    }
+
     /// 校验 session_id + token，返回绑定身份
     pub fn validate_session(&self, session_id: &str, token: &str) -> Result<Option<SessionInfo>> {
         let conn = self.conn();
@@ -1807,6 +1863,7 @@ impl Storage {
 
     /// 退役 workspace + endpoint 上除 except_session_id 外的所有 active session。
     /// 返回被退役的 session 信息（用于更新本地 session 文件）。
+    #[allow(dead_code)]
     pub fn retire_sessions_by_endpoint_except(
         &self,
         workspace_id: &str,
@@ -1853,19 +1910,20 @@ impl Storage {
         Ok(())
     }
 
-    /// 清理 inactive session。
+    /// 清理指定 workspace 下的 inactive session。
     ///
     /// dry_run=true 时仅返回会被清理的 participant 名称；
-    /// dry_run=false 时删除 DB 中 inactive session，并返回需要删除本地 session 文件的 participant。
-    pub fn cleanup_inactive_sessions(&self, dry_run: bool) -> Result<Vec<String>> {
+    /// dry_run=false 时删除该 workspace 下 inactive session，并返回需要删除本地 session 文件的 participant。
+    /// 只操作当前 workspace，不会扫描全库。
+    pub fn cleanup_inactive_sessions(&self, workspace_id: &str, dry_run: bool) -> Result<Vec<String>> {
         let conn = self.conn();
-        // 所有 inactive session 的 participant
+        // 当前 workspace 下所有 inactive session 的 participant
         let mut stmt = conn.prepare(
             "SELECT DISTINCT s.participant_id, p.name
              FROM agent_sessions s JOIN participants p ON s.participant_id = p.id
-             WHERE s.status != 'active'",
+             WHERE s.workspace_id = ?1 AND s.status != 'active'",
         )?;
-        let rows = stmt.query_map([], |r| {
+        let rows = stmt.query_map(params![workspace_id], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         })?;
         let participants: Vec<(String, String)> = rows.filter_map(|r| r.ok()).collect();
@@ -1873,8 +1931,8 @@ impl Storage {
         let mut to_clean = Vec::new();
         for (participant_id, name) in participants {
             let active_count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM agent_sessions WHERE participant_id = ?1 AND status = 'active'",
-                params![participant_id],
+                "SELECT COUNT(*) FROM agent_sessions WHERE workspace_id = ?1 AND participant_id = ?2 AND status = 'active'",
+                params![workspace_id, participant_id],
                 |r| r.get(0),
             )?;
             if active_count == 0 {
@@ -1884,8 +1942,8 @@ impl Storage {
 
         if !dry_run {
             conn.execute(
-                "DELETE FROM agent_sessions WHERE status != 'active'",
-                [],
+                "DELETE FROM agent_sessions WHERE workspace_id = ?1 AND status != 'active'",
+                params![workspace_id],
             )?;
         }
 
@@ -2179,12 +2237,12 @@ mod takeover_tests {
         s.mark_session_left(&inactive_sid).unwrap();
 
         // 干跑返回 alice，但不删除
-        let dry = s.cleanup_inactive_sessions(true).unwrap();
+        let dry = s.cleanup_inactive_sessions(&ws, true).unwrap();
         assert_eq!(dry, vec!["alice"]);
         assert!(s.get_session_by_id(&inactive_sid).unwrap().is_some());
 
         // 真正清理
-        let removed = s.cleanup_inactive_sessions(false).unwrap();
+        let removed = s.cleanup_inactive_sessions(&ws, false).unwrap();
         assert_eq!(removed, vec!["alice"]);
         assert!(s.get_session_by_id(&inactive_sid).unwrap().is_none());
     }
@@ -2201,8 +2259,118 @@ mod takeover_tests {
             .create_session(&ws, &p.id, &key, Some(&notify.to_string()), None)
             .unwrap();
 
-        let removed = s.cleanup_inactive_sessions(false).unwrap();
+        let removed = s.cleanup_inactive_sessions(&ws, false).unwrap();
         assert!(removed.is_empty());
         assert!(s.is_session_active(&active_sid).unwrap());
+    }
+
+    #[test]
+    fn test_create_session_with_takeover_atomic() {
+        let s = storage();
+        let p = register_alice(&s);
+        let ws = s.register_workspace("ws", "/tmp/ws").unwrap();
+        let notify = make_notify("zellij", "main", "1");
+        let key = endpoint_key_from_notify_config(&notify);
+
+        let (old_sid, _) = s
+            .create_session(&ws, &p.id, &key, Some(&notify.to_string()), None)
+            .unwrap();
+
+        let (new_sid, _, retired) = s
+            .create_session_with_takeover(&ws, &p.id, &key, Some(&notify.to_string()), None)
+            .unwrap();
+
+        assert_ne!(old_sid, new_sid);
+        assert_eq!(retired.len(), 1);
+        assert_eq!(retired[0].session_id, old_sid);
+        assert!(!s.is_session_active(&old_sid).unwrap());
+        assert!(s.is_session_active(&new_sid).unwrap());
+    }
+
+    #[test]
+    fn test_endpoint_key_empty_for_shell() {
+        let shell_notify = serde_json::json!({ "plugin": "terminal" });
+        assert_eq!(endpoint_key_from_notify_config(&shell_notify), "");
+
+        let empty_endpoint = serde_json::json!({
+            "plugin": "terminal",
+            "endpoint": {}
+        });
+        assert_eq!(endpoint_key_from_notify_config(&empty_endpoint), "");
+    }
+
+    #[test]
+    fn test_shell_sessions_do_not_conflict() {
+        let s = storage();
+        let alice = register_alice(&s);
+        let bob = s
+            .register_participant(None, "bob", "agent", "Bob", "terminal", "{}", "", "agent")
+            .unwrap();
+        let ws = s.register_workspace("ws", "/tmp/ws").unwrap();
+        let shell_notify = serde_json::json!({ "plugin": "terminal" });
+        let key = endpoint_key_from_notify_config(&shell_notify);
+        assert!(key.is_empty());
+
+        let (sid1, _) = s
+            .create_session(&ws, &alice.id, &key, Some(&shell_notify.to_string()), None)
+            .unwrap();
+        let (sid2, _) = s
+            .create_session(&ws, &bob.id, &key, Some(&shell_notify.to_string()), None)
+            .unwrap();
+
+        assert!(s.is_session_active(&sid1).unwrap());
+        assert!(s.is_session_active(&sid2).unwrap());
+    }
+
+    #[test]
+    fn test_takeover_failure_keeps_old_session_active() {
+        let s = storage();
+        let p = register_alice(&s);
+        let ws = s.register_workspace("ws", "/tmp/ws").unwrap();
+        let notify = make_notify("zellij", "main", "1");
+        let key = endpoint_key_from_notify_config(&notify);
+
+        let (old_sid, _) = s
+            .create_session(&ws, &p.id, &key, Some(&notify.to_string()), None)
+            .unwrap();
+
+        // 用不存在的 participant_id 触发新 session 创建失败，事务必须回滚
+        let result = s.create_session_with_takeover(
+            &ws,
+            "nonexistent-participant-id",
+            &key,
+            Some(&notify.to_string()),
+            None,
+        );
+        assert!(result.is_err(), "不存在的 participant 应导致创建失败");
+
+        // 旧 session 必须保持 active，不能因 takeover 失败被退役
+        assert!(s.is_session_active(&old_sid).unwrap());
+    }
+
+    #[test]
+    fn test_cleanup_is_workspace_scoped() {
+        let s = storage();
+        let p = register_alice(&s);
+        let ws1 = s.register_workspace("ws1", "/tmp/ws1").unwrap();
+        let ws2 = s.register_workspace("ws2", "/tmp/ws2").unwrap();
+        let notify = make_notify("zellij", "main", "1");
+        let key = endpoint_key_from_notify_config(&notify);
+
+        let (inactive_in_ws1, _) = s
+            .create_session(&ws1, &p.id, &key, Some(&notify.to_string()), None)
+            .unwrap();
+        s.mark_session_left(&inactive_in_ws1).unwrap();
+
+        let (inactive_in_ws2, _) = s
+            .create_session(&ws2, &p.id, &key, Some(&notify.to_string()), None)
+            .unwrap();
+        s.mark_session_left(&inactive_in_ws2).unwrap();
+
+        // 只清理 ws1，ws2 的 inactive session 应保留
+        let removed = s.cleanup_inactive_sessions(&ws1, false).unwrap();
+        assert_eq!(removed, vec!["alice"]);
+        assert!(s.get_session_by_id(&inactive_in_ws1).unwrap().is_none());
+        assert!(s.get_session_by_id(&inactive_in_ws2).unwrap().is_some());
     }
 }

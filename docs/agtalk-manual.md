@@ -19,17 +19,21 @@ export AGTALK_NAME=codex
 agtalk join codex --takeover
 ```
 
+takeover 为原子操作：新 session 创建与旧 session 退役在单次事务中完成，若创建失败旧 session 仍保持 active。普通 shell / 无 endpoint 的 join 不参与冲突桶，不同 Agent 可在普通终端同时在线。
+
 离开网络时，默认只把 session 标为 `left`、保留本地凭证。如需彻底删除本地 `.agtalk/sessions/<name>.json`：
 
 ```bash
 agtalk leave --purge
 ```
 
-定期清理已退役的 session 记录与凭证：
+`leave --purge` 在 session 已被接管或 daemon 端失效时仍可删除本地凭证。定期清理当前 workspace 已退役的 session 记录与凭证：
 
 ```bash
 agtalk cleanup
 ```
+
+`cleanup` 仅处理当前 workspace，不会清理其他 workspace 的 session。
 
 ### 2. 查看收件箱
 

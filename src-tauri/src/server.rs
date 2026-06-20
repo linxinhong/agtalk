@@ -338,11 +338,12 @@ pub(crate) async fn handle_msg(
                 Some(runtime_config.to_string())
             };
             let endpoint_key = endpoint_key_from_notify_config(&notify_config);
+            let has_endpoint = !endpoint_key.is_empty();
 
-            // takeover 前检查同 endpoint active session 冲突
-            match storage.get_active_sessions_by_endpoint(&workspace_id, &endpoint_key) {
-                Ok(existing) if !existing.is_empty() => {
-                    if !takeover {
+            // 无 endpoint 的 shell join 不参与冲突检测；有 endpoint 且未 takeover 时检查冲突
+            if has_endpoint && !takeover {
+                match storage.get_active_sessions_by_endpoint(&workspace_id, &endpoint_key) {
+                    Ok(existing) if !existing.is_empty() => {
                         return ServerMsg::Error {
                             code: "session_conflict".into(),
                             message: format!(
@@ -352,35 +353,13 @@ pub(crate) async fn handle_msg(
                             ),
                         };
                     }
-                    // takeover：先退役同 endpoint 旧 session
-                    match storage.retire_sessions_by_endpoint_except(
-                        &workspace_id,
-                        &endpoint_key,
-                        "", // 新 session 尚未创建，因此无需排除
-                    ) {
-                        Ok(retired) => {
-                            // 同步旧 session 本地文件为 left
-                            for old in retired {
-                                if let Some(participant_name) = Some(old.participant_name) {
-                                    let _ = mark_local_session_left(&participant_name);
-                                }
-                                let _ = storage.recompute_participant_status(&old.participant_id);
-                            }
-                        }
-                        Err(e) => {
-                            return ServerMsg::Error {
-                                code: "takeover_failed".into(),
-                                message: format!("接管旧 session 失败: {}", e),
-                            };
-                        }
+                    Ok(_) => {}
+                    Err(e) => {
+                        return ServerMsg::Error {
+                            code: "join_failed".into(),
+                            message: format!("查询 endpoint 冲突失败: {}", e),
+                        };
                     }
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    return ServerMsg::Error {
-                        code: "join_failed".into(),
-                        message: format!("查询 endpoint 冲突失败: {}", e),
-                    };
                 }
             }
 
@@ -415,21 +394,47 @@ pub(crate) async fn handle_msg(
                     }
                 }
             };
-            let (session_id, token) = match storage.create_session(
-                &workspace_id,
-                &participant.id,
-                &endpoint_key,
-                notify_config_str.as_deref(),
-                runtime_config_str.as_deref(),
-            ) {
-                Ok(t) => t,
-                Err(e) => {
-                    return ServerMsg::Error {
-                        code: "join_failed".into(),
-                        message: format!("创建 session 失败: {}", e),
+            // 有 endpoint 且 takeover 时：原子地创建 session 并退役同 endpoint 旧 session。
+            // create_session_with_takeover 内部使用事务，任一步失败都会回滚，旧 session 保持 active。
+            let (session_id, token, retired) = if has_endpoint && takeover {
+                match storage.create_session_with_takeover(
+                    &workspace_id,
+                    &participant.id,
+                    &endpoint_key,
+                    notify_config_str.as_deref(),
+                    runtime_config_str.as_deref(),
+                ) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        return ServerMsg::Error {
+                            code: "join_failed".into(),
+                            message: format!("创建 session 失败: {}", e),
+                        }
+                    }
+                }
+            } else {
+                match storage.create_session(
+                    &workspace_id,
+                    &participant.id,
+                    &endpoint_key,
+                    notify_config_str.as_deref(),
+                    runtime_config_str.as_deref(),
+                ) {
+                    Ok((sid, tok)) => (sid, tok, vec![]),
+                    Err(e) => {
+                        return ServerMsg::Error {
+                            code: "join_failed".into(),
+                            message: format!("创建 session 失败: {}", e),
+                        }
                     }
                 }
             };
+
+            // 同步被接管旧 session 的本地文件并重新计算 participant 在线状态
+            for old in retired {
+                let _ = mark_local_session_left(&old.participant_name);
+                let _ = storage.recompute_participant_status(&old.participant_id);
+            }
 
             // 自动认证当前连接为刚创建的 session
             if let Ok(Some(info)) = storage.validate_session(&session_id, &token) {
@@ -490,8 +495,8 @@ pub(crate) async fn handle_msg(
         }
 
         // ── 清理 inactive session ─────────────
-        ClientMsg::Cleanup { dry_run } => {
-            match storage.cleanup_inactive_sessions(dry_run) {
+        ClientMsg::Cleanup { workspace_id, dry_run } => {
+            match storage.cleanup_inactive_sessions(&workspace_id, dry_run) {
                 Ok(names) => ServerMsg::Ok {
                     data: serde_json::json!({
                         "dry_run": dry_run,

@@ -124,8 +124,12 @@ impl Client {
         .await
     }
 
-    pub async fn cleanup(&mut self, dry_run: bool) -> Result<ServerMsg> {
-        self.request(&ClientMsg::Cleanup { dry_run }).await
+    pub async fn cleanup(&mut self, workspace_id: &str, dry_run: bool) -> Result<ServerMsg> {
+        self.request(&ClientMsg::Cleanup {
+            workspace_id: workspace_id.to_string(),
+            dry_run,
+        })
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]

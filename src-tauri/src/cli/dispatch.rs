@@ -228,8 +228,12 @@ pub fn print_help() {
     );
     anstream::println!(
         "{}",
-        help::cmd("cleanup [--dry-run]", "清理已退役的 session 记录与本地文件")
+        help::cmd("cleanup [--dry-run]", "清理当前 workspace 已退役的 session 记录与本地文件")
     );
+    anstream::println!();
+    anstream::println!("  shell / 无 endpoint 的 join 不参与 takeover 冲突桶。");
+    anstream::println!("  takeover 为原子操作：创建新 session 失败时旧 session 仍保持 active。");
+    anstream::println!("  leave --purge 在 session 已被接管或失效时仍可删除本地凭证。");
     anstream::println!(
         "{}",
         help::cmd("me / peers", "自己信息 / 在线列表")
@@ -814,11 +818,12 @@ fn print_agent_help() {
     anstream::println!("  # agent-b 终端：join 后同样自动识别");
     anstream::println!("  agtalk join claude-reviewer-Bob --intro \"代码评审 Agent\" --role reviewer");
     anstream::println!("  # 同一 endpoint 已存在 active session 时会提示冲突；可加 --takeover 强制接管");
+    anstream::println!("  # takeover 为原子操作；shell / 无 endpoint 的 join 不会冲突");
     anstream::println!("  agtalk join codex-coder-Alex --takeover");
-    anstream::println!("  # 离开并保留凭证（默认）；--purge 删除本地 session.json");
+    anstream::println!("  # 离开并保留凭证（默认）；--purge 删除本地 session.json，即使 session 已失效");
     anstream::println!("  agtalk leave");
     anstream::println!("  agtalk leave --purge");
-    anstream::println!("  # 清理已退役 session 记录与本地文件");
+    anstream::println!("  # 清理当前 workspace 已退役 session 记录与本地文件");
     anstream::println!("  agtalk cleanup");
     anstream::println!("  agtalk inbox");
     anstream::println!("  # 回复消息（带附件）");
@@ -1826,34 +1831,91 @@ async fn handle_join(args: &JoinArgs) -> Result<()> {
 }
 
 async fn handle_leave(purge: bool) -> Result<()> {
-    let identity = identity::resolve_identity(None)?;
+    // 尝试解析当前身份；purge 模式下允许 session 已被 takeover/失效。
+    let identity = identity::resolve_identity(None);
+    let mut leave_resp: Option<ServerMsg> = None;
+    let target_name: Option<String>;
 
-    let mut cli =
-        Client::connect_and_auth(&identity.socket, &identity.session_id, &identity.token).await?;
-    let resp = cli.leave(None).await?;
-
-    if purge {
-        let _ = session::remove_session(&identity.participant_name);
-        anstream::println!(
-            "{} 已离开并清除本地 session 凭证: {}",
-            label("OK", anstyle::AnsiColor::Green),
-            identity.participant_name
-        );
-    } else {
-        // 本地将 session.json 标记为 left
-        if let Ok(Some(mut sf)) = session::read_session(&identity.participant_name) {
-            sf.session.status = "left".into();
-            let _ = session::write_session(&identity.participant_name, &mut sf);
+    match &identity {
+        Ok(id) => {
+            target_name = Some(id.participant_name.clone());
+            match Client::connect_and_auth(&id.socket, &id.session_id, &id.token).await {
+                Ok(mut cli) => {
+                    leave_resp = Some(cli.leave(None).await?);
+                }
+                Err(e) => {
+                    if !purge {
+                        return Err(e);
+                    }
+                    // purge 模式：daemon 侧已失效也继续清理本地凭证
+                }
+            }
+        }
+        Err(e) => {
+            if !purge {
+                return Err(anyhow!("{}", e));
+            }
+            // purge 模式：从 AGTALK_NAME 或唯一 active session 推断目标
+            target_name = std::env::var("AGTALK_NAME")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| {
+                    session::list_active_sessions().ok().and_then(|v| {
+                        if v.len() == 1 {
+                            Some(v[0].clone())
+                        } else {
+                            None
+                        }
+                    })
+                });
+            if target_name.is_none() {
+                return Err(anyhow!(
+                    "无法确定要清理的 session：请设置 AGTALK_NAME，或确保只有唯一 active session"
+                ));
+            }
         }
     }
 
-    println!("{}", serde_json::to_string_pretty(&resp)?);
+    // 处理本地 session 文件
+    if let Some(name) = target_name {
+        if purge {
+            if let Err(e) = session::remove_session(&name) {
+                let not_found = e
+                    .downcast_ref::<std::io::Error>()
+                    .map(|io| io.kind() == std::io::ErrorKind::NotFound)
+                    .unwrap_or(false);
+                if !not_found {
+                    return Err(e);
+                }
+            }
+            anstream::println!(
+                "{} 已清除本地 session 凭证: {}",
+                label("OK", anstyle::AnsiColor::Green),
+                name
+            );
+        } else {
+            // 本地将 session.json 标记为 left
+            if let Ok(Some(mut sf)) = session::read_session(&name) {
+                sf.session.status = "left".into();
+                let _ = session::write_session(&name, &mut sf);
+            }
+        }
+    }
+
+    if let Some(resp) = leave_resp {
+        println!("{}", serde_json::to_string_pretty(&resp)?);
+    }
+
     Ok(())
 }
 
 async fn handle_cleanup(dry_run: bool) -> Result<()> {
+    let workspace_id = match crate::workspace::read_workspace()? {
+        Some(wf) => wf.workspace.id,
+        None => anyhow::bail!("未找到 workspace.json，请在 agtalk workspace 内执行 cleanup"),
+    };
     let mut cli = Client::connect(&crate::paths::socket_path()).await?;
-    let resp = cli.cleanup(dry_run).await?;
+    let resp = cli.cleanup(&workspace_id, dry_run).await?;
     let data = match &resp {
         ServerMsg::Ok { data } => data,
         ServerMsg::Error { code, message } => anyhow::bail!("cleanup 失败 [{}]: {}", code, message),
