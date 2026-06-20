@@ -7,9 +7,9 @@ use tokio::net::UnixStream;
 #[allow(dead_code)]
 async fn daemon_request(req: &str) -> Result<String, String> {
     let path = crate::paths::socket_path();
-    let stream = UnixStream::connect(&path)
-        .await
-        .map_err(|e| format!("无法连接 daemon: {}", e))?;
+    let stream = UnixStream::connect(&path).await.map_err(|e| {
+        crate::cli::daemon::connection_diagnostic(&path, &format!("{}", e))
+    })?;
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
 

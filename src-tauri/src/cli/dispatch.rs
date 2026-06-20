@@ -1,6 +1,7 @@
 //! CLI 命令分派：agtalk 单一二进制入口。
 
 use super::client::Client;
+use super::daemon;
 use super::help;
 use crate::ipc::ServerMsg;
 use crate::{identity, notify, session, workspace};
@@ -1813,119 +1814,201 @@ async fn handle_init() -> Result<()> {
 
 async fn handle_daemon(argv: &[String]) -> Result<()> {
     let cmd = argv.first().map(|s| s.as_str()).unwrap_or("status");
-    let pid_path = crate::paths::pid_path();
     match cmd {
-        "start" => {
-            anstream::println!("{} 启动 daemon...", label("INFO", anstyle::AnsiColor::Cyan));
-            let exe = std::env::current_exe().unwrap_or_default();
-            std::process::Command::new(&exe)
-                .arg("__daemon")
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()?;
-            for _ in 0..30 {
-                if pid_path.exists() {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-            anstream::println!("{} daemon 已启动", label("OK", anstyle::AnsiColor::Green));
-            Ok(())
-        }
-        "stop" => {
-            match std::fs::read_to_string(&pid_path) {
-                Ok(pid) => {
-                    let pid = pid.trim();
-                    let _ = std::process::Command::new("kill")
-                        .arg("-TERM")
-                        .arg(pid)
-                        .status();
-                    for _ in 0..30 {
-                        if !pid_path.exists() {
-                            break;
-                        }
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    }
-                    let _ = std::fs::remove_file(&pid_path);
-                    let _ = std::fs::remove_file(socket_path());
-                    anstream::println!("{} daemon 已停止", label("OK", anstyle::AnsiColor::Green));
-                }
-                Err(_) => anstream::println!(
-                    "{} daemon 未运行（无 PID 文件）",
-                    label("WARN", anstyle::AnsiColor::Yellow)
-                ),
-            }
-            Ok(())
-        }
+        "start" => daemon_start().await,
+        "stop" => daemon_stop().await,
         "restart" => {
-            if let Ok(pid) = std::fs::read_to_string(&pid_path) {
-                let _ = std::process::Command::new("kill")
-                    .arg("-TERM")
-                    .arg(pid.trim())
-                    .status();
-                for _ in 0..30 {
-                    if !pid_path.exists() {
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
-            }
-            let _ = std::fs::remove_file(&pid_path);
-            let _ = std::fs::remove_file(socket_path());
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            let exe = std::env::current_exe().unwrap_or_default();
-            std::process::Command::new(&exe)
-                .arg("__daemon")
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()?;
-            for _ in 0..30 {
-                if pid_path.exists() {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-            anstream::println!("{} daemon 已重启", label("OK", anstyle::AnsiColor::Green));
-            Ok(())
+            daemon_stop().await?;
+            daemon_start().await
         }
-        "status" => {
-            let pid_alive = match std::fs::read_to_string(&pid_path) {
-                Ok(pid) => std::process::Command::new("kill")
-                    .arg("-0")
-                    .arg(pid.trim())
-                    .status()
-                    .map(|s| s.success())
-                    .unwrap_or(false),
-                Err(_) => false,
-            };
-            match Client::connect(&socket_path()).await {
-                Ok(mut cli) => {
-                    let _ = cli.ping().await?;
-                    anstream::println!(
-                        "daemon: {} ({})",
-                        label("运行中", anstyle::AnsiColor::Green),
-                        crate::paths::socket_path()
-                    );
-                }
-                Err(_) if pid_alive => {
-                    anstream::println!(
-                        "daemon: {}",
-                        label("启动中（PID 存在但未就绪）", anstyle::AnsiColor::Yellow)
-                    );
-                }
-                Err(e) => anstream::println!(
-                    "daemon: {} ({})",
-                    label("未运行", anstyle::AnsiColor::Yellow),
-                    e
-                ),
-            }
-            Ok(())
-        }
+        "status" => daemon_status().await,
         _ => {
             eprintln!("用法: agtalk daemon start|stop|restart|status");
             Ok(())
         }
     }
+}
+
+async fn daemon_start() -> Result<()> {
+    anstream::println!("{} 检查 daemon 状态...", label("INFO", anstyle::AnsiColor::Cyan));
+    let state = daemon::check_state().await;
+    match &state {
+        daemon::DaemonState::Running { pid } => {
+            anstream::println!(
+                "{} daemon 已运行 (pid {})",
+                label("OK", anstyle::AnsiColor::Green),
+                pid
+            );
+            return Ok(());
+        }
+        daemon::DaemonState::Starting { pid, reason, .. } => {
+            anstream::println!(
+                "{} 检测到 daemon 启动中 (pid {}): {}",
+                label("WARN", anstyle::AnsiColor::Yellow),
+                pid,
+                reason
+            );
+        }
+        daemon::DaemonState::Stale { reason, .. } => {
+            anstream::println!(
+                "{} 检测到 stale 文件: {}，准备清理",
+                label("WARN", anstyle::AnsiColor::Yellow),
+                reason
+            );
+            daemon::clean_stale_files()?;
+        }
+        daemon::DaemonState::NotRunning => {}
+    }
+
+    anstream::println!("{} 启动 daemon...", label("INFO", anstyle::AnsiColor::Cyan));
+    let exe = std::env::current_exe().unwrap_or_default();
+    let mut child_cmd = std::process::Command::new(&exe);
+    child_cmd
+        .arg("__daemon")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    daemon::apply_no_proxy(&mut child_cmd);
+    let mut child = child_cmd.spawn().context("无法 spawn daemon 子进程")?;
+
+    match daemon::wait_for_running(std::time::Duration::from_secs(5)).await {
+        Ok(daemon::DaemonState::Running { pid }) => {
+            anstream::println!(
+                "{} daemon 已启动 (pid {})",
+                label("OK", anstyle::AnsiColor::Green),
+                pid
+            );
+            Ok(())
+        }
+        Ok(other) => {
+            let _ = child.kill();
+            daemon::clean_stale_files().ok();
+            anyhow::bail!(
+                "daemon 启动后状态异常: {}\n{}",
+                other,
+                daemon_diagnostic()
+            );
+        }
+        Err(e) => {
+            let _ = child.kill();
+            daemon::clean_stale_files().ok();
+            anyhow::bail!("{}\n{}", e, daemon_diagnostic());
+        }
+    }
+}
+
+async fn daemon_stop() -> Result<()> {
+    let state = daemon::check_state().await;
+    match &state {
+        daemon::DaemonState::Running { pid } | daemon::DaemonState::Starting { pid, .. } => {
+            anstream::println!(
+                "{} 停止 daemon (pid {})...",
+                label("INFO", anstyle::AnsiColor::Cyan),
+                pid
+            );
+            let _ = std::process::Command::new("kill")
+                .arg("-TERM")
+                .arg(pid.to_string())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                if matches!(daemon::check_state().await, daemon::DaemonState::NotRunning) {
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            daemon::clean_stale_files().ok();
+            if matches!(daemon::check_state().await, daemon::DaemonState::NotRunning) {
+                anstream::println!("{} daemon 已停止", label("OK", anstyle::AnsiColor::Green));
+            } else {
+                anstream::println!(
+                    "{} daemon 未能优雅停止，已清理残留文件",
+                    label("WARN", anstyle::AnsiColor::Yellow)
+                );
+            }
+        }
+        daemon::DaemonState::Stale { reason, .. } => {
+            anstream::println!(
+                "{} 检测到 stale 文件: {}，执行清理",
+                label("WARN", anstyle::AnsiColor::Yellow),
+                reason
+            );
+            daemon::clean_stale_files()?;
+        }
+        daemon::DaemonState::NotRunning => {
+            anstream::println!(
+                "{} daemon 未运行",
+                label("WARN", anstyle::AnsiColor::Yellow)
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn daemon_status() -> Result<()> {
+    let state = daemon::check_state().await;
+    match &state {
+        daemon::DaemonState::Running { pid } => {
+            anstream::println!(
+                "daemon: {} (pid {}, {})",
+                label("运行中", anstyle::AnsiColor::Green),
+                pid,
+                daemon::socket_path()
+            );
+        }
+        daemon::DaemonState::Starting { pid, reason, .. } => {
+            anstream::println!(
+                "daemon: {} (pid {}, {})",
+                label("启动中", anstyle::AnsiColor::Yellow),
+                pid,
+                reason
+            );
+        }
+        daemon::DaemonState::Stale { reason, .. } => {
+            anstream::println!(
+                "daemon: {} ({})",
+                label("残留状态", anstyle::AnsiColor::Red),
+                reason
+            );
+            anstream::println!("  建议执行: agtalk daemon restart");
+        }
+        daemon::DaemonState::NotRunning => {
+            anstream::println!(
+                "daemon: {}",
+                label("未运行", anstyle::AnsiColor::Yellow)
+            );
+        }
+    }
+    if daemon::has_network_proxy() {
+        anstream::println!(
+            "  代理环境: {}（agtalk 本地 IPC 使用 Unix socket，不应经过网络代理）",
+            daemon::proxy_env_summary()
+        );
+    }
+    Ok(())
+}
+
+fn daemon_diagnostic() -> String {
+    let mut lines = vec![
+        format!("socket 路径: {}", daemon::socket_path()),
+        format!("pid 路径: {:?}", daemon::pid_path()),
+        format!("代理环境: {}", daemon::proxy_env_summary()),
+        "建议:".to_string(),
+        "  1. 检查是否有其他 agtalk daemon 占用了 socket。".to_string(),
+        "  2. 若刚升级 binary，执行 `agtalk daemon restart` 清理 stale 文件。".to_string(),
+        "  3. 若使用代理工具，请确保 Unix socket 路径未被代理拦截。".to_string(),
+    ];
+    if daemon::has_network_proxy() {
+        lines.push(format!(
+            "  4. 启动 daemon 时已自动注入 NO_PROXY={}，如仍失败请检查代理工具是否覆盖。",
+            daemon::no_proxy_value()
+        ));
+    }
+    lines.join("\n")
 }
 
 #[cfg(test)]

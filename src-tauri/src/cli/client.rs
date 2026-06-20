@@ -5,6 +5,21 @@ use anyhow::{Context, Result};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
+/// 生成连接失败时的诊断信息（proxy / stale socket 建议）。
+fn connection_diagnostic(socket_path: &str) -> String {
+    let mut lines = vec![
+        format!("socket 路径: {}", socket_path),
+        "agtalk 本地 IPC 使用 Unix domain socket，不应经过网络代理。".to_string(),
+    ];
+    let proxy_vars = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"];
+    let has_proxy = proxy_vars.iter().any(|n| std::env::var(n).is_ok());
+    if has_proxy {
+        lines.push("检测到网络代理环境变量；如本地连接被拦截，请检查代理工具是否覆盖/隔离了 HOME / XDG / AGTALK_CONFIG_DIR。".to_string());
+    }
+    lines.push("可尝试执行 `agtalk daemon restart` 修复 stale 的 pid/socket 文件。".to_string());
+    lines.join("\n")
+}
+
 pub struct Client {
     reader: BufReader<tokio::net::unix::OwnedReadHalf>,
     writer: tokio::net::unix::OwnedWriteHalf,
@@ -16,9 +31,13 @@ pub struct Client {
 
 impl Client {
     pub async fn connect(socket_path: &str) -> Result<Self> {
-        let stream = UnixStream::connect(socket_path)
-            .await
-            .with_context(|| format!("无法连接 daemon: {}", socket_path))?;
+        let stream = UnixStream::connect(socket_path).await.map_err(|e| {
+            anyhow::anyhow!(
+                "无法连接 daemon: {}\n{}",
+                e,
+                connection_diagnostic(socket_path)
+            )
+        })?;
         let (reader, writer) = stream.into_split();
         Ok(Self {
             reader: BufReader::new(reader),
