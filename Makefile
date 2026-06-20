@@ -4,7 +4,7 @@ frontend:
 	pnpm build
 
 release: frontend
-	cargo build --release
+	cargo build --release --features custom-protocol
 
 deploy: release
 	mkdir -p ~/.local/bin
