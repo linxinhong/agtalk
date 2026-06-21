@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>agtalk Inbox</title>
+  <link rel="stylesheet" href="inbox.css">
+</head>
+<body>
+  <header>
+    <h1>agtalk Inbox</h1>
+    <div class="status-bar">
+      <span id="connection-status" class="badge offline">离线</span>
+      <span id="inbox-stats">-</span>
+    </div>
+    <button id="refresh-btn">刷新</button>
+  </header>
+
+  <nav id="filters">
+    <button class="filter active" data-status="all">全部</button>
+    <button class="filter" data-status="pending">待处理</button>
+    <button class="filter" data-status="unread">未读</button>
+    <button class="filter" data-status="action_required">需操作</button>
+  </nav>
+
+  <main>
+    <aside id="message-list">
+      <div class="empty">加载中...</div>
+    </aside>
+    <section id="message-detail">
+      <div class="empty">选择一条消息查看详情</div>
+    </section>
+  </main>
+
+  <script src="inbox.js" type="module"></script>
+</body>
+</html>

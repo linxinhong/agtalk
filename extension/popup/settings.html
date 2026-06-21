@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>agtalk Web Bridge 设置</title>
+  <link rel="stylesheet" href="settings.css">
+</head>
+<body>
+  <header>
+    <h1>agtalk 设置</h1>
+  </header>
+
+  <main>
+    <section>
+      <h2>Daemon</h2>
+      <label>Daemon URL</label>
+      <input type="text" id="daemon-url-input" value="http://127.0.0.1:19527">
+    </section>
+
+    <section>
+      <h2>Agent 身份</h2>
+      <label>Agent 名称</label>
+      <input type="text" id="agent-name" placeholder="web_chatgpt_Test">
+      <label>角色</label>
+      <input type="text" id="agent-role" value="web">
+      <label>简介</label>
+      <input type="text" id="agent-bio" placeholder="Web AI bridge participant">
+    </section>
+
+    <section>
+      <h2>平台</h2>
+      <div class="toggle-grid">
+        <label class="toggle"><input type="checkbox" id="enable-chatgpt"> ChatGPT</label>
+        <label class="toggle"><input type="checkbox" id="enable-claude"> Claude</label>
+        <label class="toggle"><input type="checkbox" id="enable-sider"> Sider</label>
+        <label class="toggle"><input type="checkbox" id="enable-chatglm"> ChatGLM</label>
+        <label class="toggle"><input type="checkbox" id="enable-custom"> 自定义</label>
+      </div>
+    </section>
+
+    <section>
+      <h2>行为</h2>
+      <div class="toggle-grid">
+        <label class="toggle"><input type="checkbox" id="enabled"> 启用 agtalk</label>
+        <label class="toggle"><input type="checkbox" id="auto-forward"> 自动转发</label>
+        <label class="toggle"><input type="checkbox" id="auto-receive"> 自动接收</label>
+        <label class="toggle"><input type="checkbox" id="auto-inject"> 自动注入新消息</label>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <button id="save-btn">保存并 Join</button>
+  </footer>
+
+  <script src="settings.js"></script>
+</body>
+</html>

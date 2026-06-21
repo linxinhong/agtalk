@@ -1,0 +1,52 @@
+{
+  "manifest_version": 3,
+  "name": "agtalk Web Bridge",
+  "version": "0.1.0",
+  "description": "Bridge ChatGPT / Claude / Sider web conversations to agtalk local agent bus",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "notifications",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://claude.ai/*",
+    "https://sider.ai/*",
+    "https://chatglm.cn/*",
+    "http://127.0.0.1:19527/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://claude.ai/*",
+        "https://sider.ai/*",
+        "https://chatglm.cn/*"
+      ],
+      "js": [
+        "platforms/chatgpt.js",
+        "platforms/claude.js",
+        "platforms/sider.js",
+        "platforms/chatglm.js",
+        "platforms/custom.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "agtalk Web Bridge"
+  },
+  "icons": {
+    "16": "icons/icon.svg",
+    "32": "icons/icon.svg",
+    "48": "icons/icon.svg",
+    "128": "icons/icon.svg"
+  }
+}

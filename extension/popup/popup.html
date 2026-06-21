@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>agtalk Web Bridge</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <h1>agtalk</h1>
+    <div class="header-actions">
+      <button id="settings-btn" class="icon-btn" title="设置">⚙️</button>
+      <span id="status-dot" class="dot offline" title="daemon 连接状态"></span>
+    </div>
+  </header>
+
+  <section id="status-bar">
+    <span id="agent-status">未注册</span>
+    <span id="inbox-status">-</span>
+    <span id="peers-status">-</span>
+  </section>
+  <div id="connection-detail" class="connection-detail hidden">-</div>
+
+  <section id="target-section">
+    <label>目标 Peer</label>
+    <div class="target-row">
+      <select id="target-peer-select">
+        <option value="">手动输入 / 选择</option>
+      </select>
+      <input type="text" id="target-agent" placeholder="kimi-coder-Quinn">
+    </div>
+  </section>
+
+  <section id="inbox-section">
+    <div class="section-title">
+      <span>Inbox</span>
+      <button id="refresh-inbox-btn" class="icon-btn" title="刷新">↻</button>
+    </div>
+    <ul id="inbox-list"><li class="empty">加载中...</li></ul>
+  </section>
+
+  <footer>
+    <button id="open-inbox-btn" class="secondary">打开收件箱</button>
+    <button id="reconnect-btn" class="secondary hidden">重连</button>
+    <button id="register-btn">Join</button>
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>
