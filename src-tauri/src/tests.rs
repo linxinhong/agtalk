@@ -2188,6 +2188,7 @@ mod tests {
                 workspace_root: "/tmp/ws".to_string(),
                 workspace_name: "ws".to_string(),
                 name: name.to_string(),
+                participant_type: None,
                 role: "agent".to_string(),
                 intro: "".to_string(),
                 transport: "terminal".to_string(),
@@ -2271,5 +2272,178 @@ mod tests {
         let mut session2: Option<crate::storage::SessionInfo> = None;
         let resp2 = join_via_server(&s, &registry, "bob", shell_notify.clone(), false, &mut session2).await;
         assert!(matches!(resp2, ServerMsg::Ok { .. }), "无 endpoint 的不同 agent 不应冲突");
+    }
+
+    #[test]
+    fn test_mem_topic_add_and_list() {
+        let s = storage();
+        s.register_participant(None, "alice", "agent", "Alice", "terminal", "{}", "", "agent")
+            .unwrap();
+        let topic = s
+            .add_mem_topic(
+                Some("ws-1"),
+                "agtalk/session",
+                "Agent 身份与会话机制",
+                Some("session 相关设计"),
+                &["session".into(), "身份".into()],
+                4,
+                "alice",
+            )
+            .unwrap();
+        assert_eq!(topic.slug, "agtalk/session");
+        assert_eq!(topic.title, "Agent 身份与会话机制");
+        assert_eq!(topic.aliases.len(), 2);
+
+        let list = s.list_mem_topics(Some("ws-1"), None).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].slug, "agtalk/session");
+
+        let found = s.get_mem_topic_by_slug(Some("ws-1"), "agtalk/session").unwrap();
+        assert!(found.is_some());
+    }
+
+    #[test]
+    fn test_mem_item_add_and_show() {
+        let s = storage();
+        s.register_participant(None, "alice", "agent", "Alice", "terminal", "{}", "", "agent")
+            .unwrap();
+        s.add_mem_topic(
+            Some("ws-1"),
+            "agtalk/session",
+            "Agent 身份与会话机制",
+            None,
+            &[],
+            3,
+            "alice",
+        )
+        .unwrap();
+
+        let item = s
+            .add_mem_item(
+                Some("ws-1"),
+                "decision",
+                "Agent 身份机制设计",
+                "AGTALK_NAME 只用于选择身份",
+                Some("关键设计决策"),
+                &["agtalk/session".into()],
+                &["agtalk".into(), "session".into()],
+                4,
+                "confirmed",
+                "alice",
+                "manual",
+                "manual",
+            )
+            .unwrap();
+        assert_eq!(item.item_type, "decision");
+        assert_eq!(item.topics.len(), 1);
+        assert_eq!(item.tags.len(), 2);
+
+        let found = s.get_mem_item_by_id(&item.id).unwrap();
+        assert!(found.is_some());
+    }
+
+    #[test]
+    fn test_mem_search_by_topic_and_query() {
+        let s = storage();
+        s.register_participant(None, "alice", "agent", "Alice", "terminal", "{}", "", "agent")
+            .unwrap();
+        s.add_mem_topic(Some("ws-1"), "agtalk/session", "session", None, &[], 3, "alice")
+            .unwrap();
+        s.add_mem_item(
+            Some("ws-1"),
+            "decision",
+            "身份机制",
+            "AGTALK_NAME 只用于选择身份，其他信息放到 session 文件",
+            None,
+            &["agtalk/session".into()],
+            &["env".into()],
+            4,
+            "confirmed",
+            "alice",
+            "manual",
+            "manual",
+        )
+        .unwrap();
+
+        let results = s
+            .search_mem(
+                Some("ws-1"),
+                Some("AGTALK_NAME"),
+                Some(vec!["agtalk/session".into()]),
+                Some("decision"),
+                None,
+                Some("active"),
+                10,
+            )
+            .unwrap();
+        assert!(!results.is_empty());
+
+        let results_no_query = s
+            .search_mem(
+                Some("ws-1"),
+                None,
+                Some(vec!["agtalk/session".into()]),
+                None,
+                None,
+                Some("active"),
+                10,
+            )
+            .unwrap();
+        assert_eq!(results_no_query.len(), 1);
+    }
+
+    #[test]
+    fn test_mem_pack() {
+        let s = storage();
+        s.register_participant(None, "alice", "agent", "Alice", "terminal", "{}", "", "agent")
+            .unwrap();
+        s.add_mem_topic(Some("ws-1"), "agtalk/session", "session", None, &[], 3, "alice")
+            .unwrap();
+        s.add_mem_item(
+            Some("ws-1"),
+            "decision",
+            "身份机制",
+            "AGTALK_NAME 只用于选择身份",
+            None,
+            &["agtalk/session".into()],
+            &[],
+            4,
+            "confirmed",
+            "alice",
+            "manual",
+            "manual",
+        )
+        .unwrap();
+
+        let pack = s.pack_mem(Some("ws-1"), "agtalk/session", 10).unwrap();
+        assert_eq!(pack.topic.slug, "agtalk/session");
+        assert_eq!(pack.items.len(), 1);
+    }
+
+    #[test]
+    fn test_mem_archive() {
+        let s = storage();
+        s.register_participant(None, "alice", "agent", "Alice", "terminal", "{}", "", "agent")
+            .unwrap();
+        s.add_mem_topic(Some("ws-1"), "agtalk/session", "session", None, &[], 3, "alice")
+            .unwrap();
+        let item = s
+            .add_mem_item(
+                Some("ws-1"),
+                "fact",
+                "一个事实",
+                "内容",
+                None,
+                &["agtalk/session".into()],
+                &[],
+                3,
+                "confirmed",
+                "alice",
+                "manual",
+                "manual",
+            )
+            .unwrap();
+        let archived = s.archive_mem_item(&item.id, "alice").unwrap();
+        assert_eq!(archived.status, "archived");
     }
 }

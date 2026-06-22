@@ -5,7 +5,13 @@ use crate::notify::{self, NotifyContext, NotifyPluginRegistry, NotifyTransportCo
 use crate::storage::{endpoint_key_from_notify_config, SessionInfo, Storage};
 use crate::transport::TransportRegistry;
 use anyhow::Result;
+use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::Json;
+use axum::routing::post;
+use axum::Router;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -36,8 +42,16 @@ fn mark_local_session_left(name: &str) -> Result<()> {
     Ok(())
 }
 
+struct HttpState {
+    storage: Arc<Storage>,
+    transports: Arc<TransportRegistry>,
+    notify_plugins: Arc<NotifyPluginRegistry>,
+    pending_asks: PendingAsks,
+}
+
 pub async fn run(
     socket_path: &str,
+    http_port: u16,
     storage: Arc<Storage>,
     transports: Arc<TransportRegistry>,
     notify_plugins: Arc<NotifyPluginRegistry>,
@@ -50,7 +64,30 @@ pub async fn run(
     let listener = UnixListener::bind(socket_path)?;
     tracing::info!("daemon 监听: {}", socket_path);
 
+    let http_addr = SocketAddr::from(([127, 0, 0, 1], http_port));
+    let http_listener = tokio::net::TcpListener::bind(http_addr).await?;
+    tracing::info!("daemon HTTP 监听: 127.0.0.1:{}", http_port);
+
     let pending_asks: PendingAsks = Arc::new(Mutex::new(HashMap::new()));
+
+    let state = Arc::new(HttpState {
+        storage: storage.clone(),
+        transports: transports.clone(),
+        notify_plugins: notify_plugins.clone(),
+        pending_asks: pending_asks.clone(),
+    });
+
+    let app = Router::new()
+        .route("/api", post(handle_http))
+        .with_state(state);
+
+    // HTTP 服务在后台运行，Unix socket 保持主 accept 循环
+    let http_server = axum::serve(http_listener, app);
+    tokio::spawn(async move {
+        if let Err(e) = http_server.await {
+            tracing::error!("HTTP 服务异常: {}", e);
+        }
+    });
 
     loop {
         let (stream, _addr) = listener.accept().await?;
@@ -66,6 +103,101 @@ pub async fn run(
             }
         });
     }
+}
+
+/// HTTP 入口：解析 ClientMsg，按需从 header 认证，调用 handle_msg 后返回 ServerMsg。
+async fn handle_http(
+    State(state): State<Arc<HttpState>>,
+    headers: HeaderMap,
+    Json(msg): Json<ClientMsg>,
+) -> (StatusCode, Json<ServerMsg>) {
+    let mut session: Option<SessionInfo> = None;
+
+    // 免认证操作：Ping、Auth、Join、Attach、ListParticipants（与 CLI peers 一致）
+    let needs_auth = !matches!(
+        msg,
+        ClientMsg::Ping
+            | ClientMsg::Auth { .. }
+            | ClientMsg::Join { .. }
+            | ClientMsg::Attach { .. }
+            | ClientMsg::ListParticipants { .. }
+    );
+
+    if needs_auth {
+        // 1) 优先使用 X-Agtalk-Session-Id + X-Agtalk-Token
+        let session_id = headers
+            .get("X-Agtalk-Session-Id")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+        let token = headers
+            .get("X-Agtalk-Token")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+
+        if let (Some(sid), Some(tok)) = (session_id, token) {
+            match state.storage.validate_session(&sid, &tok) {
+                Ok(Some(info)) => {
+                    session = Some(info);
+                }
+                Ok(None) => {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(ServerMsg::Error {
+                            code: "auth_failed".into(),
+                            message: "session_id 或 token 无效".into(),
+                        }),
+                    );
+                }
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ServerMsg::Error {
+                            code: "auth_error".into(),
+                            message: format!("校验 session 失败: {}", e),
+                        }),
+                    );
+                }
+            }
+        }
+
+        // 2) 未传 session_id/token 时，fallback 到 X-Agtalk-Name：取该 participant 的 active session
+        if session.is_none() {
+            if let Some(name) = headers.get("X-Agtalk-Name").and_then(|v| v.to_str().ok()) {
+                if let Ok(Some(p)) = state.storage.get_participant_by_name(name) {
+                    if let Ok(Some((sid, tok))) =
+                        state.storage.get_active_session_id_and_token(&p.id)
+                    {
+                        if let Ok(Some(info)) = state.storage.validate_session(&sid, &tok) {
+                            session = Some(info);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3) 仍然无 session 则拒绝
+        if session.is_none() {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(ServerMsg::Error {
+                    code: "auth_required".into(),
+                    message: "缺少 X-Agtalk-Session-Id / X-Agtalk-Token 或 X-Agtalk-Name header".into(),
+                }),
+            );
+        }
+    }
+
+    let response = handle_msg(
+        msg,
+        &state.storage,
+        &state.transports,
+        &state.notify_plugins,
+        &state.pending_asks,
+        &mut session,
+    )
+    .await;
+
+    (StatusCode::OK, Json(response))
 }
 
 async fn handle_connection(
@@ -302,6 +434,7 @@ pub(crate) async fn handle_msg(
             workspace_root,
             workspace_name,
             name,
+            participant_type,
             role,
             intro,
             transport,
@@ -310,6 +443,7 @@ pub(crate) async fn handle_msg(
             capabilities: _,
             takeover,
         } => {
+            let participant_type = participant_type.unwrap_or_else(|| "agent".into());
             const RESERVED_NAMES: &[&str] = &["me", "human"];
             if RESERVED_NAMES.contains(&name.to_ascii_lowercase().as_str()) {
                 return ServerMsg::Error {
@@ -365,14 +499,14 @@ pub(crate) async fn handle_msg(
 
             let participant = match storage.get_participant_by_name(&name) {
                 Ok(Some(p)) => {
-                    // 已存在则更新 role/intro/transport/status
-                    let _ = storage.update_participant_on_join(&name, &role, &intro, &transport);
+                    // 已存在则更新 type/role/intro/transport/status
+                    let _ = storage.update_participant_on_join(&name, &participant_type, &role, &intro, &transport);
                     p
                 }
                 Ok(None) => match storage.register_participant(
                     Some(&name),
                     &name,
-                    "agent",
+                    &participant_type,
                     &name,
                     &transport,
                     "{}",
@@ -424,6 +558,134 @@ pub(crate) async fn handle_msg(
                     Err(e) => {
                         return ServerMsg::Error {
                             code: "join_failed".into(),
+                            message: format!("创建 session 失败: {}", e),
+                        }
+                    }
+                }
+            };
+
+            // 同步被接管旧 session 的本地文件并重新计算 participant 在线状态
+            for old in retired {
+                let _ = mark_local_session_left(&old.participant_name);
+                let _ = storage.recompute_participant_status(&old.participant_id);
+            }
+
+            // 自动认证当前连接为刚创建的 session
+            if let Ok(Some(info)) = storage.validate_session(&session_id, &token) {
+                *session = Some(info.clone());
+            }
+
+            let _ = storage.update_participant_status(&name, "online");
+
+            ServerMsg::Ok {
+                data: serde_json::json!({
+                    "workspace_id": workspace_id,
+                    "participant_id": participant.id,
+                    "session_id": session_id,
+                    "token": token,
+                }),
+            }
+        }
+
+        // ── 接管已有 peer 身份 ────────────────
+        ClientMsg::Attach {
+            workspace_root,
+            workspace_name,
+            name,
+            notify_config,
+            runtime_config,
+            takeover,
+        } => {
+            let workspace_id = match storage.register_workspace(&workspace_name, &workspace_root) {
+                Ok(id) => id,
+                Err(e) => {
+                    return ServerMsg::Error {
+                        code: "attach_failed".into(),
+                        message: format!("注册 workspace 失败: {}", e),
+                    }
+                }
+            };
+            let notify_config_str = if notify_config.is_null() {
+                None
+            } else {
+                Some(notify_config.to_string())
+            };
+            let runtime_config_str = if runtime_config.is_null() {
+                None
+            } else {
+                Some(runtime_config.to_string())
+            };
+            let endpoint_key = endpoint_key_from_notify_config(&notify_config);
+            let has_endpoint = !endpoint_key.is_empty();
+
+            // 无 endpoint 的 shell attach 不参与冲突检测；有 endpoint 且未 takeover 时检查冲突
+            if has_endpoint && !takeover {
+                match storage.get_active_sessions_by_endpoint(&workspace_id, &endpoint_key) {
+                    Ok(existing) if !existing.is_empty() => {
+                        return ServerMsg::Error {
+                            code: "session_conflict".into(),
+                            message: format!(
+                                "endpoint {} 上已有 {} 个 active session；如要接管请重试并设置 takeover=true",
+                                endpoint_key,
+                                existing.len()
+                            ),
+                        };
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        return ServerMsg::Error {
+                            code: "attach_failed".into(),
+                            message: format!("查询 endpoint 冲突失败: {}", e),
+                        };
+                    }
+                }
+            }
+
+            // attach 要求 peer 必须已存在；不修改 role/intro/transport
+            let participant = match storage.get_participant_by_name(&name) {
+                Ok(Some(p)) => p,
+                Ok(None) => {
+                    return ServerMsg::Error {
+                        code: "participant_not_found".into(),
+                        message: format!("participant '{}' 不存在，请先用 join 注册", name),
+                    }
+                }
+                Err(e) => {
+                    return ServerMsg::Error {
+                        code: "attach_failed".into(),
+                        message: format!("查询 participant 失败: {}", e),
+                    }
+                }
+            };
+
+            let (session_id, token, retired) = if has_endpoint && takeover {
+                match storage.create_session_with_takeover(
+                    &workspace_id,
+                    &participant.id,
+                    &endpoint_key,
+                    notify_config_str.as_deref(),
+                    runtime_config_str.as_deref(),
+                ) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        return ServerMsg::Error {
+                            code: "attach_failed".into(),
+                            message: format!("创建 session 失败: {}", e),
+                        }
+                    }
+                }
+            } else {
+                match storage.create_session(
+                    &workspace_id,
+                    &participant.id,
+                    &endpoint_key,
+                    notify_config_str.as_deref(),
+                    runtime_config_str.as_deref(),
+                ) {
+                    Ok((sid, tok)) => (sid, tok, vec![]),
+                    Err(e) => {
+                        return ServerMsg::Error {
+                            code: "attach_failed".into(),
                             message: format!("创建 session 失败: {}", e),
                         }
                     }
@@ -1128,6 +1390,299 @@ pub(crate) async fn handle_msg(
         } => ServerMsg::Ok {
             data: serde_json::json!({"participants": participants, "title": title, "status": "created"}),
         },
+
+        // ── v0.3 mem 长期知识库 ───────────────────
+        ClientMsg::MemTopicAdd {
+            workspace_id,
+            slug,
+            title,
+            summary,
+            aliases,
+            priority,
+        } => {
+            let actor = sender_from(session, None);
+            let ws = workspace_id.or_else(|| session.as_ref().map(|s| s.workspace_id.clone()));
+            match storage.add_mem_topic(
+                ws.as_deref(),
+                &slug,
+                &title,
+                Some(summary.as_str()).filter(|s| !s.is_empty()),
+                &aliases,
+                priority,
+                &actor,
+            ) {
+                Ok(topic) => ServerMsg::Ok {
+                    data: serde_json::to_value(&topic).unwrap_or_default(),
+                },
+                Err(e) => ServerMsg::Error {
+                    code: "mem_topic_add_failed".into(),
+                    message: e.to_string(),
+                },
+            }
+        }
+
+        ClientMsg::MemTopicList { workspace_id, status } => {
+            let ws = workspace_id.or_else(|| session.as_ref().map(|s| s.workspace_id.clone()));
+            match storage.list_mem_topics(ws.as_deref(), status.as_deref()) {
+                Ok(list) => ServerMsg::Ok {
+                    data: serde_json::to_value(&list).unwrap_or_default(),
+                },
+                Err(e) => ServerMsg::Error {
+                    code: "mem_topic_list_failed".into(),
+                    message: e.to_string(),
+                },
+            }
+        }
+
+        ClientMsg::MemTopicShow { workspace_id, slug } => {
+            let ws = workspace_id.or_else(|| session.as_ref().map(|s| s.workspace_id.clone()));
+            match storage.get_mem_topic_by_slug(ws.as_deref(), &slug) {
+                Ok(Some(topic)) => ServerMsg::Ok {
+                    data: serde_json::to_value(&topic).unwrap_or_default(),
+                },
+                Ok(None) => ServerMsg::Error {
+                    code: "not_found".into(),
+                    message: format!("topic 不存在: {}", slug),
+                },
+                Err(e) => ServerMsg::Error {
+                    code: "mem_topic_show_failed".into(),
+                    message: e.to_string(),
+                },
+            }
+        }
+
+        ClientMsg::MemTopicUpdate {
+            workspace_id,
+            slug,
+            title,
+            summary,
+            aliases,
+            priority,
+            status,
+        } => {
+            let actor = sender_from(session, None);
+            let ws = workspace_id.or_else(|| session.as_ref().map(|s| s.workspace_id.clone()));
+            match storage.update_mem_topic(
+                ws.as_deref(),
+                &slug,
+                title.as_deref(),
+                summary.as_deref(),
+                aliases,
+                priority,
+                status.as_deref(),
+                &actor,
+            ) {
+                Ok(topic) => ServerMsg::Ok {
+                    data: serde_json::to_value(&topic).unwrap_or_default(),
+                },
+                Err(e) => ServerMsg::Error {
+                    code: "mem_topic_update_failed".into(),
+                    message: e.to_string(),
+                },
+            }
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        ClientMsg::MemAdd {
+            workspace_id,
+            item_type,
+            title,
+            content,
+            summary,
+            topic_slugs,
+            tags,
+            importance,
+            confidence,
+            source_type,
+            source_ref,
+        } => {
+            let actor = sender_from(session, None);
+            let ws = workspace_id.or_else(|| session.as_ref().map(|s| s.workspace_id.clone()));
+            match storage.add_mem_item(
+                ws.as_deref(),
+                &item_type,
+                &title,
+                &content,
+                Some(summary.as_str()).filter(|s| !s.is_empty()),
+                &topic_slugs,
+                &tags,
+                importance,
+                &confidence,
+                &actor,
+                &source_type,
+                &source_ref,
+            ) {
+                Ok(item) => ServerMsg::Ok {
+                    data: serde_json::to_value(&item).unwrap_or_default(),
+                },
+                Err(e) => ServerMsg::Error {
+                    code: "mem_add_failed".into(),
+                    message: e.to_string(),
+                },
+            }
+        }
+
+        ClientMsg::MemShow { mem_id } => match storage.get_mem_item_by_id(&mem_id) {
+            Ok(Some(item)) => ServerMsg::Ok {
+                data: serde_json::to_value(&item).unwrap_or_default(),
+            },
+            Ok(None) => ServerMsg::Error {
+                code: "not_found".into(),
+                message: format!("memory 不存在: {}", mem_id),
+            },
+            Err(e) => ServerMsg::Error {
+                code: "mem_show_failed".into(),
+                message: e.to_string(),
+            },
+        },
+
+        #[allow(clippy::too_many_arguments)]
+        ClientMsg::MemUpdate {
+            mem_id,
+            title,
+            content,
+            summary,
+            topic_slugs,
+            tags,
+            importance,
+            status,
+        } => {
+            let actor = sender_from(session, None);
+            match storage.update_mem_item(
+                &mem_id,
+                title.as_deref(),
+                content.as_deref(),
+                summary.as_deref(),
+                topic_slugs,
+                tags,
+                importance,
+                status.as_deref(),
+                &actor,
+            ) {
+                Ok(item) => ServerMsg::Ok {
+                    data: serde_json::to_value(&item).unwrap_or_default(),
+                },
+                Err(e) => ServerMsg::Error {
+                    code: "mem_update_failed".into(),
+                    message: e.to_string(),
+                },
+            }
+        }
+
+        ClientMsg::MemArchive { mem_id } => {
+            let actor = sender_from(session, None);
+            match storage.archive_mem_item(&mem_id, &actor) {
+                Ok(item) => ServerMsg::Ok {
+                    data: serde_json::to_value(&item).unwrap_or_default(),
+                },
+                Err(e) => ServerMsg::Error {
+                    code: "mem_archive_failed".into(),
+                    message: e.to_string(),
+                },
+            }
+        }
+
+        ClientMsg::MemPromote {
+            source_type,
+            source_ref,
+            workspace_id,
+            item_type,
+            title,
+            summary,
+            topic_slugs,
+            tags,
+            importance,
+            confidence,
+        } => {
+            let actor = sender_from(session, None);
+            let ws = workspace_id.or_else(|| session.as_ref().map(|s| s.workspace_id.clone()));
+            let result = match source_type.as_str() {
+                "message" => storage.promote_message_to_mem(
+                    &source_ref,
+                    ws.as_deref(),
+                    &topic_slugs,
+                    &item_type,
+                    &title,
+                    Some(summary.as_str()).filter(|s| !s.is_empty()),
+                    &tags,
+                    importance,
+                    &confidence,
+                    &actor,
+                ),
+                "artifact" => storage.promote_artifact_to_mem(
+                    &source_ref,
+                    ws.as_deref(),
+                    &topic_slugs,
+                    &item_type,
+                    &title,
+                    Some(summary.as_str()).filter(|s| !s.is_empty()),
+                    &tags,
+                    importance,
+                    &confidence,
+                    &actor,
+                ),
+                _ => {
+                    return ServerMsg::Error {
+                        code: "mem_promote_failed".into(),
+                        message: format!("不支持的 source_type: {}", source_type),
+                    }
+                }
+            };
+            match result {
+                Ok(item) => ServerMsg::Ok {
+                    data: serde_json::to_value(&item).unwrap_or_default(),
+                },
+                Err(e) => ServerMsg::Error {
+                    code: "mem_promote_failed".into(),
+                    message: e.to_string(),
+                },
+            }
+        }
+
+        ClientMsg::MemSearch {
+            workspace_id,
+            query,
+            topic_slugs,
+            item_type,
+            scope,
+            limit,
+        } => {
+            let ws = workspace_id.or_else(|| session.as_ref().map(|s| s.workspace_id.clone()));
+            match storage.search_mem(
+                ws.as_deref(),
+                query.as_deref(),
+                Some(topic_slugs).filter(|v| !v.is_empty()),
+                item_type.as_deref(),
+                scope.as_deref(),
+                Some("active"),
+                limit,
+            ) {
+                Ok(list) => ServerMsg::Ok {
+                    data: serde_json::to_value(&list).unwrap_or_default(),
+                },
+                Err(e) => ServerMsg::Error {
+                    code: "mem_search_failed".into(),
+                    message: e.to_string(),
+                },
+            }
+        }
+
+        ClientMsg::MemPack {
+            workspace_id,
+            topic_slug,
+            limit,
+        } => {
+            let ws = workspace_id.or_else(|| session.as_ref().map(|s| s.workspace_id.clone()));
+            match storage.pack_mem(ws.as_deref(), &topic_slug, limit) {
+                Ok(pack) => ServerMsg::Ok {
+                    data: serde_json::to_value(&pack).unwrap_or_default(),
+                },
+                Err(e) => ServerMsg::Error {
+                    code: "mem_pack_failed".into(),
+                    message: e.to_string(),
+                },
+            }
+        }
 
         ClientMsg::Ping => ServerMsg::Ok {
             data: serde_json::json!({"pong": true}),

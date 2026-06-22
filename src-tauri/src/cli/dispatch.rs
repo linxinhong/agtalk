@@ -46,6 +46,8 @@ enum Commands {
     Reply(ReplyCommand),
     #[command(about = "加入本地通信网络")]
     Join(JoinCommand),
+    #[command(about = "接管已有 peer 身份")]
+    Attach(AttachCommand),
     #[command(about = "离开本地通信网络")]
     Leave(LeaveCommand),
     #[command(about = "清理已退役 session")]
@@ -72,6 +74,170 @@ enum Commands {
     Settings,
     #[command(about = "管理后台服务")]
     Daemon(DaemonCommand),
+    #[command(about = "长期知识库", subcommand)]
+    Mem(MemCommand),
+}
+
+#[derive(Debug, Subcommand)]
+enum MemCommand {
+    #[command(about = "Topic 管理", subcommand)]
+    Topic(MemTopicCommand),
+    #[command(about = "添加 memory")]
+    Add(MemAddArgs),
+    #[command(about = "查看 memory 详情")]
+    Show(MemShowArgs),
+    #[command(about = "更新 memory")]
+    Update(MemUpdateArgs),
+    #[command(about = "归档 memory")]
+    Archive(MemArchiveArgs),
+    #[command(about = "从消息/附件提升为 memory")]
+    Promote(MemPromoteArgs),
+    #[command(about = "搜索 memory")]
+    Search(MemSearchArgs),
+    #[command(about = "生成 Memory Pack")]
+    Pack(MemPackArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum MemTopicCommand {
+    #[command(about = "添加 topic")]
+    Add(MemTopicAddArgs),
+    #[command(about = "列出 topics")]
+    List(MemTopicListArgs),
+    #[command(about = "查看 topic")]
+    Show(MemTopicShowArgs),
+    #[command(about = "更新 topic")]
+    Update(MemTopicUpdateArgs),
+}
+
+#[derive(Debug, Args)]
+struct MemTopicAddArgs {
+    slug: String,
+    #[arg(short = 't', long = "title", help = "topic 标题")]
+    title: String,
+    #[arg(short = 's', long = "summary", help = "摘要")]
+    summary: Option<String>,
+    #[arg(short = 'a', long = "alias", help = "别名，可多次使用")]
+    alias: Vec<String>,
+    #[arg(short = 'p', long = "priority", default_value = "3", help = "优先级 1-5")]
+    priority: i32,
+}
+
+#[derive(Debug, Args)]
+struct MemTopicListArgs {
+    #[arg(long, help = "包含已归档")]
+    all: bool,
+}
+
+#[derive(Debug, Args)]
+struct MemTopicShowArgs {
+    slug: String,
+}
+
+#[derive(Debug, Args)]
+struct MemTopicUpdateArgs {
+    slug: String,
+    #[arg(short = 't', long = "title", help = "topic 标题")]
+    title: Option<String>,
+    #[arg(short = 's', long = "summary", help = "摘要")]
+    summary: Option<String>,
+    #[arg(short = 'a', long = "alias", help = "别名，可多次使用")]
+    alias: Vec<String>,
+    #[arg(short = 'p', long = "priority", help = "优先级 1-5")]
+    priority: Option<i32>,
+    #[arg(long, help = "归档 topic")]
+    archive: bool,
+}
+
+#[derive(Debug, Args)]
+struct MemAddArgs {
+    content: String,
+    #[arg(short = 't', long = "type", default_value = "fact", help = "记忆类型")]
+    item_type: String,
+    #[arg(short = 'T', long = "title", help = "标题；省略时使用内容前 50 字")]
+    title: Option<String>,
+    #[arg(short = 's', long = "summary", help = "摘要")]
+    summary: Option<String>,
+    #[arg(short = 'p', long = "topic", help = "topic slug，可多次使用")]
+    topic: Vec<String>,
+    #[arg(short = 'g', long = "tags", help = "标签，逗号分隔")]
+    tags: Option<String>,
+    #[arg(short = 'i', long = "importance", default_value = "3", help = "重要性 1-5")]
+    importance: i32,
+    #[arg(short = 'c', long = "confidence", default_value = "confirmed", help = "confirmed|inferred|draft")]
+    confidence: String,
+    #[arg(short = 'S', long = "scope", default_value = "project", help = "global|workspace|project")]
+    scope: String,
+}
+
+#[derive(Debug, Args)]
+struct MemShowArgs {
+    mem_id: String,
+}
+
+#[derive(Debug, Args)]
+struct MemUpdateArgs {
+    mem_id: String,
+    #[arg(short = 'c', long = "content", help = "内容")]
+    content: Option<String>,
+    #[arg(short = 'T', long = "title", help = "标题")]
+    title: Option<String>,
+    #[arg(short = 's', long = "summary", help = "摘要")]
+    summary: Option<String>,
+    #[arg(short = 'p', long = "topic", help = "topic slug，可多次使用")]
+    topic: Vec<String>,
+    #[arg(short = 'g', long = "tags", help = "标签，逗号分隔")]
+    tags: Option<String>,
+    #[arg(short = 'i', long = "importance", help = "重要性 1-5")]
+    importance: Option<i32>,
+    #[arg(short = 'S', long = "status", help = "active|archived|superseded|draft")]
+    status: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct MemArchiveArgs {
+    mem_id: String,
+}
+
+#[derive(Debug, Args)]
+struct MemPromoteArgs {
+    source_ref: String,
+    #[arg(short = 'y', long = "source-type", default_value = "message", help = "message|artifact")]
+    source_type: String,
+    #[arg(short = 't', long = "type", default_value = "fact", help = "记忆类型")]
+    item_type: String,
+    #[arg(short = 'T', long = "title", help = "标题")]
+    title: Option<String>,
+    #[arg(short = 's', long = "summary", help = "摘要")]
+    summary: Option<String>,
+    #[arg(short = 'p', long = "topic", help = "topic slug，可多次使用")]
+    topic: Vec<String>,
+    #[arg(short = 'g', long = "tags", help = "标签，逗号分隔")]
+    tags: Option<String>,
+    #[arg(short = 'i', long = "importance", default_value = "3", help = "重要性 1-5")]
+    importance: i32,
+    #[arg(short = 'c', long = "confidence", default_value = "confirmed", help = "confirmed|inferred|draft")]
+    confidence: String,
+}
+
+#[derive(Debug, Args)]
+struct MemSearchArgs {
+    query: Option<String>,
+    #[arg(short = 'p', long = "topic", help = "topic slug，可多次使用")]
+    topic: Vec<String>,
+    #[arg(short = 't', long = "type", help = "记忆类型")]
+    item_type: Option<String>,
+    #[arg(short = 'S', long = "scope", help = "global|workspace|project")]
+    scope: Option<String>,
+    #[arg(short = 'l', long = "limit", default_value = "20", help = "返回条数")]
+    limit: u32,
+}
+
+#[derive(Debug, Args)]
+struct MemPackArgs {
+    topic_slug: String,
+    #[arg(short = 'l', long = "limit", default_value = "10", help = "包含条数")]
+    limit: u32,
 }
 
 #[derive(Debug, Args)]
@@ -138,6 +304,15 @@ struct JoinCommand {
 }
 
 #[derive(Debug, Args)]
+struct AttachCommand {
+    name: String,
+    #[arg(long = "takeover", help = "接管同 endpoint 上的旧 active session")]
+    takeover: bool,
+    #[arg(long = "print-env", help = "只输出 export AGTALK_NAME=...")]
+    print_env: bool,
+}
+
+#[derive(Debug, Args)]
 struct LeaveCommand {
     #[arg(long = "purge", help = "同时删除本地 session 凭证文件")]
     purge: bool,
@@ -153,6 +328,484 @@ struct CleanupCommand {
 struct DaemonCommand {
     #[arg(default_value = "status", value_parser = ["start", "stop", "restart", "status"])]
     action: String,
+}
+
+// ── mem 长期知识库：CLI 与 YAML Runner 共用 ─────────────
+
+async fn with_mem_client<F, Fut>(f: F) -> Result<()>
+where
+    F: FnOnce(Option<String>, Client) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    let (workspace_id, session_id, token) = load_workspace_and_session()?;
+    let client = Client::connect_and_auth(&socket_path(), &session_id, &token).await?;
+    f(workspace_id, client).await
+}
+
+pub(crate) async fn run_mem_topic_add(
+    slug: String,
+    title: String,
+    summary: Option<String>,
+    aliases: Vec<String>,
+    priority: i32,
+) -> Result<()> {
+    with_mem_client(|workspace_id, mut client| async move {
+        let resp = client
+            .mem_topic_add(
+                workspace_id.as_deref(),
+                &slug,
+                &title,
+                summary.as_deref(),
+                &aliases,
+                priority,
+            )
+            .await?;
+        print_json_or_table(resp, |topic: crate::storage::MemTopic| {
+            anstream::println!("已创建 topic: {}", topic.slug);
+            anstream::println!("标题: {}", topic.title);
+            if let Some(summary) = &topic.summary {
+                anstream::println!("摘要: {}", summary);
+            }
+            if !topic.aliases.is_empty() {
+                anstream::println!("别名: {}", topic.aliases.join(", "));
+            }
+        });
+        Ok(())
+    })
+    .await
+}
+
+pub(crate) async fn run_mem_topic_list(all: bool) -> Result<()> {
+    with_mem_client(|workspace_id, mut client| async move {
+        let status = if all { None } else { Some("active") };
+        let resp = client.mem_topic_list(workspace_id.as_deref(), status).await?;
+        print_json_or_table(resp, |topics: Vec<crate::storage::MemTopic>| {
+            if topics.is_empty() {
+                anstream::println!("暂无 topic");
+                return;
+            }
+            let mut table = Table::new();
+            table.set_header(vec!["slug", "标题", "状态", "优先级"]);
+            for t in topics {
+                table.add_row(vec![t.slug, t.title, t.status, t.priority.to_string()]);
+            }
+            anstream::println!("{}", table);
+        });
+        Ok(())
+    })
+    .await
+}
+
+pub(crate) async fn run_mem_topic_show(slug: String) -> Result<()> {
+    with_mem_client(|workspace_id, mut client| async move {
+        let resp = client.mem_topic_show(workspace_id.as_deref(), &slug).await?;
+        print_json_or_table(resp, |topic: crate::storage::MemTopic| {
+            anstream::println!("slug: {}", topic.slug);
+            anstream::println!("标题: {}", topic.title);
+            if let Some(summary) = &topic.summary {
+                anstream::println!("摘要: {}", summary);
+            }
+            anstream::println!("状态: {}", topic.status);
+            anstream::println!("优先级: {}", topic.priority);
+            if !topic.aliases.is_empty() {
+                anstream::println!("别名: {}", topic.aliases.join(", "));
+            }
+        });
+        Ok(())
+    })
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_mem_topic_update(
+    slug: String,
+    title: Option<String>,
+    summary: Option<String>,
+    aliases: Vec<String>,
+    priority: Option<i32>,
+    archive: bool,
+) -> Result<()> {
+    with_mem_client(|workspace_id, mut client| async move {
+        let status = if archive { Some("archived".to_string()) } else { None };
+        let aliases = if aliases.is_empty() { None } else { Some(aliases) };
+        let resp = client
+            .mem_topic_update(
+                workspace_id.as_deref(),
+                &slug,
+                title.as_deref(),
+                summary.as_deref(),
+                aliases,
+                priority,
+                status.as_deref(),
+            )
+            .await?;
+        print_json_or_table(resp, |topic: crate::storage::MemTopic| {
+            anstream::println!("已更新 topic: {}", topic.slug);
+        });
+        Ok(())
+    })
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_mem_add(
+    content: String,
+    item_type: String,
+    title: Option<String>,
+    summary: Option<String>,
+    topics: Vec<String>,
+    tags: Option<String>,
+    importance: i32,
+    confidence: String,
+    _scope: String,
+) -> Result<()> {
+    with_mem_client(|workspace_id, mut client| async move {
+        let title = title.unwrap_or_else(|| {
+            let mut t = content.clone();
+            if t.chars().count() > 50 {
+                t = t.chars().take(50).collect::<String>() + "...";
+            }
+            t
+        });
+        let tags = parse_tags(tags.as_deref());
+        let resp = client
+            .mem_add(
+                workspace_id.as_deref(),
+                &item_type,
+                &title,
+                &content,
+                summary.as_deref(),
+                &topics,
+                &tags,
+                importance,
+                &confidence,
+                "manual",
+                "manual",
+            )
+            .await?;
+        print_json_or_table(resp, |item: crate::storage::MemItem| {
+            anstream::println!("已创建 memory: {}", item.id);
+        });
+        Ok(())
+    })
+    .await
+}
+
+pub(crate) async fn run_mem_show(mem_id: String) -> Result<()> {
+    with_mem_client(|_workspace_id, mut client| async move {
+        let resp = client.mem_show(&mem_id).await?;
+        print_json_or_table(resp, |item: crate::storage::MemItem| {
+            anstream::println!("id: {}", item.id);
+            anstream::println!("type: {}", item.item_type);
+            anstream::println!("title: {}", item.title);
+            anstream::println!("scope: {}", item.scope);
+            anstream::println!("status: {}", item.status);
+            anstream::println!("confidence: {}", item.confidence);
+            anstream::println!("importance: {}", item.importance);
+            if !item.topics.is_empty() {
+                anstream::println!(
+                    "topics: {}",
+                    item.topics.iter().map(|t| t.slug.as_str()).collect::<Vec<_>>().join(", ")
+                );
+            }
+            if !item.tags.is_empty() {
+                anstream::println!("tags: {}", item.tags.join(", "));
+            }
+            if let Some(summary) = &item.summary {
+                anstream::println!("summary:\n{}", summary);
+            }
+            anstream::println!("content:\n{}", item.content);
+        });
+        Ok(())
+    })
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_mem_update(
+    mem_id: String,
+    content: Option<String>,
+    title: Option<String>,
+    summary: Option<String>,
+    topics: Vec<String>,
+    tags: Option<String>,
+    importance: Option<i32>,
+    status: Option<String>,
+) -> Result<()> {
+    with_mem_client(|_workspace_id, mut client| async move {
+        let tags = tags.map(|s| parse_tags(Some(&s)));
+        let topic_slugs = if topics.is_empty() { None } else { Some(topics) };
+        let resp = client
+            .mem_update(
+                &mem_id,
+                title.as_deref(),
+                content.as_deref(),
+                summary.as_deref(),
+                topic_slugs,
+                tags,
+                importance,
+                status.as_deref(),
+            )
+            .await?;
+        print_json_or_table(resp, |item: crate::storage::MemItem| {
+            anstream::println!("已更新 memory: {}", item.id);
+        });
+        Ok(())
+    })
+    .await
+}
+
+pub(crate) async fn run_mem_archive(mem_id: String) -> Result<()> {
+    with_mem_client(|_workspace_id, mut client| async move {
+        let resp = client.mem_archive(&mem_id).await?;
+        print_json_or_table(resp, |item: crate::storage::MemItem| {
+            anstream::println!("已归档 memory: {}", item.id);
+        });
+        Ok(())
+    })
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_mem_promote(
+    source_ref: String,
+    source_type: String,
+    item_type: String,
+    title: Option<String>,
+    summary: Option<String>,
+    topics: Vec<String>,
+    tags: Option<String>,
+    importance: i32,
+    confidence: String,
+) -> Result<()> {
+    with_mem_client(|workspace_id, mut client| async move {
+        let title = title.unwrap_or_else(|| format!("从 {} 提升", source_ref));
+        let tags = parse_tags(tags.as_deref());
+        let resp = client
+            .mem_promote(
+                &source_type,
+                &source_ref,
+                workspace_id.as_deref(),
+                &item_type,
+                &title,
+                summary.as_deref(),
+                &topics,
+                &tags,
+                importance,
+                &confidence,
+            )
+            .await?;
+        print_json_or_table(resp, |item: crate::storage::MemItem| {
+            anstream::println!("已提升为 memory: {}", item.id);
+        });
+        Ok(())
+    })
+    .await
+}
+
+pub(crate) async fn run_mem_search(
+    query: Option<String>,
+    topics: Vec<String>,
+    item_type: Option<String>,
+    scope: Option<String>,
+    limit: u32,
+) -> Result<()> {
+    with_mem_client(|workspace_id, mut client| async move {
+        let resp = client
+            .mem_search(
+                workspace_id.as_deref(),
+                query.as_deref(),
+                &topics,
+                item_type.as_deref(),
+                scope.as_deref(),
+                limit,
+            )
+            .await?;
+        print_json_or_table(resp, |results: Vec<crate::storage::MemSearchResult>| {
+            if results.is_empty() {
+                anstream::println!("未找到 memory");
+                return;
+            }
+            let mut table = Table::new();
+            table.set_header(vec!["id", "type", "title", "scope", "importance"]);
+            for r in results {
+                table.add_row(vec![
+                    r.item.id,
+                    r.item.item_type,
+                    r.item.title,
+                    r.item.scope,
+                    r.item.importance.to_string(),
+                ]);
+            }
+            anstream::println!("{}", table);
+        });
+        Ok(())
+    })
+    .await
+}
+
+pub(crate) async fn run_mem_pack(topic_slug: String, limit: u32) -> Result<()> {
+    with_mem_client(|workspace_id, mut client| async move {
+        let resp = client.mem_pack(workspace_id.as_deref(), &topic_slug, limit).await?;
+        print_json_or_table(resp, |pack: crate::storage::MemPack| {
+            anstream::println!("# Memory Pack: {}", pack.topic.slug);
+            anstream::println!();
+            anstream::println!("## Topic Summary");
+            if let Some(summary) = &pack.topic.summary {
+                anstream::println!("{}", summary);
+            } else {
+                anstream::println!("{}", pack.topic.title);
+            }
+            anstream::println!();
+            let mut by_type: std::collections::HashMap<String, Vec<crate::storage::MemItem>> =
+                std::collections::HashMap::new();
+            for item in pack.items {
+                by_type.entry(item.item_type.clone()).or_default().push(item);
+            }
+            for (typ, items) in by_type {
+                anstream::println!("## {}", typ);
+                for item in items {
+                    anstream::println!("- **{}**", item.title);
+                    if let Some(summary) = &item.summary {
+                        anstream::println!("  {}", summary);
+                    }
+                }
+                anstream::println!();
+            }
+        });
+        Ok(())
+    })
+    .await
+}
+
+async fn handle_mem(cmd: MemCommand) -> Result<()> {
+    match cmd {
+        MemCommand::Topic(topic_cmd) => match topic_cmd {
+            MemTopicCommand::Add(args) => {
+                run_mem_topic_add(args.slug, args.title, args.summary, args.alias, args.priority)
+                    .await
+            }
+            MemTopicCommand::List(args) => run_mem_topic_list(args.all).await,
+            MemTopicCommand::Show(args) => run_mem_topic_show(args.slug).await,
+            MemTopicCommand::Update(args) => {
+                run_mem_topic_update(
+                    args.slug,
+                    args.title,
+                    args.summary,
+                    args.alias,
+                    args.priority,
+                    args.archive,
+                )
+                .await
+            }
+        },
+        MemCommand::Add(args) => {
+            run_mem_add(
+                args.content,
+                args.item_type,
+                args.title,
+                args.summary,
+                args.topic,
+                args.tags,
+                args.importance,
+                args.confidence,
+                args.scope,
+            )
+            .await
+        }
+        MemCommand::Show(args) => run_mem_show(args.mem_id).await,
+        MemCommand::Update(args) => {
+            run_mem_update(
+                args.mem_id,
+                args.content,
+                args.title,
+                args.summary,
+                args.topic,
+                args.tags,
+                args.importance,
+                args.status,
+            )
+            .await
+        }
+        MemCommand::Archive(args) => run_mem_archive(args.mem_id).await,
+        MemCommand::Promote(args) => {
+            run_mem_promote(
+                args.source_ref,
+                args.source_type,
+                args.item_type,
+                args.title,
+                args.summary,
+                args.topic,
+                args.tags,
+                args.importance,
+                args.confidence,
+            )
+            .await
+        }
+        MemCommand::Search(args) => {
+            run_mem_search(
+                args.query,
+                args.topic,
+                args.item_type,
+                args.scope,
+                args.limit,
+            )
+            .await
+        }
+        MemCommand::Pack(args) => run_mem_pack(args.topic_slug, args.limit).await,
+    }
+}
+
+fn parse_tags(tags: Option<&str>) -> Vec<String> {
+    tags.unwrap_or("")
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+fn load_workspace_and_session() -> Result<(Option<String>, String, String)> {
+    let workspace_id = crate::workspace::read_workspace()
+        .ok()
+        .flatten()
+        .map(|w| w.workspace.id);
+    let (session_id, token) = load_session()?;
+    Ok((workspace_id, session_id, token))
+}
+
+fn load_session() -> Result<(String, String)> {
+    let resolved = crate::identity::resolve_identity(None)?;
+    Ok((resolved.session_id, resolved.token))
+}
+
+fn print_json_or_table<T, F>(resp: ServerMsg, printer: F)
+where
+    T: serde::de::DeserializeOwned,
+    F: FnOnce(T),
+{
+    match resp {
+        ServerMsg::Ok { data } => {
+            if std::env::var("AGTALK_OUTPUT").unwrap_or_default() == "json" {
+                anstream::println!("{}", serde_json::to_string_pretty(&data).unwrap_or_default());
+            } else {
+                match serde_json::from_value::<T>(data.clone()) {
+                    Ok(v) => printer(v),
+                    Err(_) => {
+                        // 回退到原始 JSON
+                        anstream::println!("{}", serde_json::to_string_pretty(&data).unwrap_or_default());
+                    }
+                }
+            }
+        }
+        ServerMsg::Error { code, message } => {
+            eprintln!("错误 [{}]: {}", code, message);
+            std::process::exit(1);
+        }
+        _ => {
+            eprintln!("异常响应");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn socket_path() -> String {
@@ -221,6 +874,10 @@ pub fn print_help() {
         "{}",
         help::cmd("join <name> [--intro ... --transport ...]", "加入网络")
     );
+    anstream::println!(
+        "{}",
+        help::cmd("attach <name>", "接管已有 peer 身份")
+    );
     anstream::println!("{}", help::opt("--takeover", "强制接管同 endpoint 上的旧 session"));
     anstream::println!(
         "{}",
@@ -260,6 +917,19 @@ pub fn print_help() {
     anstream::println!(
         "  省略 file.yaml 时读取 .agtalk/runs/<当前agent-name>.yaml；适合固定授权入口"
     );
+    anstream::println!();
+    anstream::println!("{}", help::section("长期知识库"));
+    anstream::println!("{}", help::cmd("mem topic add <slug> --title <title>", "添加 topic"));
+    anstream::println!("{}", help::cmd("mem topic list [--all]", "列出 topics"));
+    anstream::println!("{}", help::cmd("mem topic show <slug>", "查看 topic"));
+    anstream::println!("{}", help::cmd("mem topic update <slug> [--title ...]", "更新 topic"));
+    anstream::println!("{}", help::cmd("mem add <content> --topic <slug> --type <type>", "添加 memory"));
+    anstream::println!("{}", help::cmd("mem show <mem-id>", "查看 memory"));
+    anstream::println!("{}", help::cmd("mem update <mem-id> [--content ...]", "更新 memory"));
+    anstream::println!("{}", help::cmd("mem archive <mem-id>", "归档 memory"));
+    anstream::println!("{}", help::cmd("mem promote <msg-id> --topic <slug> --type <type>", "从消息提升为 memory"));
+    anstream::println!("{}", help::cmd("mem search <query> [--topic <slug>]", "搜索 memory"));
+    anstream::println!("{}", help::cmd("mem pack <topic-slug>", "生成 Memory Pack"));
     anstream::println!();
     anstream::println!("{}", help::section("环境"));
     anstream::println!("{}", help::cmd("init", "初始化环境"));
@@ -374,6 +1044,14 @@ pub fn dispatch(argv: &[String]) {
             };
             rt.block_on(handle_join(&args))
         }
+        Commands::Attach(cmd) => {
+            let args = AttachArgs {
+                name: cmd.name,
+                takeover: cmd.takeover,
+                print_env: cmd.print_env,
+            };
+            rt.block_on(handle_attach(&args))
+        }
         Commands::Leave(cmd) => rt.block_on(handle_leave(cmd.purge)),
         Commands::Cleanup(cmd) => rt.block_on(handle_cleanup(cmd.dry_run)),
         Commands::Me => rt.block_on(handle_me()),
@@ -397,6 +1075,7 @@ pub fn dispatch(argv: &[String]) {
             let args = vec![cmd.action];
             rt.block_on(handle_daemon(&args))
         }
+        Commands::Mem(cmd) => rt.block_on(handle_mem(cmd)),
     };
 
     if let Err(e) = result {
@@ -431,6 +1110,13 @@ struct JoinArgs {
     intro: Option<String>,
     role: String,
     transport: String,
+    takeover: bool,
+    print_env: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct AttachArgs {
+    name: String,
     takeover: bool,
     print_env: bool,
 }
@@ -729,7 +1415,7 @@ fn print_ask_result(json: &str) {
 }
 
 fn print_agent_help() {
-    anstream::println!("agtalk —— 向人类发起提问并收集回应（面向 AI / 自动化）。");
+    anstream::println!("agtalk —— Agent 本地协作、向人类提问与长期知识库（面向 AI / 自动化）。");
     anstream::println!();
     anstream::println!("{}", help::section("调用方式"));
     anstream::println!(
@@ -820,6 +1506,9 @@ fn print_agent_help() {
     anstream::println!("  # 同一 endpoint 已存在 active session 时会提示冲突；可加 --takeover 强制接管");
     anstream::println!("  # takeover 为原子操作；shell / 无 endpoint 的 join 不会冲突");
     anstream::println!("  agtalk join codex-coder-Alex --takeover");
+    anstream::println!("  # 在新终端接管已有 peer 身份（不修改 role/intro/transport）");
+    anstream::println!("  agtalk attach codex-coder-Alex");
+    anstream::println!("  agtalk attach codex-coder-Alex --takeover");
     anstream::println!("  # 离开并保留凭证（默认）；--purge 删除本地 session.json，即使 session 已失效");
     anstream::println!("  agtalk leave");
     anstream::println!("  agtalk leave --purge");
@@ -838,6 +1527,16 @@ fn print_agent_help() {
     anstream::println!("  agtalk peers");
     anstream::println!("  agtalk me");
     anstream::println!();
+    anstream::println!("{}", help::section("长期知识库 (mem)"));
+    anstream::println!("  # 把关键事实、决策、偏好沉淀为可搜索的 memory");
+    anstream::println!("  agtalk mem topic add project-setup -t \"项目环境配置\" -s \"开发环境、依赖与构建命令\"");
+    anstream::println!("  agtalk mem add \"使用 pnpm + vite；构建命令 pnpm build\" -t fact --title \"构建方式\" -p project-setup --confidence high");
+    anstream::println!("  agtalk mem add \"优先使用 Result/Option 显式错误处理\" -t rule --title \"Rust 错误处理规范\" -p project-setup -g \"rust,style\" --confidence high");
+    anstream::println!("  agtalk mem search \"error handling\" -p project-setup");
+    anstream::println!("  agtalk mem pack project-setup");
+    anstream::println!("  # 从消息提升为 memory（source_ref 为 msg_id）");
+    anstream::println!("  agtalk mem promote <msg-id> -t fact --title \"从对话提取的关键结论\" -p project-setup --confidence medium");
+    anstream::println!();
     anstream::println!("{}", help::section("YAML Runner（复杂指令）"));
     anstream::println!(
         "{}",
@@ -845,7 +1544,7 @@ fn print_agent_help() {
     );
     anstream::println!("  # Runner 只执行 agtalk 内部命令，不执行任意 shell");
     anstream::println!("  # YAML 中的相对路径按 YAML 文件所在目录解析");
-    anstream::println!("  # version 必须为 1；command 支持 10 种 snake_case 命令");
+    anstream::println!("  # version 必须为 1；command 支持 11 种 snake_case 命令");
     anstream::println!("  #");
     anstream::println!("  # 建议：把复杂指令固定写入 .agtalk/runs/<当前agent-name>.yaml");
     anstream::println!("  # 每次只需覆盖同一文件再执行；agtalk run 不带参数时会读取该文件");
@@ -853,7 +1552,7 @@ fn print_agent_help() {
     anstream::println!();
     anstream::println!("  version: 1");
     anstream::println!(
-        "  command: agent | human | reply | wait | inbox | detail | attachment | chats | peers | me"
+        "  command: agent | human | reply | wait | inbox | detail | attachment | chats | peers | me | mem"
     );
     anstream::println!();
     anstream::println!("  # agent —— 给 Agent 发任务 / 回复 / 标记完成");
@@ -923,6 +1622,12 @@ fn print_agent_help() {
     anstream::println!("  #   chats      （无字段）");
     anstream::println!("  #   peers      verbose");
     anstream::println!("  #   me         （无字段）");
+    anstream::println!("  #   mem        mem_command + 对应字段");
+    anstream::println!();
+    anstream::println!("  # mem 字段说明：");
+    anstream::println!("  #   mem_command: topic_add | topic_list | topic_show | topic_update | add | show | update | archive | promote | search | pack");
+    anstream::println!("  #   slug / title / summary / aliases / priority / archive");
+    anstream::println!("  #   content / item_type / confidence / importance / scope / topics / tags / mem_id / source_ref / source_type / query / limit");
     anstream::println!();
     anstream::println!("  # 完整字段与示例见 docs/commands.md");
 }
@@ -1038,6 +1743,11 @@ fn print_peers(resp: &crate::ipc::ServerMsg, verbose: bool) -> Result<()> {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        let name = if participant_type == "web" {
+            format!("[web] {}", name)
+        } else {
+            name
+        };
         let intro = item
             .get("intro")
             .and_then(|v| v.as_str())
@@ -1817,6 +2527,183 @@ async fn handle_join(args: &JoinArgs) -> Result<()> {
     } else {
         anstream::println!(
             "{} joined as {}",
+            label("OK", anstyle::AnsiColor::Green),
+            args.name
+        );
+        anstream::println!("  workspace: {}", wf.workspace.root);
+        anstream::println!("  session:   {}", sf.session.id);
+        anstream::println!("\nTo use this identity:");
+        anstream::println!("  # 单条命令指定身份：AGTALK_NAME={} agtalk <cmd>", args.name);
+        anstream::println!("  # 单个 active session 时，后续命令会自动使用该身份");
+    }
+
+    Ok(())
+}
+
+async fn handle_attach(args: &AttachArgs) -> Result<()> {
+    // 1. 确定 workspace root
+    let root = match crate::paths::find_agtalk_root() {
+        Ok(r) => r,
+        Err(_) => {
+            let cwd = std::env::current_dir().map_err(|e| anyhow!("无法获取当前目录: {}", e))?;
+            let agtalk_dir = cwd.join(crate::paths::AGTALK_DIR_NAME);
+            std::fs::create_dir_all(&agtalk_dir)?;
+            cwd
+        }
+    };
+    let root_str = root.to_string_lossy().to_string();
+    let workspace_name = root
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "workspace".into());
+
+    // 2. 自动捕获 zellij / tmux endpoint 和 runtime 信息
+    let cfg = crate::config::AgConfig::load().unwrap_or_default();
+    let notify_config = if let Some(endpoint) = notify::detect_zellij_endpoint() {
+        notify::build_notify_config("zellij", &endpoint, cfg.notify.default_send_enter)
+    } else if let Some(endpoint) = notify::detect_tmux_endpoint() {
+        notify::build_notify_config("tmux", &endpoint, cfg.notify.default_send_enter)
+    } else {
+        serde_json::json!({})
+    };
+
+    let runtime_kind = if notify::detect_zellij_endpoint().is_some() {
+        "zellij"
+    } else if notify::detect_tmux_endpoint().is_some() {
+        "tmux"
+    } else {
+        "shell"
+    };
+    let shell = std::env::var("SHELL")
+        .ok()
+        .and_then(|s| std::path::Path::new(&s).file_stem().and_then(|s| s.to_str()).map(String::from))
+        .unwrap_or_else(|| "sh".to_string());
+    let term = std::env::var("TERM").unwrap_or_default();
+    let runtime_config = serde_json::json!({
+        "kind": runtime_kind,
+        "shell": shell,
+        "term": term,
+    });
+
+    // 3. 连接 daemon 并请求 attach（复用 workspace/notify/runtime 逻辑，不修改 peer 属性）
+    let mut cli = Client::connect(&crate::paths::socket_path()).await?;
+    let mut resp = cli
+        .attach(
+            &root_str,
+            &workspace_name,
+            &args.name,
+            notify_config.clone(),
+            runtime_config.clone(),
+            args.takeover,
+        )
+        .await?;
+
+    // 4. 处理 session_conflict：显式确认后重试 takeover
+    if let ServerMsg::Error { code, message } = &resp {
+        if code == "session_conflict" {
+            let confirm = if args.takeover {
+                true
+            } else {
+                anstream::println!(
+                    "{} {}",
+                    label("WARN", anstyle::AnsiColor::Yellow),
+                    message
+                );
+                anstream::println!(
+                    "{} 是否接管同 endpoint 上的旧 session？(y/N)",
+                    label("?", anstyle::AnsiColor::Cyan)
+                );
+                read_yes_no().unwrap_or(false)
+            };
+            if confirm {
+                resp = cli
+                    .attach(
+                        &root_str,
+                        &workspace_name,
+                        &args.name,
+                        notify_config.clone(),
+                        runtime_config.clone(),
+                        true,
+                    )
+                    .await?;
+            }
+        }
+    }
+
+    // 5. 解析响应
+    let data = match &resp {
+        ServerMsg::Ok { data } => data.clone(),
+        ServerMsg::Error { code, message } => anyhow::bail!("attach 失败 [{}]: {}", code, message),
+        _ => anyhow::bail!("attach 返回异常"),
+    };
+
+    let workspace_id = data
+        .get("workspace_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let session_id = data
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let token = data
+        .get("token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    // 6. 写 workspace.json
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut wf = workspace::WorkspaceFile {
+        version: workspace::WORKSPACE_FILE_VERSION,
+        workspace: workspace::WorkspaceMeta {
+            id: workspace_id,
+            name: workspace_name.clone(),
+            root: root_str.clone(),
+            detected_by: "cwd-scan".into(),
+            created_at: now.clone(),
+            updated_at: now,
+        },
+        daemon: workspace::DaemonMeta {
+            profile: "default".into(),
+            socket: Some(crate::paths::socket_path()),
+        },
+    };
+    workspace::write_workspace(&mut wf)?;
+
+    // 7. 写 session.json (v2)
+    let notify_mirror = if notify_config.is_object()
+        && notify_config
+            .as_object()
+            .map(|m| !m.is_empty())
+            .unwrap_or(false)
+    {
+        Some(notify_config)
+    } else {
+        None
+    };
+    let mut sf = session::SessionFile {
+        version: session::SESSION_FILE_VERSION,
+        name: args.name.clone(),
+        session: session::SessionMeta {
+            id: session_id,
+            token,
+            status: "active".into(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        },
+        runtime: Some(runtime_config),
+        notify: notify_mirror,
+    };
+
+    session::write_session(&args.name, &mut sf)?;
+
+    // 8. 输出
+    if args.print_env {
+        println!("export AGTALK_NAME={}", args.name);
+    } else {
+        anstream::println!(
+            "{} attached as {}",
             label("OK", anstyle::AnsiColor::Green),
             args.name
         );

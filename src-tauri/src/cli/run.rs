@@ -5,8 +5,10 @@
 
 use super::dispatch::{
     handle_agent, handle_ask_flow, handle_attachment, handle_chats, handle_detail, handle_inbox,
-    handle_me, handle_peers, handle_reply, handle_wait, AgentArgs, AttachmentArgs, DetailArgs,
-    InboxArgs, PeersArgs, QuestionArgs, ReplyCommand, WaitArgs,
+    handle_me, handle_peers, handle_reply, handle_wait, run_mem_add, run_mem_archive,
+    run_mem_pack, run_mem_promote, run_mem_search, run_mem_show, run_mem_topic_add,
+    run_mem_topic_list, run_mem_topic_show, run_mem_topic_update, run_mem_update, AgentArgs,
+    AttachmentArgs, DetailArgs, InboxArgs, PeersArgs, QuestionArgs, ReplyCommand, WaitArgs,
 };
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -46,6 +48,7 @@ enum RunCommandSpec {
     Chats,
     Peers(PeersSpec),
     Me,
+    Mem(Box<MemSpec>),
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -129,6 +132,36 @@ struct PeersSpec {
     verbose: bool,
 }
 
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct MemSpec {
+    mem_command: String,
+    slug: Option<String>,
+    title: Option<String>,
+    summary: Option<String>,
+    aliases: Vec<String>,
+    priority: Option<i32>,
+    archive: bool,
+    all: bool,
+    content: Option<String>,
+    #[serde(rename = "type")]
+    item_type: Option<String>,
+    topics: Vec<String>,
+    tags: Option<String>,
+    importance: Option<i32>,
+    confidence: Option<String>,
+    scope: Option<String>,
+    status: Option<String>,
+    mem_id: Option<String>,
+    source_ref: Option<String>,
+    #[serde(rename = "source_type")]
+    source_type: Option<String>,
+    query: Option<String>,
+    topic_slug: Option<String>,
+    #[serde(default = "default_limit")]
+    limit: u32,
+}
+
 /// 解析并执行 YAML Runner 文件。
 pub async fn handle_run(file: &str) -> Result<()> {
     let path = Path::new(file);
@@ -140,7 +173,7 @@ pub async fn handle_run(file: &str) -> Result<()> {
         .with_context(|| format!("无法读取 YAML 文件: {}", file))?;
 
     let spec: RunSpec = serde_yaml::from_str(&yaml)
-        .with_context(|| format!("解析 YAML 失败: {}", file))?;
+        .with_context(|| format!("解析 YAML 失败: {} (请检查字段名与 command/mem_command 是否匹配)", file))?;
 
     if spec.version != SUPPORTED_VERSION {
         anyhow::bail!(
@@ -162,6 +195,101 @@ pub async fn handle_run(file: &str) -> Result<()> {
         RunCommandSpec::Chats => handle_chats().await,
         RunCommandSpec::Peers(s) => handle_peers(&PeersArgs { verbose: s.verbose }).await,
         RunCommandSpec::Me => handle_me().await,
+        RunCommandSpec::Mem(s) => run_mem(*s).await,
+    }
+}
+
+async fn run_mem(spec: MemSpec) -> Result<()> {
+    let item_type = spec.item_type.clone().unwrap_or_else(|| "fact".to_string());
+    let confidence = spec.confidence.clone().unwrap_or_else(|| "confirmed".to_string());
+    let scope = spec.scope.clone().unwrap_or_else(|| "project".to_string());
+    let source_type = spec.source_type.clone().unwrap_or_else(|| "message".to_string());
+    let priority = spec.priority.unwrap_or(3);
+    let importance = spec.importance.unwrap_or(3);
+
+    match spec.mem_command.as_str() {
+        "topic_add" => {
+            let slug = spec.slug.filter(|s| !s.is_empty()).ok_or_else(|| anyhow!("mem topic_add 缺少必填字段 'slug'"))?;
+            let title = spec.title.filter(|s| !s.is_empty()).ok_or_else(|| anyhow!("mem topic_add 缺少必填字段 'title'"))?;
+            run_mem_topic_add(slug, title, spec.summary, spec.aliases, priority).await
+        }
+        "topic_list" => run_mem_topic_list(spec.all).await,
+        "topic_show" => {
+            let slug = spec.slug.filter(|s| !s.is_empty()).ok_or_else(|| anyhow!("mem topic_show 缺少必填字段 'slug'"))?;
+            run_mem_topic_show(slug).await
+        }
+        "topic_update" => {
+            let slug = spec.slug.filter(|s| !s.is_empty()).ok_or_else(|| anyhow!("mem topic_update 缺少必填字段 'slug'"))?;
+            run_mem_topic_update(
+                slug,
+                spec.title,
+                spec.summary,
+                spec.aliases,
+                spec.priority,
+                spec.archive,
+            )
+            .await
+        }
+        "add" => {
+            let content = spec.content.filter(|s| !s.is_empty()).ok_or_else(|| anyhow!("mem add 缺少必填字段 'content'"))?;
+            run_mem_add(
+                content,
+                item_type,
+                spec.title,
+                spec.summary,
+                spec.topics,
+                spec.tags,
+                importance,
+                confidence,
+                scope,
+            )
+            .await
+        }
+        "show" => {
+            let mem_id = spec.mem_id.filter(|s| !s.is_empty()).ok_or_else(|| anyhow!("mem show 缺少必填字段 'mem_id'"))?;
+            run_mem_show(mem_id).await
+        }
+        "update" => {
+            let mem_id = spec.mem_id.filter(|s| !s.is_empty()).ok_or_else(|| anyhow!("mem update 缺少必填字段 'mem_id'"))?;
+            run_mem_update(
+                mem_id,
+                spec.content,
+                spec.title,
+                spec.summary,
+                spec.topics,
+                spec.tags,
+                spec.importance,
+                spec.status,
+            )
+            .await
+        }
+        "archive" => {
+            let mem_id = spec.mem_id.filter(|s| !s.is_empty()).ok_or_else(|| anyhow!("mem archive 缺少必填字段 'mem_id'"))?;
+            run_mem_archive(mem_id).await
+        }
+        "promote" => {
+            let source_ref = spec.source_ref.filter(|s| !s.is_empty()).ok_or_else(|| anyhow!("mem promote 缺少必填字段 'source_ref'"))?;
+            run_mem_promote(
+                source_ref,
+                source_type,
+                item_type,
+                spec.title,
+                spec.summary,
+                spec.topics,
+                spec.tags,
+                importance,
+                confidence,
+            )
+            .await
+        }
+        "search" => {
+            run_mem_search(spec.query, spec.topics, spec.item_type.clone(), spec.scope.clone(), spec.limit).await
+        }
+        "pack" => {
+            let topic_slug = spec.topic_slug.filter(|s| !s.is_empty()).ok_or_else(|| anyhow!("mem pack 缺少必填字段 'topic_slug'"))?;
+            run_mem_pack(topic_slug, spec.limit).await
+        }
+        other => anyhow::bail!("不支持的 mem_command: {}", other),
     }
 }
 

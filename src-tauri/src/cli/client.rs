@@ -90,6 +90,7 @@ impl Client {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn join(
         &mut self,
         workspace_root: &str,
@@ -106,6 +107,7 @@ impl Client {
             workspace_root: workspace_root.to_string(),
             workspace_name: workspace_name.to_string(),
             name: name.to_string(),
+            participant_type: None,
             role: role.to_string(),
             intro: intro.to_string(),
             transport: transport.to_string(),
@@ -128,6 +130,27 @@ impl Client {
         self.request(&ClientMsg::Cleanup {
             workspace_id: workspace_id.to_string(),
             dry_run,
+        })
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn attach(
+        &mut self,
+        workspace_root: &str,
+        workspace_name: &str,
+        name: &str,
+        notify_config: serde_json::Value,
+        runtime_config: serde_json::Value,
+        takeover: bool,
+    ) -> Result<ServerMsg> {
+        self.request(&ClientMsg::Attach {
+            workspace_root: workspace_root.to_string(),
+            workspace_name: workspace_name.to_string(),
+            name: name.to_string(),
+            notify_config,
+            runtime_config,
+            takeover,
         })
         .await
     }
@@ -278,6 +301,207 @@ impl Client {
             sender: None,
             msg_id: msg_id.to_string(),
             timeout_secs,
+        })
+        .await
+    }
+
+    // ── mem 长期知识库 ─────────────────────────
+    pub async fn mem_topic_add(
+        &mut self,
+        workspace_id: Option<&str>,
+        slug: &str,
+        title: &str,
+        summary: Option<&str>,
+        aliases: &[String],
+        priority: i32,
+    ) -> Result<ServerMsg> {
+        self.request(&ClientMsg::MemTopicAdd {
+            workspace_id: workspace_id.map(|s| s.to_string()),
+            slug: slug.to_string(),
+            title: title.to_string(),
+            summary: summary.unwrap_or("").to_string(),
+            aliases: aliases.to_vec(),
+            priority,
+        })
+        .await
+    }
+
+    pub async fn mem_topic_list(
+        &mut self,
+        workspace_id: Option<&str>,
+        status: Option<&str>,
+    ) -> Result<ServerMsg> {
+        self.request(&ClientMsg::MemTopicList {
+            workspace_id: workspace_id.map(|s| s.to_string()),
+            status: status.map(|s| s.to_string()),
+        })
+        .await
+    }
+
+    pub async fn mem_topic_show(
+        &mut self,
+        workspace_id: Option<&str>,
+        slug: &str,
+    ) -> Result<ServerMsg> {
+        self.request(&ClientMsg::MemTopicShow {
+            workspace_id: workspace_id.map(|s| s.to_string()),
+            slug: slug.to_string(),
+        })
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn mem_topic_update(
+        &mut self,
+        workspace_id: Option<&str>,
+        slug: &str,
+        title: Option<&str>,
+        summary: Option<&str>,
+        aliases: Option<Vec<String>>,
+        priority: Option<i32>,
+        status: Option<&str>,
+    ) -> Result<ServerMsg> {
+        self.request(&ClientMsg::MemTopicUpdate {
+            workspace_id: workspace_id.map(|s| s.to_string()),
+            slug: slug.to_string(),
+            title: title.map(|s| s.to_string()),
+            summary: summary.map(|s| s.to_string()),
+            aliases,
+            priority,
+            status: status.map(|s| s.to_string()),
+        })
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn mem_add(
+        &mut self,
+        workspace_id: Option<&str>,
+        item_type: &str,
+        title: &str,
+        content: &str,
+        summary: Option<&str>,
+        topic_slugs: &[String],
+        tags: &[String],
+        importance: i32,
+        confidence: &str,
+        source_type: &str,
+        source_ref: &str,
+    ) -> Result<ServerMsg> {
+        self.request(&ClientMsg::MemAdd {
+            workspace_id: workspace_id.map(|s| s.to_string()),
+            item_type: item_type.to_string(),
+            title: title.to_string(),
+            content: content.to_string(),
+            summary: summary.unwrap_or("").to_string(),
+            topic_slugs: topic_slugs.to_vec(),
+            tags: tags.to_vec(),
+            importance,
+            confidence: confidence.to_string(),
+            source_type: source_type.to_string(),
+            source_ref: source_ref.to_string(),
+        })
+        .await
+    }
+
+    pub async fn mem_show(&mut self, mem_id: &str) -> Result<ServerMsg> {
+        self.request(&ClientMsg::MemShow {
+            mem_id: mem_id.to_string(),
+        })
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn mem_update(
+        &mut self,
+        mem_id: &str,
+        title: Option<&str>,
+        content: Option<&str>,
+        summary: Option<&str>,
+        topic_slugs: Option<Vec<String>>,
+        tags: Option<Vec<String>>,
+        importance: Option<i32>,
+        status: Option<&str>,
+    ) -> Result<ServerMsg> {
+        self.request(&ClientMsg::MemUpdate {
+            mem_id: mem_id.to_string(),
+            title: title.map(|s| s.to_string()),
+            content: content.map(|s| s.to_string()),
+            summary: summary.map(|s| s.to_string()),
+            topic_slugs,
+            tags,
+            importance,
+            status: status.map(|s| s.to_string()),
+        })
+        .await
+    }
+
+    pub async fn mem_archive(&mut self, mem_id: &str) -> Result<ServerMsg> {
+        self.request(&ClientMsg::MemArchive {
+            mem_id: mem_id.to_string(),
+        })
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn mem_promote(
+        &mut self,
+        source_type: &str,
+        source_ref: &str,
+        workspace_id: Option<&str>,
+        item_type: &str,
+        title: &str,
+        summary: Option<&str>,
+        topic_slugs: &[String],
+        tags: &[String],
+        importance: i32,
+        confidence: &str,
+    ) -> Result<ServerMsg> {
+        self.request(&ClientMsg::MemPromote {
+            source_type: source_type.to_string(),
+            source_ref: source_ref.to_string(),
+            workspace_id: workspace_id.map(|s| s.to_string()),
+            item_type: item_type.to_string(),
+            title: title.to_string(),
+            summary: summary.unwrap_or("").to_string(),
+            topic_slugs: topic_slugs.to_vec(),
+            tags: tags.to_vec(),
+            importance,
+            confidence: confidence.to_string(),
+        })
+        .await
+    }
+
+    pub async fn mem_search(
+        &mut self,
+        workspace_id: Option<&str>,
+        query: Option<&str>,
+        topic_slugs: &[String],
+        item_type: Option<&str>,
+        scope: Option<&str>,
+        limit: u32,
+    ) -> Result<ServerMsg> {
+        self.request(&ClientMsg::MemSearch {
+            workspace_id: workspace_id.map(|s| s.to_string()),
+            query: query.map(|s| s.to_string()),
+            topic_slugs: topic_slugs.to_vec(),
+            item_type: item_type.map(|s| s.to_string()),
+            scope: scope.map(|s| s.to_string()),
+            limit,
+        })
+        .await
+    }
+
+    pub async fn mem_pack(
+        &mut self,
+        workspace_id: Option<&str>,
+        topic_slug: &str,
+        limit: u32,
+    ) -> Result<ServerMsg> {
+        self.request(&ClientMsg::MemPack {
+            workspace_id: workspace_id.map(|s| s.to_string()),
+            topic_slug: topic_slug.to_string(),
+            limit,
         })
         .await
     }

@@ -16,6 +16,8 @@ pub enum ClientMsg {
         workspace_name: String,
         name: String,
         #[serde(default)]
+        participant_type: Option<String>,
+        #[serde(default)]
         role: String,
         #[serde(default)]
         intro: String,
@@ -27,6 +29,18 @@ pub enum ClientMsg {
         runtime_config: serde_json::Value,
         #[serde(default)]
         capabilities: Vec<String>,
+        #[serde(default)]
+        takeover: bool,
+    },
+    /// 接管已有 peer 的身份，为其创建新 session
+    Attach {
+        workspace_root: String,
+        workspace_name: String,
+        name: String,
+        #[serde(default)]
+        notify_config: serde_json::Value,
+        #[serde(default)]
+        runtime_config: serde_json::Value,
         #[serde(default)]
         takeover: bool,
     },
@@ -183,6 +197,129 @@ pub enum ClientMsg {
         #[serde(default = "default_timeout")]
         timeout_secs: u64,
     },
+
+    // ── v0.3 mem 长期知识库 ───────────────────
+    MemTopicAdd {
+        #[serde(default)]
+        workspace_id: Option<String>,
+        slug: String,
+        title: String,
+        #[serde(default)]
+        summary: String,
+        #[serde(default)]
+        aliases: Vec<String>,
+        #[serde(default = "default_priority")]
+        priority: i32,
+    },
+    MemTopicList {
+        #[serde(default)]
+        workspace_id: Option<String>,
+        #[serde(default)]
+        status: Option<String>,
+    },
+    MemTopicShow {
+        #[serde(default)]
+        workspace_id: Option<String>,
+        slug: String,
+    },
+    MemTopicUpdate {
+        #[serde(default)]
+        workspace_id: Option<String>,
+        slug: String,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        summary: Option<String>,
+        #[serde(default)]
+        aliases: Option<Vec<String>>,
+        #[serde(default)]
+        priority: Option<i32>,
+        #[serde(default)]
+        status: Option<String>,
+    },
+    MemAdd {
+        #[serde(default)]
+        workspace_id: Option<String>,
+        item_type: String,
+        title: String,
+        content: String,
+        #[serde(default)]
+        summary: String,
+        #[serde(default)]
+        topic_slugs: Vec<String>,
+        #[serde(default)]
+        tags: Vec<String>,
+        #[serde(default = "default_priority")]
+        importance: i32,
+        #[serde(default = "default_confidence")]
+        confidence: String,
+        #[serde(default = "default_source_type")]
+        source_type: String,
+        #[serde(default)]
+        source_ref: String,
+    },
+    MemShow {
+        mem_id: String,
+    },
+    MemUpdate {
+        mem_id: String,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        content: Option<String>,
+        #[serde(default)]
+        summary: Option<String>,
+        #[serde(default)]
+        topic_slugs: Option<Vec<String>>,
+        #[serde(default)]
+        tags: Option<Vec<String>>,
+        #[serde(default)]
+        importance: Option<i32>,
+        #[serde(default)]
+        status: Option<String>,
+    },
+    MemArchive {
+        mem_id: String,
+    },
+    MemPromote {
+        source_type: String,
+        source_ref: String,
+        #[serde(default)]
+        workspace_id: Option<String>,
+        item_type: String,
+        title: String,
+        #[serde(default)]
+        summary: String,
+        #[serde(default)]
+        topic_slugs: Vec<String>,
+        #[serde(default)]
+        tags: Vec<String>,
+        #[serde(default = "default_priority")]
+        importance: i32,
+        #[serde(default = "default_confidence")]
+        confidence: String,
+    },
+    MemSearch {
+        #[serde(default)]
+        workspace_id: Option<String>,
+        #[serde(default)]
+        query: Option<String>,
+        #[serde(default)]
+        topic_slugs: Vec<String>,
+        #[serde(default)]
+        item_type: Option<String>,
+        #[serde(default)]
+        scope: Option<String>,
+        #[serde(default = "default_limit")]
+        limit: u32,
+    },
+    MemPack {
+        #[serde(default)]
+        workspace_id: Option<String>,
+        topic_slug: String,
+        #[serde(default = "default_limit")]
+        limit: u32,
+    },
 }
 
 /// Daemon → CLI/GUI 的响应消息
@@ -250,6 +387,18 @@ fn default_limit() -> u32 {
 
 fn default_timeout() -> u64 {
     300
+}
+
+fn default_priority() -> i32 {
+    3
+}
+
+fn default_confidence() -> String {
+    "confirmed".to_string()
+}
+
+fn default_source_type() -> String {
+    "manual".to_string()
 }
 
 /// 序列化一条 IPC 消息为 JSON 行

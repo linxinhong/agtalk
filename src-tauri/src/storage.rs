@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::config::AgConfig;
 
-const CURRENT_VERSION: u32 = 9;
+const CURRENT_VERSION: u32 = 10;
 
 pub struct Storage {
     conn: Mutex<Connection>,
@@ -53,6 +53,32 @@ fn serialize_iso_opt<S: serde::Serializer>(ts: &Option<f64>, s: S) -> Result<S::
             s.serialize_some(&dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
         }
         None => s.serialize_none(),
+    }
+}
+
+fn deserialize_iso<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+    use serde::Deserialize;
+    let s = String::deserialize(d)?;
+    let dt = chrono::DateTime::parse_from_rfc3339(&s)
+        .map_err(serde::de::Error::custom)?
+        .with_timezone(&chrono::Utc);
+    Ok(dt.timestamp() as f64 + dt.timestamp_subsec_nanos() as f64 / 1_000_000_000.0)
+}
+
+#[allow(dead_code)]
+fn deserialize_iso_opt<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f64>, D::Error> {
+    use serde::Deserialize;
+    let opt: Option<String> = Option::deserialize(d)?;
+    match opt {
+        Some(s) => {
+            let dt = chrono::DateTime::parse_from_rfc3339(&s)
+                .map_err(serde::de::Error::custom)?
+                .with_timezone(&chrono::Utc);
+            Ok(Some(
+                dt.timestamp() as f64 + dt.timestamp_subsec_nanos() as f64 / 1_000_000_000.0,
+            ))
+        }
+        None => Ok(None),
     }
 }
 
@@ -143,6 +169,8 @@ impl Storage {
         // v9: session takeover 所需的 endpoint 标识
         ensure_column(&conn, "agent_sessions", "endpoint_key", "TEXT")?;
         conn.execute_batch(SCHEMA_V9_ADDITIONS)?;
+        // v10: 长期知识库 mem
+        conn.execute_batch(SCHEMA_V10_ADDITIONS)?;
         if version < CURRENT_VERSION {
             conn.pragma_update(None, "user_version", CURRENT_VERSION)?;
         }
@@ -265,6 +293,110 @@ CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id);
 
 const SCHEMA_V9_ADDITIONS: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_sessions_endpoint ON agent_sessions(workspace_id, endpoint_key, status);
+"#;
+
+const SCHEMA_V10_ADDITIONS: &str = r#"
+CREATE TABLE IF NOT EXISTS mem_spaces (
+    id              TEXT PRIMARY KEY,
+    scope           TEXT NOT NULL,
+    workspace_id    TEXT,
+    created_at      REAL NOT NULL DEFAULT (unixepoch('subsec'))
+);
+
+CREATE TABLE IF NOT EXISTS mem_topics (
+    id              TEXT PRIMARY KEY,
+    space_id        TEXT NOT NULL REFERENCES mem_spaces(id),
+    parent_id       TEXT REFERENCES mem_topics(id),
+    slug            TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    summary         TEXT,
+    aliases         TEXT NOT NULL DEFAULT '[]',
+    status          TEXT NOT NULL DEFAULT 'active',
+    priority        INTEGER NOT NULL DEFAULT 3,
+    created_at      REAL NOT NULL DEFAULT (unixepoch('subsec')),
+    updated_at      REAL NOT NULL DEFAULT (unixepoch('subsec')),
+    UNIQUE(space_id, slug)
+);
+
+CREATE TABLE IF NOT EXISTS mem_items (
+    id              TEXT PRIMARY KEY,
+    space_id        TEXT NOT NULL REFERENCES mem_spaces(id),
+    type            TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    content         TEXT NOT NULL,
+    summary         TEXT,
+    status          TEXT NOT NULL DEFAULT 'active',
+    confidence      TEXT NOT NULL DEFAULT 'confirmed',
+    importance      INTEGER NOT NULL DEFAULT 3,
+    created_by      TEXT NOT NULL,
+    updated_by      TEXT,
+    created_at      REAL NOT NULL DEFAULT (unixepoch('subsec')),
+    updated_at      REAL NOT NULL DEFAULT (unixepoch('subsec'))
+);
+
+CREATE TABLE IF NOT EXISTS mem_item_topics (
+    mem_id          TEXT NOT NULL REFERENCES mem_items(id),
+    topic_id        TEXT NOT NULL REFERENCES mem_topics(id),
+    role            TEXT NOT NULL DEFAULT 'primary',
+    weight          REAL NOT NULL DEFAULT 1.0,
+    PRIMARY KEY (mem_id, topic_id)
+);
+
+CREATE TABLE IF NOT EXISTS mem_sources (
+    id              TEXT PRIMARY KEY,
+    mem_id          TEXT NOT NULL REFERENCES mem_items(id),
+    source_type     TEXT NOT NULL,
+    source_ref      TEXT NOT NULL,
+    quote           TEXT,
+    created_at      REAL NOT NULL DEFAULT (unixepoch('subsec'))
+);
+
+CREATE TABLE IF NOT EXISTS mem_tags (
+    mem_id          TEXT NOT NULL REFERENCES mem_items(id),
+    tag             TEXT NOT NULL,
+    PRIMARY KEY (mem_id, tag)
+);
+
+CREATE TABLE IF NOT EXISTS mem_events (
+    id              TEXT PRIMARY KEY,
+    mem_id          TEXT NOT NULL REFERENCES mem_items(id),
+    action          TEXT NOT NULL,
+    actor           TEXT NOT NULL,
+    diff            TEXT,
+    created_at      REAL NOT NULL DEFAULT (unixepoch('subsec'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_mem_items_space ON mem_items(space_id);
+CREATE INDEX IF NOT EXISTS idx_mem_items_type ON mem_items(type);
+CREATE INDEX IF NOT EXISTS idx_mem_items_status ON mem_items(status);
+CREATE INDEX IF NOT EXISTS idx_mem_sources_mem ON mem_sources(mem_id);
+CREATE INDEX IF NOT EXISTS idx_mem_events_mem ON mem_events(mem_id);
+
+-- FTS5 虚拟表与触发器（rusqlite bundled 默认启用 FTS5）
+CREATE VIRTUAL TABLE IF NOT EXISTS mem_items_fts USING fts5(
+    title,
+    content,
+    summary,
+    content='mem_items',
+    content_rowid='rowid'
+);
+
+CREATE TRIGGER IF NOT EXISTS mem_items_ai AFTER INSERT ON mem_items BEGIN
+    INSERT INTO mem_items_fts(rowid, title, content, summary)
+    VALUES (new.rowid, new.title, new.content, new.summary);
+END;
+
+CREATE TRIGGER IF NOT EXISTS mem_items_ad AFTER DELETE ON mem_items BEGIN
+    INSERT INTO mem_items_fts(mem_items_fts, rowid, title, content, summary)
+    VALUES ('delete', old.rowid, old.title, old.content, old.summary);
+END;
+
+CREATE TRIGGER IF NOT EXISTS mem_items_au AFTER UPDATE ON mem_items BEGIN
+    INSERT INTO mem_items_fts(mem_items_fts, rowid, title, content, summary)
+    VALUES ('delete', old.rowid, old.title, old.content, old.summary);
+    INSERT INTO mem_items_fts(rowid, title, content, summary)
+    VALUES (new.rowid, new.title, new.content, new.summary);
+END;
 "#;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -448,6 +580,118 @@ pub struct InboxItem {
     pub kind: String,
 }
 
+// ─── mem 长期知识库 ───────────────────────────────────
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MemTopic {
+    pub id: String,
+    pub space_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    pub slug: String,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    pub aliases: Vec<String>,
+    pub status: String,
+    pub priority: i32,
+    #[serde(
+        serialize_with = "serialize_iso",
+        deserialize_with = "deserialize_iso"
+    )]
+    pub created_at: f64,
+    #[serde(
+        serialize_with = "serialize_iso",
+        deserialize_with = "deserialize_iso"
+    )]
+    pub updated_at: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MemSource {
+    pub id: String,
+    pub mem_id: String,
+    pub source_type: String,
+    pub source_ref: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
+    #[serde(
+        serialize_with = "serialize_iso",
+        deserialize_with = "deserialize_iso"
+    )]
+    pub created_at: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[allow(dead_code)]
+pub struct MemEvent {
+    pub id: String,
+    pub mem_id: String,
+    pub action: String,
+    pub actor: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+    #[serde(
+        serialize_with = "serialize_iso",
+        deserialize_with = "deserialize_iso"
+    )]
+    pub created_at: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MemTopicRef {
+    pub topic_id: String,
+    pub slug: String,
+    pub title: String,
+    pub role: String,
+    pub weight: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MemItem {
+    pub id: String,
+    pub space_id: String,
+    pub scope: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    pub item_type: String,
+    pub title: String,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    pub status: String,
+    pub confidence: String,
+    pub importance: i32,
+    pub created_by: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_by: Option<String>,
+    #[serde(
+        serialize_with = "serialize_iso",
+        deserialize_with = "deserialize_iso"
+    )]
+    pub created_at: f64,
+    #[serde(
+        serialize_with = "serialize_iso",
+        deserialize_with = "deserialize_iso"
+    )]
+    pub updated_at: f64,
+    pub topics: Vec<MemTopicRef>,
+    pub tags: Vec<String>,
+    pub sources: Vec<MemSource>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MemSearchResult {
+    pub item: MemItem,
+    pub rank: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MemPack {
+    pub topic: MemTopic,
+    pub items: Vec<MemItem>,
+}
+
 // ─── 参与者 CRUD ──────────────────────────────────────
 
 impl Storage {
@@ -525,15 +769,16 @@ impl Storage {
     pub fn update_participant_on_join(
         &self,
         name: &str,
+        participant_type: &str,
         role: &str,
         intro: &str,
         transport: &str,
     ) -> Result<()> {
         self.conn().execute(
             "UPDATE participants
-             SET role = ?1, intro = ?2, transport = ?3, status = 'online', last_seen_at = unixepoch('subsec')
-             WHERE name = ?4",
-            params![role, intro, transport, name],
+             SET type = ?1, role = ?2, intro = ?3, transport = ?4, status = 'online', last_seen_at = unixepoch('subsec')
+             WHERE name = ?5",
+            params![participant_type, role, intro, transport, name],
         )?;
         Ok(())
     }
@@ -2033,6 +2278,699 @@ impl Storage {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// 取某个 participant 最新的 active session 的 id 与 token（用于 HTTP 简化认证）
+    pub fn get_active_session_id_and_token(
+        &self,
+        participant_id: &str,
+    ) -> Result<Option<(String, String)>> {
+        let conn = self.conn();
+        match conn.query_row(
+            "SELECT id, token FROM agent_sessions
+             WHERE participant_id = ?1 AND status = 'active'
+             ORDER BY created_at DESC
+             LIMIT 1",
+            params![participant_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        ) {
+            Ok(t) => Ok(Some(t)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+}
+
+// ─── mem 长期知识库 DAO ───────────────────────────────
+
+impl Storage {
+    /// 确保 space 存在，返回 space_id
+    fn ensure_mem_space(&self, scope: &str, workspace_id: Option<&str>) -> Result<String> {
+        let conn = self.conn();
+        // global scope 只查 scope；其余按 scope + workspace_id
+        let existing: Option<String> = match workspace_id {
+            Some(wid) => conn
+                .query_row(
+                    "SELECT id FROM mem_spaces WHERE scope = ?1 AND workspace_id = ?2",
+                    params![scope, wid],
+                    |r| r.get(0),
+                )
+                .optional()?,
+            None => conn
+                .query_row(
+                    "SELECT id FROM mem_spaces WHERE scope = ?1 AND workspace_id IS NULL",
+                    params![scope],
+                    |r| r.get(0),
+                )
+                .optional()?,
+        };
+        if let Some(id) = existing {
+            return Ok(id);
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO mem_spaces (id, scope, workspace_id) VALUES (?1, ?2, ?3)",
+            params![id, scope, workspace_id],
+        )?;
+        Ok(id)
+    }
+
+    fn row_to_topic(&self, row: &rusqlite::Row) -> Result<MemTopic, rusqlite::Error> {
+        let aliases_str: String = row.get(6)?;
+        let aliases: Vec<String> = serde_json::from_str(&aliases_str).unwrap_or_default();
+        Ok(MemTopic {
+            id: row.get(0)?,
+            space_id: row.get(1)?,
+            parent_id: row.get(2)?,
+            slug: row.get(3)?,
+            title: row.get(4)?,
+            summary: row.get(5)?,
+            aliases,
+            status: row.get(7)?,
+            priority: row.get(8)?,
+            created_at: row.get(9)?,
+            updated_at: row.get(10)?,
+        })
+    }
+
+    fn load_topics_for_item(&self, mem_id: &str) -> Result<Vec<MemTopicRef>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT t.id, t.slug, t.title, it.role, it.weight
+             FROM mem_item_topics it
+             JOIN mem_topics t ON it.topic_id = t.id
+             WHERE it.mem_id = ?1
+             ORDER BY it.weight DESC",
+        )?;
+        let rows = stmt.query_map(params![mem_id], |r| {
+            Ok(MemTopicRef {
+                topic_id: r.get(0)?,
+                slug: r.get(1)?,
+                title: r.get(2)?,
+                role: r.get(3)?,
+                weight: r.get(4)?,
+            })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    fn load_tags_for_item(&self, mem_id: &str) -> Result<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT tag FROM mem_tags WHERE mem_id = ?1 ORDER BY tag")?;
+        let rows = stmt.query_map(params![mem_id], |r| r.get::<_, String>(0))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    fn load_sources_for_item(&self, mem_id: &str) -> Result<Vec<MemSource>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, mem_id, source_type, source_ref, quote, created_at
+             FROM mem_sources WHERE mem_id = ?1 ORDER BY created_at",
+        )?;
+        let rows = stmt.query_map(params![mem_id], |r| {
+            Ok(MemSource {
+                id: r.get(0)?,
+                mem_id: r.get(1)?,
+                source_type: r.get(2)?,
+                source_ref: r.get(3)?,
+                quote: r.get(4)?,
+                created_at: r.get(5)?,
+            })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    fn row_to_item(&self, row: &rusqlite::Row) -> Result<MemItem, rusqlite::Error> {
+        let id: String = row.get(0)?;
+        let space_id: String = row.get(1)?;
+        let scope: String = row.get(2)?;
+        let workspace_id: Option<String> = row.get(3)?;
+        Ok(MemItem {
+            id,
+            space_id: space_id.clone(),
+            scope,
+            workspace_id,
+            item_type: row.get(4)?,
+            title: row.get(5)?,
+            content: row.get(6)?,
+            summary: row.get(7)?,
+            status: row.get(8)?,
+            confidence: row.get(9)?,
+            importance: row.get(10)?,
+            created_by: row.get(11)?,
+            updated_by: row.get(12)?,
+            created_at: row.get(13)?,
+            updated_at: row.get(14)?,
+            topics: vec![],
+            tags: vec![],
+            sources: vec![],
+        })
+    }
+
+    fn fill_mem_item_relations(&self, item: &mut MemItem) -> Result<()> {
+        item.topics = self.load_topics_for_item(&item.id).unwrap_or_default();
+        item.tags = self.load_tags_for_item(&item.id).unwrap_or_default();
+        item.sources = self.load_sources_for_item(&item.id).unwrap_or_default();
+        Ok(())
+    }
+
+    fn record_mem_event(&self, mem_id: &str, action: &str, actor: &str, diff: Option<&str>) -> Result<()> {
+        let conn = self.conn();
+        let id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO mem_events (id, mem_id, action, actor, diff) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, mem_id, action, actor, diff],
+        )?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_mem_topic(
+        &self,
+        workspace_id: Option<&str>,
+        slug: &str,
+        title: &str,
+        summary: Option<&str>,
+        aliases: &[String],
+        priority: i32,
+        _created_by: &str,
+    ) -> Result<MemTopic> {
+        // topic 默认放到 workspace/project scope 的 space 中；global topic 暂不提供
+        let scope = if workspace_id.is_some() { "workspace" } else { "global" };
+        let space_id = self.ensure_mem_space(scope, workspace_id)?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let aliases_json = serde_json::to_string(aliases).unwrap_or_else(|_| "[]".into());
+        {
+            let conn = self.conn();
+            conn.execute(
+                "INSERT INTO mem_topics (id, space_id, slug, title, summary, aliases, priority)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![id, space_id, slug, title, summary, aliases_json, priority],
+            )?;
+        }
+        self.get_mem_topic_by_id(&id)?.context("topic 创建后查询失败")
+    }
+
+    pub fn list_mem_topics(
+        &self,
+        workspace_id: Option<&str>,
+        status: Option<&str>,
+    ) -> Result<Vec<MemTopic>> {
+        let conn = self.conn();
+        let base_sql = "SELECT t.id, t.space_id, t.parent_id, t.slug, t.title, t.summary, t.aliases, t.status, t.priority, t.created_at, t.updated_at
+             FROM mem_topics t
+             JOIN mem_spaces s ON t.space_id = s.id";
+        let mut sql = base_sql.to_string();
+        let mut params: Vec<rusqlite::types::Value> = Vec::new();
+        if let Some(wid) = workspace_id {
+            sql.push_str(" WHERE s.workspace_id = ?");
+            params.push(wid.to_string().into());
+        } else {
+            sql.push_str(" WHERE s.workspace_id IS NULL");
+        }
+        if let Some(st) = status {
+            sql.push_str(" AND t.status = ?");
+            params.push(st.to_string().into());
+        }
+        sql.push_str(" ORDER BY t.slug");
+        let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+        let mut stmt = conn.prepare(&sql)?;
+        let rows: Vec<MemTopic> = stmt
+            .query_map(&*param_refs, |r| self.row_to_topic(r))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    pub fn get_mem_topic_by_slug(
+        &self,
+        workspace_id: Option<&str>,
+        slug: &str,
+    ) -> Result<Option<MemTopic>> {
+        let conn = self.conn();
+        let sql = if workspace_id.is_some() {
+            "SELECT t.id, t.space_id, t.parent_id, t.slug, t.title, t.summary, t.aliases, t.status, t.priority, t.created_at, t.updated_at
+             FROM mem_topics t
+             JOIN mem_spaces s ON t.space_id = s.id
+             WHERE s.workspace_id = ?1 AND t.slug = ?2"
+        } else {
+            "SELECT t.id, t.space_id, t.parent_id, t.slug, t.title, t.summary, t.aliases, t.status, t.priority, t.created_at, t.updated_at
+             FROM mem_topics t
+             JOIN mem_spaces s ON t.space_id = s.id
+             WHERE s.workspace_id IS NULL AND t.slug = ?1"
+        };
+        let result = match workspace_id {
+            Some(wid) => conn.query_row(sql, params![wid, slug], |r| self.row_to_topic(r)),
+            None => conn.query_row(sql, params![slug], |r| self.row_to_topic(r)),
+        };
+        match result {
+            Ok(t) => Ok(Some(t)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn get_mem_topic_by_id(&self, id: &str) -> Result<Option<MemTopic>> {
+        let conn = self.conn();
+        match conn.query_row(
+            "SELECT t.id, t.space_id, t.parent_id, t.slug, t.title, t.summary, t.aliases, t.status, t.priority, t.created_at, t.updated_at
+             FROM mem_topics t
+             WHERE t.id = ?1",
+            params![id],
+            |r| self.row_to_topic(r),
+        ) {
+            Ok(t) => Ok(Some(t)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_mem_topic(
+        &self,
+        workspace_id: Option<&str>,
+        slug: &str,
+        title: Option<&str>,
+        summary: Option<&str>,
+        aliases: Option<Vec<String>>,
+        priority: Option<i32>,
+        status: Option<&str>,
+        _updated_by: &str,
+    ) -> Result<MemTopic> {
+        let topic = self
+            .get_mem_topic_by_slug(workspace_id, slug)?
+            .context("topic 不存在")?;
+        {
+            let conn = self.conn();
+            if let Some(title) = title {
+                conn.execute(
+                    "UPDATE mem_topics SET title = ?1, updated_at = unixepoch('subsec') WHERE id = ?2",
+                    params![title, &topic.id],
+                )?;
+            }
+            if let Some(summary) = summary {
+                conn.execute(
+                    "UPDATE mem_topics SET summary = ?1, updated_at = unixepoch('subsec') WHERE id = ?2",
+                    params![summary, &topic.id],
+                )?;
+            }
+            if let Some(aliases) = aliases {
+                let aliases_json = serde_json::to_string(&aliases).unwrap_or_else(|_| "[]".into());
+                conn.execute(
+                    "UPDATE mem_topics SET aliases = ?1, updated_at = unixepoch('subsec') WHERE id = ?2",
+                    params![aliases_json, &topic.id],
+                )?;
+            }
+            if let Some(priority) = priority {
+                conn.execute(
+                    "UPDATE mem_topics SET priority = ?1, updated_at = unixepoch('subsec') WHERE id = ?2",
+                    params![priority, &topic.id],
+                )?;
+            }
+            if let Some(status) = status {
+                conn.execute(
+                    "UPDATE mem_topics SET status = ?1, updated_at = unixepoch('subsec') WHERE id = ?2",
+                    params![status, &topic.id],
+                )?;
+            }
+        }
+        self.get_mem_topic_by_id(&topic.id)?.context("topic 更新后查询失败")
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_mem_item(
+        &self,
+        workspace_id: Option<&str>,
+        item_type: &str,
+        title: &str,
+        content: &str,
+        summary: Option<&str>,
+        topic_slugs: &[String],
+        tags: &[String],
+        importance: i32,
+        confidence: &str,
+        created_by: &str,
+        source_type: &str,
+        source_ref: &str,
+    ) -> Result<MemItem> {
+        let scope = if workspace_id.is_some() { "workspace" } else { "global" };
+        let space_id = self.ensure_mem_space(scope, workspace_id)?;
+
+        // 提前解析 topic id，避免在 conn guard 内再次获取锁
+        let mut topic_ids: Vec<String> = Vec::new();
+        for slug in topic_slugs {
+            if let Some(topic) = self.get_mem_topic_by_slug(workspace_id, slug)? {
+                topic_ids.push(topic.id);
+            } else {
+                anyhow::bail!("topic 不存在: {}", slug);
+            }
+        }
+
+        let id = uuid::Uuid::new_v4().to_string();
+        {
+            let conn = self.conn();
+            conn.execute(
+                "INSERT INTO mem_items (id, space_id, type, title, content, summary, importance, confidence, created_by)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![id, space_id, item_type, title, content, summary, importance, confidence, created_by],
+            )?;
+
+            for topic_id in topic_ids {
+                conn.execute(
+                    "INSERT INTO mem_item_topics (mem_id, topic_id, role, weight) VALUES (?1, ?2, 'primary', 1.0)",
+                    params![id, topic_id],
+                )?;
+            }
+
+            for tag in tags {
+                conn.execute(
+                    "INSERT INTO mem_tags (mem_id, tag) VALUES (?1, ?2)",
+                    params![id, tag],
+                )?;
+            }
+
+            let source_id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO mem_sources (id, mem_id, source_type, source_ref) VALUES (?1, ?2, ?3, ?4)",
+                params![source_id, id, source_type, source_ref],
+            )?;
+        }
+
+        self.record_mem_event(&id, "create", created_by, None)?;
+        self.get_mem_item_by_id(&id)?.context("item 创建后查询失败")
+    }
+
+    pub fn get_mem_item_by_id(&self, id: &str) -> Result<Option<MemItem>> {
+        let conn = self.conn();
+        let mut item = match conn.query_row(
+            "SELECT i.id, i.space_id, s.scope, s.workspace_id, i.type, i.title, i.content, i.summary, i.status, i.confidence, i.importance, i.created_by, i.updated_by, i.created_at, i.updated_at
+             FROM mem_items i JOIN mem_spaces s ON i.space_id = s.id
+             WHERE i.id = ?1",
+            params![id],
+            |r| self.row_to_item(r),
+        ) {
+            Ok(item) => item,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        drop(conn);
+        self.fill_mem_item_relations(&mut item)?;
+        Ok(Some(item))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_mem_item(
+        &self,
+        id: &str,
+        title: Option<&str>,
+        content: Option<&str>,
+        summary: Option<&str>,
+        topic_slugs: Option<Vec<String>>,
+        tags: Option<Vec<String>>,
+        importance: Option<i32>,
+        status: Option<&str>,
+        updated_by: &str,
+    ) -> Result<MemItem> {
+        let item = self.get_mem_item_by_id(id)?.context("item 不存在")?;
+
+        // 提前解析 topic id
+        let topic_ids: Option<Vec<String>> = if let Some(ref slugs) = topic_slugs {
+            let workspace_id = item.workspace_id.as_deref();
+            let mut ids = Vec::new();
+            for slug in slugs {
+                if let Some(topic) = self.get_mem_topic_by_slug(workspace_id, slug)? {
+                    ids.push(topic.id);
+                } else {
+                    anyhow::bail!("topic 不存在: {}", slug);
+                }
+            }
+            Some(ids)
+        } else {
+            None
+        };
+
+        {
+            let conn = self.conn();
+            if let Some(title) = title {
+                conn.execute(
+                    "UPDATE mem_items SET title = ?1, updated_at = unixepoch('subsec') WHERE id = ?2",
+                    params![title, id],
+                )?;
+            }
+            if let Some(content) = content {
+                conn.execute(
+                    "UPDATE mem_items SET content = ?1, updated_at = unixepoch('subsec') WHERE id = ?2",
+                    params![content, id],
+                )?;
+            }
+            if let Some(summary) = summary {
+                conn.execute(
+                    "UPDATE mem_items SET summary = ?1, updated_at = unixepoch('subsec') WHERE id = ?2",
+                    params![summary, id],
+                )?;
+            }
+            if let Some(importance) = importance {
+                conn.execute(
+                    "UPDATE mem_items SET importance = ?1, updated_at = unixepoch('subsec') WHERE id = ?2",
+                    params![importance, id],
+                )?;
+            }
+            if let Some(status) = status {
+                conn.execute(
+                    "UPDATE mem_items SET status = ?1, updated_at = unixepoch('subsec') WHERE id = ?2",
+                    params![status, id],
+                )?;
+            }
+            if let Some(topic_ids) = topic_ids {
+                conn.execute("DELETE FROM mem_item_topics WHERE mem_id = ?1", params![id])?;
+                for topic_id in topic_ids {
+                    conn.execute(
+                        "INSERT INTO mem_item_topics (mem_id, topic_id, role, weight) VALUES (?1, ?2, 'primary', 1.0)",
+                        params![id, topic_id],
+                    )?;
+                }
+            }
+            if let Some(tags) = tags {
+                conn.execute("DELETE FROM mem_tags WHERE mem_id = ?1", params![id])?;
+                for tag in tags {
+                    conn.execute(
+                        "INSERT INTO mem_tags (mem_id, tag) VALUES (?1, ?2)",
+                        params![id, tag],
+                    )?;
+                }
+            }
+            conn.execute(
+                "UPDATE mem_items SET updated_by = ?1, updated_at = unixepoch('subsec') WHERE id = ?2",
+                params![updated_by, id],
+            )?;
+        }
+        self.record_mem_event(id, "update", updated_by, None)?;
+        self.get_mem_item_by_id(id)?.context("item 更新后查询失败")
+    }
+
+    pub fn archive_mem_item(&self, id: &str, updated_by: &str) -> Result<MemItem> {
+        self.update_mem_item(
+            id,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("archived"),
+            updated_by,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn promote_message_to_mem(
+        &self,
+        msg_id: &str,
+        workspace_id: Option<&str>,
+        topic_slugs: &[String],
+        item_type: &str,
+        title: &str,
+        summary: Option<&str>,
+        tags: &[String],
+        importance: i32,
+        confidence: &str,
+        created_by: &str,
+    ) -> Result<MemItem> {
+        let msg = self
+            .get_message_by_id(msg_id, None, None)?
+            .context("消息不存在")?;
+        // 取消息正文或 full_body 作为 content
+        let content = msg.full_body.unwrap_or(msg.body);
+        let item = self.add_mem_item(
+            workspace_id,
+            item_type,
+            title,
+            &content,
+            summary,
+            topic_slugs,
+            tags,
+            importance,
+            confidence,
+            created_by,
+            "message",
+            msg_id,
+        )?;
+        Ok(item)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn promote_artifact_to_mem(
+        &self,
+        attachment_id: &str,
+        workspace_id: Option<&str>,
+        topic_slugs: &[String],
+        item_type: &str,
+        title: &str,
+        summary: Option<&str>,
+        tags: &[String],
+        importance: i32,
+        confidence: &str,
+        created_by: &str,
+    ) -> Result<MemItem> {
+        let (att, data) = self
+            .get_attachment(attachment_id, None, None)?
+            .context("附件不存在")?;
+        let content = String::from_utf8_lossy(&data).to_string();
+        let item = self.add_mem_item(
+            workspace_id,
+            item_type,
+            title,
+            &content,
+            summary,
+            topic_slugs,
+            tags,
+            importance,
+            confidence,
+            created_by,
+            "artifact",
+            &att.id,
+        )?;
+        Ok(item)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_mem(
+        &self,
+        workspace_id: Option<&str>,
+        query: Option<&str>,
+        topic_slugs: Option<Vec<String>>,
+        item_type: Option<&str>,
+        scope: Option<&str>,
+        status: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<MemSearchResult>> {
+        let status = status.unwrap_or("active");
+
+        // topic 过滤：提前收集 topic_id，避免在 conn guard 内再次获取锁
+        let topic_ids: Vec<String> = if let Some(slugs) = topic_slugs {
+            slugs
+                .iter()
+                .filter_map(|slug| self.get_mem_topic_by_slug(workspace_id, slug).ok().flatten())
+                .map(|t| t.id)
+                .collect()
+        } else {
+            vec![]
+        };
+
+        let conn = self.conn();
+
+        // 构建参数化查询
+        let mut sql = String::from(
+            "SELECT i.id, i.space_id, s.scope, s.workspace_id, i.type, i.title, i.content, i.summary, i.status, i.confidence, i.importance, i.created_by, i.updated_by, i.created_at, i.updated_at"
+        );
+        let mut params: Vec<rusqlite::types::Value> = Vec::new();
+
+        if let Some(q) = query {
+            sql.push_str(", rank FROM mem_items_fts f JOIN mem_items i ON i.rowid = f.rowid JOIN mem_spaces s ON i.space_id = s.id WHERE f.mem_items_fts MATCH ? AND i.status = ?");
+            params.push(q.to_string().into());
+            params.push(status.to_string().into());
+        } else {
+            sql.push_str(" FROM mem_items i JOIN mem_spaces s ON i.space_id = s.id WHERE i.status = ?");
+            params.push(status.to_string().into());
+        }
+
+        // workspace / scope 过滤
+        if let Some(scope_val) = scope {
+            if scope_val == "global" {
+                sql.push_str(" AND s.scope = 'global'");
+            } else if let Some(wid) = workspace_id {
+                sql.push_str(" AND s.workspace_id = ?");
+                params.push(wid.to_string().into());
+            }
+        } else if let Some(wid) = workspace_id {
+            sql.push_str(" AND (s.workspace_id = ? OR s.scope = 'global')");
+            params.push(wid.to_string().into());
+        }
+
+        if let Some(t) = item_type {
+            sql.push_str(" AND i.type = ?");
+            params.push(t.to_string().into());
+        }
+
+        if !topic_ids.is_empty() {
+            let placeholders: Vec<String> = topic_ids.iter().map(|_| "?".to_string()).collect();
+            sql.push_str(&format!(
+                " AND i.id IN (SELECT mem_id FROM mem_item_topics WHERE topic_id IN ({}))",
+                placeholders.join(", ")
+            ));
+            for id in topic_ids {
+                params.push(id.into());
+            }
+        }
+
+        sql.push_str(" ORDER BY ");
+        if query.is_some() {
+            sql.push_str("rank ASC, ");
+        }
+        sql.push_str("i.importance DESC, i.updated_at DESC LIMIT ?");
+        params.push((limit as i64).into());
+
+        let has_query = query.is_some();
+        let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+        let mut results: Vec<MemSearchResult> = {
+            let mut stmt = conn.prepare(&sql)?;
+            let rows: Vec<MemSearchResult> = stmt
+                .query_map(&*param_refs, |r| {
+                    let item = self.row_to_item(r)?;
+                    let rank: f64 = if has_query { r.get(15)? } else { 0.0 };
+                    Ok(MemSearchResult { item, rank })
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        };
+        drop(conn);
+        for r in &mut results {
+            let _ = self.fill_mem_item_relations(&mut r.item);
+        }
+        Ok(results)
+    }
+
+    pub fn pack_mem(
+        &self,
+        workspace_id: Option<&str>,
+        topic_slug: &str,
+        limit: u32,
+    ) -> Result<MemPack> {
+        let topic = self
+            .get_mem_topic_by_slug(workspace_id, topic_slug)?
+            .context("topic 不存在")?;
+        let results = self.search_mem(
+            workspace_id,
+            None,
+            Some(vec![topic_slug.into()]),
+            None,
+            None,
+            Some("active"),
+            limit,
+        )?;
+        let items: Vec<MemItem> = results.into_iter().map(|r| r.item).collect();
+        Ok(MemPack { topic, items })
     }
 }
 

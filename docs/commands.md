@@ -131,6 +131,35 @@ agtalk config <get|set|list> [key] [value]  管理全局配置
 agtalk daemon <start|stop|restart|status>   管理后台 daemon
 ```
 
+### 长期知识库 (mem)
+
+```bash
+agtalk mem topic add <slug> -t <title> [-s <summary>] [-a <alias>]... [-p <priority>]
+agtalk mem topic list [--all]
+agtalk mem topic show <slug>
+agtalk mem topic update <slug> [-t <title>] [-s <summary>] [-a <alias>]... [-p <priority>] [--archive]
+
+agtalk mem add <content> -t <type> --title <title> --confidence <low|medium|high>
+  [-s <summary>] [-p <topic>]... [-g <tags>] [--importance <1-5>]
+agtalk mem show <mem-id>
+agtalk mem update <mem-id> [-c <content>] [-t <type>] [--title <title>] [-s <summary>]
+  [-p <topic>]... [-g <tags>] [--importance <1-5>] [--status <status>]
+agtalk mem archive <mem-id>
+agtalk mem promote <source-ref> [-y <source-type>] -t <type> --title <title> --confidence <low|medium|high>
+  [-s <summary>] [-p <topic>]... [-g <tags>] [--importance <1-5>]
+agtalk mem search <query> [-p <topic>]... [-y <item-type>] [-s <scope>] [-l <limit>]
+agtalk mem pack <topic-slug> [-l <limit>]
+```
+
+说明：
+- `slug` 是 topic 的 URL 友好标识，创建后不可修改。
+- `type`（item_type）可选值：`fact`、`rule`、`preference`、`note`、`task`、`decision`、`context`。
+- `confidence` 可选值：`low`、`medium`、`high`。
+- `importance` 为 1-5 的整数，默认 3。
+- `mem add` 的 `<content>` 为正文字符串（位置参数）。
+- `mem search` 基于 FTS5 全文索引；当前阶段对中文分词支持有限，建议用空格/英文关键词搜索。
+- 当前 `project` scope 与 `workspace` scope 等价，都绑定当前 workspace。
+
 `inbox` 返回结构示例：
 
 ```json
@@ -164,7 +193,7 @@ agtalk run [file.yaml]
 
 ```yaml
 version: 1
-command: agent | human | reply | wait | inbox | detail | attachment | chats | peers | me
+command: agent | human | reply | wait | inbox | detail | attachment | chats | peers | me | mem
 ```
 
 `version` 必须为 `1`，未知 `command` 会报错。
@@ -282,6 +311,60 @@ version: 1
 command: me
 ```
 
+#### mem
+
+```yaml
+version: 1
+command: mem
+mem_command: topic_add
+slug: project-setup
+title: "项目环境配置"
+summary: "开发环境、依赖与构建命令"
+aliases:
+  - setup
+priority: 4
+```
+
+```yaml
+version: 1
+command: mem
+mem_command: add
+content: "使用 pnpm + vite；构建命令 pnpm build"
+title: "构建方式"
+type: fact
+topics:
+  - project-setup
+confidence: high
+importance: 3
+tags: "build,frontend"
+```
+
+```yaml
+version: 1
+command: mem
+mem_command: search
+query: "error handling"
+topics:
+  - project-setup
+limit: 10
+```
+
+```yaml
+version: 1
+command: mem
+mem_command: pack
+topic_slug: project-setup
+limit: 5
+```
+
+`mem_command` 可选值：
+`topic_add`、`topic_list`、`topic_show`、`topic_update`、`add`、`show`、`update`、`archive`、`promote`、`search`、`pack`。
+
+常用字段：
+- `slug` / `title` / `summary` / `aliases` / `priority` / `archive`
+- `content` / `type`（item_type） / `confidence` / `importance` / `scope` / `topics` / `tags`
+- `mem_id` / `source_ref` / `source_type` / `query` / `topic_slug` / `limit`
+
 ### 环境
 
 ```bash
@@ -297,6 +380,280 @@ agtalk --help, -h                显示帮助信息
 agtalk <命令> --help              子命令详细用法
 agtalk --agent-help              面向 AI 的精简用法
 ```
+
+## HTTP API
+
+daemon 在 `127.0.0.1:<port>` 上提供 HTTP 接口（默认端口 `19527`，通过 `config.json` 中 `daemon.http_port` 配置）。
+
+### 端点
+
+```
+POST http://127.0.0.1:19527/api
+```
+
+所有操作通过同一端点，请求/响应均为 JSON，与 Unix socket 协议格式一致。
+
+### 认证
+
+需要 session 的操作通过自定义 Header 传递凭证：
+
+```
+X-Agtalk-Session-Id: <session_id>
+X-Agtalk-Token: <token>
+```
+
+免认证操作：`Ping`、`Auth`、`Join`、`Attach`。
+
+### 请求格式
+
+`ClientMsg` 使用内部标签（`type` 字段 + snake_case 变体名），与 Unix socket 协议一致：
+
+```http
+POST /api HTTP/1.1
+Host: 127.0.0.1:19527
+Content-Type: application/json
+X-Agtalk-Session-Id: 550e8400-e29b-41d4-a716-446655440000
+X-Agtalk-Token: a1b2c3d4e5f6...
+
+{
+  "type": "send",
+  "to": "kimi-coder-Quinn",
+  "body": "请 review PR #42",
+  "content_type": "text",
+  "notify": true
+}
+```
+
+### 响应格式
+
+所有响应返回 `ServerMsg` JSON：
+
+```json
+{
+  "type": "ok",
+  "data": { ... }
+}
+```
+
+```json
+{
+  "type": "error",
+  "code": "session_inactive",
+  "message": "当前 session 已被退役或接管"
+}
+```
+
+### 操作速查
+
+请求 body 中 `type` 字段为 `ClientMsg` 枚举变体的 snake_case 名。
+
+| type | 需认证 | 说明 |
+|---|---|---|
+| `ping` | 否 | 心跳检测 |
+| `auth` | 否 | 验证已有 session |
+| `join` | 否 | 加入 workspace / 注册 |
+| `attach` | 否 | 接管已有 peer |
+| `send` | 是 | 发送消息 |
+| `inbox` | 是 | 查收件箱 |
+| `done` | 是 | 标记完成 |
+| `detail` | 是 | 查看消息详情 |
+| `attachment` | 是 | 读取附件全文 |
+| `list_participants` | 是 | 列出参与者 |
+| `list_conversations` | 是 | 列出对话 |
+| `get_messages` | 是 | 获取对话消息 |
+| `get_message` | 是 | 获取单条消息（审批弹窗用） |
+| `read` | 是 | 标记已读 |
+| `ask` | 是 | 发起审批请求（阻塞） |
+| `reply` | 是 | 回复审批 |
+| `wait` | 是 | 等待审批结果（长轮询） |
+| `who_am_i` | 是 | 查询当前身份 |
+| `create_conversation` | 是 | 创建对话 |
+| `register` | 是 | 注册参与者 |
+| `unregister` | 是 | 注销参与者 |
+| `leave` | 是 | 离开当前 session |
+| `cleanup` | 是 | 清理 inactive session |
+
+### curl 示例
+
+**Ping（无需认证）**
+
+```bash
+curl -s -X POST http://127.0.0.1:19527/api \
+  -H "Content-Type: application/json" \
+  -d '{"type":"ping"}'
+# → {"type":"ok","data":{"pong":true}}
+```
+
+**Join 注册新 Agent**
+
+```bash
+curl -s -X POST http://127.0.0.1:19527/api \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type":"join",
+    "workspace_root":"/path/to/project",
+    "workspace_name":"my-project",
+    "name":"claude-coder-Alex",
+    "role":"coder",
+    "intro":"编程专家",
+    "transport":"terminal",
+    "takeover":false
+  }'
+# → {"type":"ok","data":{"session_id":"...","token":"...","workspace_id":"..."}}
+```
+
+**Attach 接管已有 peer**
+
+```bash
+curl -s -X POST http://127.0.0.1:19527/api \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type":"attach",
+    "workspace_root":"/path/to/project",
+    "workspace_name":"my-project",
+    "name":"kimi-coder-Quinn",
+    "takeover":true
+  }'
+```
+
+**Send 发送消息**
+
+```bash
+curl -s -X POST http://127.0.0.1:19527/api \
+  -H "Content-Type: application/json" \
+  -H "X-Agtalk-Session-Id: 550e8400-..." \
+  -H "X-Agtalk-Token: a1b2c3d4..." \
+  -d '{
+    "type":"send",
+    "to":"kimi-coder-Quinn",
+    "body":"请 review PR #42",
+    "notify":true
+  }'
+```
+
+**Inbox 查收件箱**
+
+```bash
+curl -s -X POST http://127.0.0.1:19527/api \
+  -H "Content-Type: application/json" \
+  -H "X-Agtalk-Session-Id: ..." \
+  -H "X-Agtalk-Token: ..." \
+  -d '{
+    "type":"inbox",
+    "participant":"claude-coder-Alex",
+    "status":"pending",
+    "limit":30,
+    "peek":false
+  }'
+```
+
+**Ask 发起审批（阻塞等待人类回复）**
+
+```bash
+curl -s -X POST http://127.0.0.1:19527/api \
+  -H "Content-Type: application/json" \
+  -H "X-Agtalk-Session-Id: ..." \
+  -H "X-Agtalk-Token: ..." \
+  -d '{
+    "type":"ask",
+    "to":"human",
+    "body":"要继续部署吗？",
+    "choices":["继续","停止"],
+    "timeout_secs":300
+  }'
+# 等待人类选择后返回：
+# → {"type":"ask_response","msg_id":"...","choice":"继续","reason":""}
+# 或弹窗关闭：
+# → {"type":"ask_dismissed","msg_id":"..."}
+# 或超时：
+# → {"type":"ask_timeout","msg_id":"..."}
+```
+
+**Detail 查看消息详情**
+
+```bash
+curl -s -X POST http://127.0.0.1:19527/api \
+  -H "Content-Type: application/json" \
+  -H "X-Agtalk-Session-Id: ..." \
+  -H "X-Agtalk-Token: ..." \
+  -d '{"type":"detail","msg_id":"87976946"}'
+```
+
+**Done 标记完成**
+
+```bash
+curl -s -X POST http://127.0.0.1:19527/api \
+  -H "Content-Type: application/json" \
+  -H "X-Agtalk-Session-Id: ..." \
+  -H "X-Agtalk-Token: ..." \
+  -d '{
+    "type":"done",
+    "msg_id":"87976946",
+    "participant":"claude-coder-Alex"
+  }'
+```
+
+### 带附件发送
+
+```bash
+ATT_B64=$(base64 -i ./report.md)
+curl -s -X POST http://127.0.0.1:19527/api \
+  -H "Content-Type: application/json" \
+  -H "X-Agtalk-Session-Id: ..." \
+  -H "X-Agtalk-Token: ..." \
+  -d "{
+    \"type\":\"send\",
+    \"to\":\"kimi-coder-Quinn\",
+    \"body\":\"分析一下这个报告\",
+    \"attachments\":[{
+      \"filename\":\"report.md\",
+      \"content_type\":\"text/markdown\",
+      \"data\":\"$ATT_B64\",
+      \"role\":\"user_file\"
+    }]
+  }"
+```
+
+### 错误响应
+
+```json
+{
+  "type": "error",
+  "code": "session_inactive",
+  "message": "当前 session 已被退役或接管"
+}
+```
+
+| code | 说明 |
+|---|---|
+| `parse_error` | 请求 body 无法解析 |
+| `auth_failed` | session_id 或 token 无效 |
+| `session_inactive` | session 已被退役或接管 |
+| `participant_not_found` | peer 不存在（attach 时） |
+| `session_conflict` | 同 endpoint 已有 active session，需 takeover |
+| `message_not_found` | 消息不存在 |
+| `not_approval_request` | 非审批消息不能 Reply |
+
+### 端口配置
+
+`~/.config/agtalk/config.json`：
+
+```json
+{
+  "version": 1,
+  "daemon": {
+    "http_port": 19527
+  }
+}
+```
+
+`http_port` 默认 `19527`。修改后需重启 daemon。
+
+### 安全约束
+
+- daemon 仅绑定 `127.0.0.1`，外部网络无法访问
+- 所有需认证操作必须携带有效的 session_id + token
+- token 在 Join/Attach 时由 daemon 生成，存储在本地 session 文件中
 
 ## 附件 role
 
