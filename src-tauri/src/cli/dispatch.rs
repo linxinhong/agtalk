@@ -272,6 +272,8 @@ struct AgentCommand {
     notify: bool,
     #[arg(long = "no-enter", help = "提醒时不自动发送回车")]
     no_enter: bool,
+    #[arg(long = "with-mem", help = "注入指定 topic 的 Memory Pack")]
+    with_mem: Option<String>,
     #[arg(help = "消息正文")]
     message: Vec<String>,
 }
@@ -653,34 +655,39 @@ pub(crate) async fn run_mem_search(
     .await
 }
 
+pub(crate) fn format_mem_pack(pack: &crate::storage::MemPack) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("# Memory Pack: {}\n\n", pack.topic.slug));
+    out.push_str("## Topic Summary\n");
+    if let Some(summary) = &pack.topic.summary {
+        out.push_str(summary);
+    } else {
+        out.push_str(&pack.topic.title);
+    }
+    out.push_str("\n\n");
+    let mut by_type: std::collections::HashMap<String, Vec<&crate::storage::MemItem>> =
+        std::collections::HashMap::new();
+    for item in &pack.items {
+        by_type.entry(item.item_type.clone()).or_default().push(item);
+    }
+    for (typ, items) in by_type {
+        out.push_str(&format!("## {}\n", typ));
+        for item in items {
+            out.push_str(&format!("- **{}**\n", item.title));
+            if let Some(summary) = &item.summary {
+                out.push_str(&format!("  {}\n", summary));
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
 pub(crate) async fn run_mem_pack(topic_slug: String, limit: u32) -> Result<()> {
     with_mem_client(|workspace_id, mut client| async move {
         let resp = client.mem_pack(workspace_id.as_deref(), &topic_slug, limit).await?;
         print_json_or_table(resp, |pack: crate::storage::MemPack| {
-            anstream::println!("# Memory Pack: {}", pack.topic.slug);
-            anstream::println!();
-            anstream::println!("## Topic Summary");
-            if let Some(summary) = &pack.topic.summary {
-                anstream::println!("{}", summary);
-            } else {
-                anstream::println!("{}", pack.topic.title);
-            }
-            anstream::println!();
-            let mut by_type: std::collections::HashMap<String, Vec<crate::storage::MemItem>> =
-                std::collections::HashMap::new();
-            for item in pack.items {
-                by_type.entry(item.item_type.clone()).or_default().push(item);
-            }
-            for (typ, items) in by_type {
-                anstream::println!("## {}", typ);
-                for item in items {
-                    anstream::println!("- **{}**", item.title);
-                    if let Some(summary) = &item.summary {
-                        anstream::println!("  {}", summary);
-                    }
-                }
-                anstream::println!();
-            }
+            anstream::println!("{}", format_mem_pack(&pack));
         });
         Ok(())
     })
@@ -856,6 +863,7 @@ pub fn print_help() {
     anstream::println!("{}", help::opt("-d, --done <msg-id>", "标记消息已完成"));
     anstream::println!("{}", help::opt("-f, --file <path>", "附件路径，可多次添加"));
     anstream::println!("{}", help::opt("-i, --notify", "提醒 Agent 查收"));
+    anstream::println!("{}", help::opt("--with-mem <topic-slug>", "注入指定 topic 的 Memory Pack"));
     anstream::println!();
     anstream::println!("{}", help::section("人类对话（向人提问 / 收集回应）"));
     anstream::println!("{}", help::cmd("agtalk human <消息> [选项]", ""));
@@ -1017,6 +1025,7 @@ pub fn dispatch(argv: &[String]) {
                 files: cmd.file,
                 notify: cmd.notify,
                 no_enter: cmd.no_enter,
+                with_mem: cmd.with_mem,
             };
             if args.done.is_none() && args.name.is_none() {
                 eprintln!("错误: agtalk agent 发送消息需要 -n <name>");
@@ -1111,6 +1120,7 @@ pub(crate) struct AgentArgs {
     pub(crate) files: Vec<String>,
     pub(crate) notify: bool,
     pub(crate) no_enter: bool,
+    pub(crate) with_mem: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1268,6 +1278,7 @@ fn parse_agent_args(argv: &[String]) -> Result<AgentArgs> {
     let mut files: Vec<String> = Vec::new();
     let mut notify = false;
     let mut no_enter = false;
+    let mut with_mem = None;
 
     let mut i = 0;
     while i < argv.len() {
@@ -1313,6 +1324,13 @@ fn parse_agent_args(argv: &[String]) -> Result<AgentArgs> {
             "--no-enter" => {
                 no_enter = true;
             }
+            "--with-mem" => {
+                i += 1;
+                if i >= argv.len() {
+                    return Err(anyhow!("--with-mem 缺少参数"));
+                }
+                with_mem = Some(argv[i].clone());
+            }
             arg => {
                 message_parts.push(arg.to_string());
             }
@@ -1336,6 +1354,7 @@ fn parse_agent_args(argv: &[String]) -> Result<AgentArgs> {
         files,
         notify,
         no_enter,
+        with_mem,
     })
 }
 
@@ -1507,6 +1526,8 @@ fn print_agent_help() {
     anstream::println!("  agtalk join codex-coder-Alex --intro \"代码生成 Agent\" --role coder");
     anstream::println!("  # 普通消息（带多附件）");
     anstream::println!("  agtalk agent \"请 review PR #42\" -n claude-reviewer-Bob -s \"代码评审\" -i -f ./src/main.rs -f ./README.md");
+    anstream::println!("  # 注入长期知识库上下文（Memory Pack）后再发任务");
+    anstream::println!("  agtalk agent \"按项目规范重构这段代码\" -n codex-coder-Alex --with-mem project-setup -i");
     anstream::println!();
     anstream::println!("  # 复杂请求（长正文/多附件/多选项）建议写 YAML 一次执行，见文末「YAML Runner」");
     anstream::println!();
@@ -1584,6 +1605,7 @@ fn print_agent_help() {
         "{}",
         help::opt("files", "附件数组（相对路径按 YAML 目录解析） -> 多个 -f")
     );
+    anstream::println!("{}", help::opt("with_mem", "注入指定 topic 的 Memory Pack -> --with-mem"));
     anstream::println!("  示例:");
     anstream::println!("    version: 1");
     anstream::println!("    command: agent");
@@ -2049,6 +2071,24 @@ pub(crate) async fn handle_agent(args: AgentArgs) -> Result<()> {
     // 2. 发送消息（-n + 正文），notify/send_enter 由 daemon 处理
     if args.name.is_some() && !args.message.is_empty() {
         let to = args.name.unwrap();
+
+        // 若指定 --with-mem，先获取 Memory Pack 并注入消息正文
+        let mut message = args.message;
+        if let Some(topic_slug) = args.with_mem {
+            let resp = cli
+                .mem_pack(Some(&identity.workspace_id), &topic_slug, 10)
+                .await?;
+            if let ServerMsg::Ok { data } = resp {
+                if let Ok(pack) = serde_json::from_value::<crate::storage::MemPack>(data) {
+                    let pack_text = format_mem_pack(&pack);
+                    message = format!(
+                        "以下是与本任务相关的长期知识库（topic: {}）：\n\n{}\n---\n\n{}",
+                        topic_slug, pack_text, message
+                    );
+                }
+            }
+        }
+
         let metadata = json!({
             "subject": args.subject,
         });
@@ -2056,7 +2096,7 @@ pub(crate) async fn handle_agent(args: AgentArgs) -> Result<()> {
         let resp = cli
             .send(
                 &to,
-                &args.message,
+                &message,
                 None,
                 args.reply_to.as_deref(),
                 None,

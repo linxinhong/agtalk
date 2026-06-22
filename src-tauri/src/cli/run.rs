@@ -62,6 +62,7 @@ struct AgentSpec {
     notify: bool,
     no_enter: bool,
     files: Vec<String>,
+    with_mem: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -324,6 +325,7 @@ async fn run_agent(base_dir: &Path, spec: AgentSpec, file: &str) -> Result<()> {
         files,
         notify: spec.notify,
         no_enter: spec.no_enter,
+        with_mem: spec.with_mem,
     };
     handle_agent(args).await
 }
@@ -551,6 +553,7 @@ files:
             files,
             notify: a.notify,
             no_enter: a.no_enter,
+            with_mem: a.with_mem,
         };
         assert_eq!(args.message, "请 review");
         assert_eq!(args.name.as_deref(), Some("reviewer"));

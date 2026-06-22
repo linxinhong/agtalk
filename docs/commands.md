@@ -64,7 +64,10 @@ agtalk agent <消息> [选项]
   -s, --subject <标题>            消息主题
   -r, --reply-to <msg-id>        回复指定消息（隐式标记已读）
   -d, --done <msg-id>            标记消息已完成（隐式标记已读 + done）
+  -f, --file <path>              附件路径，可多次使用
   -i, --notify                   提醒 Agent 查收消息
+      --no-enter                 提醒时不自动发送回车
+      --with-mem <topic-slug>    注入指定 topic 的 Memory Pack 到消息正文
 ```
 
 ### 人类对话
@@ -85,7 +88,10 @@ agtalk human <消息> [选项]
 
 ```bash
 agtalk agent "处理完成，结论如下..." -n codex -r msg_123 -d msg_123
+agtalk agent "帮我 review 这段代码" -n codex --with-mem project-setup
 ```
+
+`--with-mem` 会把指定 topic 的 Memory Pack 放在消息正文前，作为上下文注入给目标 Agent。
 
 ### 参与者
 
@@ -231,6 +237,7 @@ files:
 - `notify` -> `-i/--notify`
 - `no_enter` -> `--no-enter`
 - `files` -> 多个 `-f`（相对路径按 YAML 文件目录解析）
+- `with_mem` -> `--with-mem`（注入指定 topic 的 Memory Pack）
 
 运行时校验：
 - `done` 为空时，`name` 与 `message` 均必填。
