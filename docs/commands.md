@@ -133,32 +133,39 @@ agtalk daemon <start|stop|restart|status>   管理后台 daemon
 
 ### 长期知识库 (mem)
 
+以下命令优先展示长参数；短参数为快捷方式，各子命令中含义不同：
+- `-t` 在 `topic add/update` 中表示 `--title`，在 `mem add/promote/search` 中表示 `--type`。
+- `-s` 在 `topic add/update` 和 `mem add/promote/update` 中表示 `--summary`，在 `mem search` 中表示 `--scope`。
+- `-p` 在 `topic add/update` 中表示 `--priority`，在 `mem add/promote/search` 中表示 `--topic`。
+
 ```bash
-agtalk mem topic add <slug> -t <title> [-s <summary>] [-a <alias>]... [-p <priority>]
+agtalk mem topic add <slug> --title <title> [--summary <summary>] [--alias <alias>]... [--priority <1-5>]
 agtalk mem topic list [--all]
 agtalk mem topic show <slug>
-agtalk mem topic update <slug> [-t <title>] [-s <summary>] [-a <alias>]... [-p <priority>] [--archive]
+agtalk mem topic update <slug> [--title <title>] [--summary <summary>] [--alias <alias>]... [--priority <1-5>] [--archive]
 
-agtalk mem add <content> -t <type> --title <title> --confidence <low|medium|high>
-  [-s <summary>] [-p <topic>]... [-g <tags>] [--importance <1-5>]
+agtalk mem add <content> --type <type> --title <title> --confidence <low|medium|high>
+  [--summary <summary>] [--topic <topic>]... [--tags <tags>] [--importance <1-5>] [--scope <global|workspace|project|session>]
 agtalk mem show <mem-id>
-agtalk mem update <mem-id> [-c <content>] [-t <type>] [--title <title>] [-s <summary>]
-  [-p <topic>]... [-g <tags>] [--importance <1-5>] [--status <status>]
+agtalk mem update <mem-id> [--content <content>] [--type <type>] [--title <title>] [--summary <summary>]
+  [--topic <topic>]... [--tags <tags>] [--importance <1-5>] [--status <status>]
 agtalk mem archive <mem-id>
-agtalk mem promote <source-ref> [-y <source-type>] -t <type> --title <title> --confidence <low|medium|high>
-  [-s <summary>] [-p <topic>]... [-g <tags>] [--importance <1-5>]
-agtalk mem search <query> [-p <topic>]... [-y <item-type>] [-s <scope>] [-l <limit>]
-agtalk mem pack <topic-slug> [-l <limit>]
+agtalk mem promote <source-ref> [--source-type <message|artifact>] --type <type> --title <title> --confidence <low|medium|high>
+  [--summary <summary>] [--topic <topic>]... [--tags <tags>] [--importance <1-5>]
+agtalk mem search <query> [--topic <topic>]... [--type <type>] [--scope <global|workspace|project|session>] [--limit <limit>]
+agtalk mem pack <topic-slug> [--limit <limit>]
 ```
 
 说明：
-- `slug` 是 topic 的 URL 友好标识，创建后不可修改。
-- `type`（item_type）可选值：`fact`、`rule`、`preference`、`note`、`task`、`decision`、`context`。
-- `confidence` 可选值：`low`、`medium`、`high`。
+- `slug` 是 topic 的 URL 友好标识，创建后不可修改；重复创建会报错，不会静默覆盖。
+- `type`（item_type）建议值：`fact`（事实）、`decision`（设计决策）、`rule`（规则/约束）、`procedure`（操作流程）、`issue`（问题/待解决事项）、`snippet`（命令/代码片段）、`preference`（偏好）、`summary`（会话/阶段总结）、`note`（普通笔记）、`context`（背景上下文）。
+- `confidence` 可选值：`low`、`medium`、`high`，默认 `medium`。
 - `importance` 为 1-5 的整数，默认 3。
+- `scope` 可选值：`global`、`workspace`、`project`、`session`，默认 `project`。当前 `project` 与 `workspace` 等价，都绑定当前 workspace。
 - `mem add` 的 `<content>` 为正文字符串（位置参数）。
+- `mem add` 指定的 topic 不存在时会直接报错，不会自动创建，避免 topic 被拼写错误污染。
 - `mem search` 基于 FTS5 全文索引；当前阶段对中文分词支持有限，建议用空格/英文关键词搜索。
-- 当前 `project` scope 与 `workspace` scope 等价，都绑定当前 workspace。
+- `search` 与 `pack` 默认不包含 `archived` 状态的 memory。
 
 `inbox` 返回结构示例：
 
@@ -361,9 +368,17 @@ limit: 5
 `topic_add`、`topic_list`、`topic_show`、`topic_update`、`add`、`show`、`update`、`archive`、`promote`、`search`、`pack`。
 
 常用字段：
-- `slug` / `title` / `summary` / `aliases` / `priority` / `archive`
+- `slug` / `title` / `summary` / `aliases` / `priority` / `archive` / `all`
 - `content` / `type`（item_type） / `confidence` / `importance` / `scope` / `topics` / `tags`
-- `mem_id` / `source_ref` / `source_type` / `query` / `topic_slug` / `limit`
+- `mem_id` / `source_ref` / `source_type` / `query` / `topic_slug` / `limit` / `status`
+
+字段说明：
+- `type` 建议值：`fact`、`decision`、`rule`、`procedure`、`issue`、`snippet`、`preference`、`summary`、`note`、`context`。
+- `confidence` 建议值：`low`、`medium`、`high`，默认 `medium`。
+- `scope` 建议值：`global`、`workspace`、`project`、`session`，默认 `project`。
+- `importance` 为 1-5 整数，默认 3。
+- `topics` 为数组，元素为 topic slug；不存在的 topic 会报错。
+- `tags` 为逗号分隔字符串。
 
 ### 环境
 

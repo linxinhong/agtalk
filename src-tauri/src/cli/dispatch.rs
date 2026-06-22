@@ -152,7 +152,7 @@ struct MemTopicUpdateArgs {
 #[derive(Debug, Args)]
 struct MemAddArgs {
     content: String,
-    #[arg(short = 't', long = "type", default_value = "fact", help = "记忆类型")]
+    #[arg(short = 't', long = "type", default_value = "fact", help = "记忆类型: fact|decision|rule|procedure|issue|snippet|preference|summary|note|context")]
     item_type: String,
     #[arg(short = 'T', long = "title", help = "标题；省略时使用内容前 50 字")]
     title: Option<String>,
@@ -164,9 +164,9 @@ struct MemAddArgs {
     tags: Option<String>,
     #[arg(short = 'i', long = "importance", default_value = "3", help = "重要性 1-5")]
     importance: i32,
-    #[arg(short = 'c', long = "confidence", default_value = "confirmed", help = "confirmed|inferred|draft")]
+    #[arg(short = 'c', long = "confidence", default_value = "medium", help = "low|medium|high")]
     confidence: String,
-    #[arg(short = 'S', long = "scope", default_value = "project", help = "global|workspace|project")]
+    #[arg(short = 'S', long = "scope", default_value = "project", help = "global|workspace|project|session")]
     scope: String,
 }
 
@@ -204,7 +204,7 @@ struct MemPromoteArgs {
     source_ref: String,
     #[arg(short = 'y', long = "source-type", default_value = "message", help = "message|artifact")]
     source_type: String,
-    #[arg(short = 't', long = "type", default_value = "fact", help = "记忆类型")]
+    #[arg(short = 't', long = "type", default_value = "fact", help = "记忆类型: fact|decision|rule|procedure|issue|snippet|preference|summary|note|context")]
     item_type: String,
     #[arg(short = 'T', long = "title", help = "标题")]
     title: Option<String>,
@@ -216,7 +216,7 @@ struct MemPromoteArgs {
     tags: Option<String>,
     #[arg(short = 'i', long = "importance", default_value = "3", help = "重要性 1-5")]
     importance: i32,
-    #[arg(short = 'c', long = "confidence", default_value = "confirmed", help = "confirmed|inferred|draft")]
+    #[arg(short = 'c', long = "confidence", default_value = "medium", help = "low|medium|high")]
     confidence: String,
 }
 
@@ -225,9 +225,9 @@ struct MemSearchArgs {
     query: Option<String>,
     #[arg(short = 'p', long = "topic", help = "topic slug，可多次使用")]
     topic: Vec<String>,
-    #[arg(short = 't', long = "type", help = "记忆类型")]
+    #[arg(short = 't', long = "type", help = "记忆类型: fact|decision|rule|procedure|issue|snippet|preference|summary|note|context")]
     item_type: Option<String>,
-    #[arg(short = 'S', long = "scope", help = "global|workspace|project")]
+    #[arg(short = 'S', long = "scope", help = "global|workspace|project|session")]
     scope: Option<String>,
     #[arg(short = 'l', long = "limit", default_value = "20", help = "返回条数")]
     limit: u32,
@@ -1538,13 +1538,15 @@ fn print_agent_help() {
     anstream::println!();
     anstream::println!("{}", help::section("长期知识库 (mem)"));
     anstream::println!("  # 把关键事实、决策、偏好沉淀为可搜索的 memory");
-    anstream::println!("  agtalk mem topic add project-setup -t \"项目环境配置\" -s \"开发环境、依赖与构建命令\"");
-    anstream::println!("  agtalk mem add \"使用 pnpm + vite；构建命令 pnpm build\" -t fact --title \"构建方式\" -p project-setup --confidence high");
-    anstream::println!("  agtalk mem add \"优先使用 Result/Option 显式错误处理\" -t rule --title \"Rust 错误处理规范\" -p project-setup -g \"rust,style\" --confidence high");
-    anstream::println!("  agtalk mem search \"error handling\" -p project-setup");
+    anstream::println!("  # type: fact|decision|rule|procedure|issue|snippet|preference|summary|note|context");
+    anstream::println!("  # confidence: low|medium|high；scope: global|workspace|project|session，默认 project");
+    anstream::println!("  agtalk mem topic add project-setup --title \"项目环境配置\" --summary \"开发环境、依赖与构建命令\"");
+    anstream::println!("  agtalk mem add \"使用 pnpm + vite；构建命令 pnpm build\" --type fact --title \"构建方式\" --topic project-setup --confidence high --scope project");
+    anstream::println!("  agtalk mem add \"优先使用 Result/Option 显式错误处理\" --type rule --title \"Rust 错误处理规范\" --topic project-setup --tags \"rust,style\" --confidence high");
+    anstream::println!("  agtalk mem search \"error handling\" --topic project-setup");
     anstream::println!("  agtalk mem pack project-setup");
-    anstream::println!("  # 从消息提升为 memory（source_ref 为 msg_id）");
-    anstream::println!("  agtalk mem promote <msg-id> -t fact --title \"从对话提取的关键结论\" -p project-setup --confidence medium");
+    anstream::println!("  # 从消息提升为 memory（source_ref 为 msg_id）；topic 不存在会报错，不会自动创建");
+    anstream::println!("  agtalk mem promote <msg-id> --type fact --title \"从对话提取的关键结论\" --topic project-setup --confidence medium");
     anstream::println!();
     anstream::println!("{}", help::section("YAML Runner（复杂指令）"));
     anstream::println!(
