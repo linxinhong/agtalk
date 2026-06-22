@@ -202,7 +202,7 @@ pub async fn handle_run(file: &str) -> Result<()> {
 async fn run_mem(spec: MemSpec) -> Result<()> {
     let item_type = spec.item_type.clone().unwrap_or_else(|| "fact".to_string());
     let confidence = spec.confidence.clone().unwrap_or_else(|| "medium".to_string());
-    let scope = spec.scope.clone().unwrap_or_else(|| "project".to_string());
+    let scope = spec.scope.clone().unwrap_or_else(|| "workspace".to_string());
     let source_type = spec.source_type.clone().unwrap_or_else(|| "message".to_string());
     let priority = spec.priority.unwrap_or(3);
     let importance = spec.importance.unwrap_or(3);

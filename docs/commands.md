@@ -145,14 +145,14 @@ agtalk mem topic show <slug>
 agtalk mem topic update <slug> [--title <title>] [--summary <summary>] [--alias <alias>]... [--priority <1-5>] [--archive]
 
 agtalk mem add <content> --type <type> --title <title> --confidence <low|medium|high>
-  [--summary <summary>] [--topic <topic>]... [--tags <tags>] [--importance <1-5>] [--scope <global|workspace|project|session>]
+  [--summary <summary>] [--topic <topic>]... [--tags <tags>] [--importance <1-5>] [--scope <global|workspace|session>]
 agtalk mem show <mem-id>
 agtalk mem update <mem-id> [--content <content>] [--type <type>] [--title <title>] [--summary <summary>]
   [--topic <topic>]... [--tags <tags>] [--importance <1-5>] [--status <status>]
 agtalk mem archive <mem-id>
 agtalk mem promote <source-ref> [--source-type <message|artifact>] --type <type> --title <title> --confidence <low|medium|high>
   [--summary <summary>] [--topic <topic>]... [--tags <tags>] [--importance <1-5>]
-agtalk mem search <query> [--topic <topic>]... [--type <type>] [--scope <global|workspace|project|session>] [--limit <limit>]
+agtalk mem search <query> [--topic <topic>]... [--type <type>] [--scope <global|workspace|session>] [--limit <limit>]
 agtalk mem pack <topic-slug> [--limit <limit>]
 ```
 
@@ -161,8 +161,8 @@ agtalk mem pack <topic-slug> [--limit <limit>]
 - `type`（item_type）建议值：`fact`（事实）、`decision`（设计决策）、`rule`（规则/约束）、`procedure`（操作流程）、`issue`（问题/待解决事项）、`snippet`（命令/代码片段）、`preference`（偏好）、`summary`（会话/阶段总结）、`note`（普通笔记）、`context`（背景上下文）。
 - `confidence` 可选值：`low`、`medium`、`high`，默认 `medium`。
 - `importance` 为 1-5 的整数，默认 3。
-- `scope` 可选值：`global`、`workspace`、`project`、`session`，默认 `project`。
-- **当前实现中 `project` 暂映射到 `workspace`，二者都绑定当前 workspace；后续如引入独立 `project_id` 再拆分。**
+- `scope` 可选值：`global`、`workspace`、`session`，默认 `workspace`。
+- `workspace` 绑定当前工作区；`session` 绑定当前会话；`global` 为全局记忆。
 - `mem add` 的 `<content>` 为正文字符串（位置参数）。
 - `mem add` 指定的 topic 不存在时会直接报错，不会自动创建，避免 topic 被拼写错误污染。
 - `mem search` 基于 FTS5 全文索引；当前阶段对中文分词支持有限，建议用空格/英文关键词搜索。
@@ -376,8 +376,8 @@ limit: 5
 字段说明：
 - `type` 建议值：`fact`、`decision`、`rule`、`procedure`、`issue`、`snippet`、`preference`、`summary`、`note`、`context`。
 - `confidence` 建议值：`low`、`medium`、`high`，默认 `medium`。
-- `scope` 建议值：`global`、`workspace`、`project`、`session`，默认 `project`。
-  当前实现中 `project` 暂映射到 `workspace`，后续引入独立 `project_id` 后再拆分。
+- `scope` 建议值：`global`、`workspace`、`session`，默认 `workspace`。
+  `workspace` 绑定当前工作区；`session` 绑定当前会话；`global` 为全局记忆。
 - `importance` 为 1-5 整数，默认 3。
 - `topics` 为数组，元素为 topic slug；不存在的 topic 会报错。
 - `tags` 为逗号分隔字符串。

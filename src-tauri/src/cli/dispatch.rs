@@ -166,7 +166,7 @@ struct MemAddArgs {
     importance: i32,
     #[arg(short = 'c', long = "confidence", default_value = "medium", help = "low|medium|high")]
     confidence: String,
-    #[arg(short = 'S', long = "scope", default_value = "project", help = "global|workspace|project|session")]
+    #[arg(short = 'S', long = "scope", default_value = "workspace", help = "global|workspace|session")]
     scope: String,
 }
 
@@ -227,7 +227,7 @@ struct MemSearchArgs {
     topic: Vec<String>,
     #[arg(short = 't', long = "type", help = "记忆类型: fact|decision|rule|procedure|issue|snippet|preference|summary|note|context")]
     item_type: Option<String>,
-    #[arg(short = 'S', long = "scope", help = "global|workspace|project|session")]
+    #[arg(short = 'S', long = "scope", help = "global|workspace|session")]
     scope: Option<String>,
     #[arg(short = 'l', long = "limit", default_value = "20", help = "返回条数")]
     limit: u32,
@@ -1539,9 +1539,9 @@ fn print_agent_help() {
     anstream::println!("{}", help::section("长期知识库 (mem)"));
     anstream::println!("  # 把关键事实、决策、偏好沉淀为可搜索的 memory");
     anstream::println!("  # type: fact|decision|rule|procedure|issue|snippet|preference|summary|note|context");
-    anstream::println!("  # confidence: low|medium|high；scope: global|workspace|project|session，默认 project");
+    anstream::println!("  # confidence: low|medium|high；scope: global|workspace|session，默认 workspace");
     anstream::println!("  agtalk mem topic add project-setup --title \"项目环境配置\" --summary \"开发环境、依赖与构建命令\"");
-    anstream::println!("  agtalk mem add \"使用 pnpm + vite；构建命令 pnpm build\" --type fact --title \"构建方式\" --topic project-setup --confidence high --scope project");
+    anstream::println!("  agtalk mem add \"使用 pnpm + vite；构建命令 pnpm build\" --type fact --title \"构建方式\" --topic project-setup --confidence high --scope workspace");
     anstream::println!("  agtalk mem add \"优先使用 Result/Option 显式错误处理\" --type rule --title \"Rust 错误处理规范\" --topic project-setup --tags \"rust,style\" --confidence high");
     anstream::println!("  agtalk mem search \"error handling\" --topic project-setup");
     anstream::println!("  agtalk mem pack project-setup");
