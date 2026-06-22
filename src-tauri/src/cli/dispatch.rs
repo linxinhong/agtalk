@@ -511,6 +511,15 @@ pub(crate) async fn run_mem_show(mem_id: String) -> Result<()> {
             if !item.tags.is_empty() {
                 anstream::println!("tags: {}", item.tags.join(", "));
             }
+            if !item.sources.is_empty() {
+                anstream::println!("sources:");
+                for s in &item.sources {
+                    anstream::println!("  - type: {} / ref: {}", s.source_type, s.source_ref);
+                    if let Some(quote) = &s.quote {
+                        anstream::println!("    quote: {}", quote);
+                    }
+                }
+            }
             if let Some(summary) = &item.summary {
                 anstream::println!("summary:\n{}", summary);
             }
