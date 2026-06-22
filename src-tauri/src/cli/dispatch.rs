@@ -274,6 +274,8 @@ struct AgentCommand {
     no_enter: bool,
     #[arg(long = "with-mem", help = "注入指定 topic 的 Memory Pack")]
     with_mem: Option<String>,
+    #[arg(long = "with-mem-limit", default_value = "5", help = "Memory Pack 最大条数")]
+    with_mem_limit: u32,
     #[arg(help = "消息正文")]
     message: Vec<String>,
 }
@@ -864,6 +866,7 @@ pub fn print_help() {
     anstream::println!("{}", help::opt("-f, --file <path>", "附件路径，可多次添加"));
     anstream::println!("{}", help::opt("-i, --notify", "提醒 Agent 查收"));
     anstream::println!("{}", help::opt("--with-mem <topic-slug>", "注入指定 topic 的 Memory Pack"));
+    anstream::println!("{}", help::opt("--with-mem-limit <n>", "Memory Pack 最大条数，默认 5"));
     anstream::println!();
     anstream::println!("{}", help::section("人类对话（向人提问 / 收集回应）"));
     anstream::println!("{}", help::cmd("agtalk human <消息> [选项]", ""));
@@ -1026,6 +1029,7 @@ pub fn dispatch(argv: &[String]) {
                 notify: cmd.notify,
                 no_enter: cmd.no_enter,
                 with_mem: cmd.with_mem,
+                with_mem_limit: cmd.with_mem_limit,
             };
             if args.done.is_none() && args.name.is_none() {
                 eprintln!("错误: agtalk agent 发送消息需要 -n <name>");
@@ -1121,6 +1125,7 @@ pub(crate) struct AgentArgs {
     pub(crate) notify: bool,
     pub(crate) no_enter: bool,
     pub(crate) with_mem: Option<String>,
+    pub(crate) with_mem_limit: u32,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1279,6 +1284,7 @@ fn parse_agent_args(argv: &[String]) -> Result<AgentArgs> {
     let mut notify = false;
     let mut no_enter = false;
     let mut with_mem = None;
+    let mut with_mem_limit: u32 = 5;
 
     let mut i = 0;
     while i < argv.len() {
@@ -1331,6 +1337,13 @@ fn parse_agent_args(argv: &[String]) -> Result<AgentArgs> {
                 }
                 with_mem = Some(argv[i].clone());
             }
+            "--with-mem-limit" => {
+                i += 1;
+                if i >= argv.len() {
+                    return Err(anyhow!("--with-mem-limit 缺少参数"));
+                }
+                with_mem_limit = argv[i].parse().context("--with-mem-limit 必须是正整数")?;
+            }
             arg => {
                 message_parts.push(arg.to_string());
             }
@@ -1355,6 +1368,7 @@ fn parse_agent_args(argv: &[String]) -> Result<AgentArgs> {
         notify,
         no_enter,
         with_mem,
+        with_mem_limit,
     })
 }
 
@@ -1606,6 +1620,7 @@ fn print_agent_help() {
         help::opt("files", "附件数组（相对路径按 YAML 目录解析） -> 多个 -f")
     );
     anstream::println!("{}", help::opt("with_mem", "注入指定 topic 的 Memory Pack -> --with-mem"));
+    anstream::println!("{}", help::opt("with_mem_limit", "Memory Pack 最大条数 -> --with-mem-limit"));
     anstream::println!("  示例:");
     anstream::println!("    version: 1");
     anstream::println!("    command: agent");
@@ -2076,16 +2091,40 @@ pub(crate) async fn handle_agent(args: AgentArgs) -> Result<()> {
         let mut message = args.message;
         if let Some(topic_slug) = args.with_mem {
             let resp = cli
-                .mem_pack(Some(&identity.workspace_id), &topic_slug, 10)
+                .mem_pack(Some(&identity.workspace_id), &topic_slug, args.with_mem_limit)
                 .await?;
-            if let ServerMsg::Ok { data } = resp {
-                if let Ok(pack) = serde_json::from_value::<crate::storage::MemPack>(data) {
-                    let pack_text = format_mem_pack(&pack);
-                    message = format!(
-                        "以下是与本任务相关的长期知识库（topic: {}）：\n\n{}\n---\n\n{}",
-                        topic_slug, pack_text, message
+            match resp {
+                ServerMsg::Ok { data } => {
+                    let pack: crate::storage::MemPack =
+                        serde_json::from_value(data).context("解析 Memory Pack 失败")?;
+                    if pack.items.is_empty() {
+                        anstream::println!(
+                            "[agtalk] 提示：topic '{}' 的 Memory Pack 为空，将只发送原消息。",
+                            topic_slug
+                        );
+                        message = format!(
+                            "<agtalk_memory_pack topic=\"{}\" empty=\"true\" />\n\n<user_message>{}</user_message>",
+                            topic_slug, message
+                        );
+                    } else {
+                        let pack_text = format_mem_pack(&pack);
+                        message = format!(
+                            "<agtalk_memory_pack topic=\"{}\">\n{}</agtalk_memory_pack>\n\n<user_message>{}</user_message>",
+                            topic_slug,
+                            pack_text.trim_end(),
+                            message
+                        );
+                    }
+                }
+                ServerMsg::Error { code, message: err } => {
+                    anyhow::bail!(
+                        "无法加载 topic '{}' 的 Memory Pack（{}: {}），消息未发送。",
+                        topic_slug,
+                        code,
+                        err
                     );
                 }
+                _ => {}
             }
         }
 

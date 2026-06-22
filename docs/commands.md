@@ -68,6 +68,7 @@ agtalk agent <消息> [选项]
   -i, --notify                   提醒 Agent 查收消息
       --no-enter                 提醒时不自动发送回车
       --with-mem <topic-slug>    注入指定 topic 的 Memory Pack 到消息正文
+      --with-mem-limit <n>       Memory Pack 最大条数，默认 5
 ```
 
 ### 人类对话
@@ -89,9 +90,22 @@ agtalk human <消息> [选项]
 ```bash
 agtalk agent "处理完成，结论如下..." -n codex -r msg_123 -d msg_123
 agtalk agent "帮我 review 这段代码" -n codex --with-mem project-setup
+agtalk agent "按规范重构" -n codex --with-mem project-setup --with-mem-limit 3
 ```
 
 `--with-mem` 会把指定 topic 的 Memory Pack 放在消息正文前，作为上下文注入给目标 Agent。
+- topic 不存在时直接报错，消息不会发送。
+- Memory Pack 为空时 CLI 会提示，并发送带 `empty="true"` 标记的结构化消息。
+- 默认取 5 条 memory，可通过 `--with-mem-limit` 调整。
+- archived 状态的 memory 不会进入 Memory Pack。
+- 注入格式：
+  ```xml
+  <agtalk_memory_pack topic="project-setup">
+  ...
+  </agtalk_memory_pack>
+
+  <user_message>原消息</user_message>
+  ```
 
 ### 参与者
 
@@ -238,6 +252,7 @@ files:
 - `no_enter` -> `--no-enter`
 - `files` -> 多个 `-f`（相对路径按 YAML 文件目录解析）
 - `with_mem` -> `--with-mem`（注入指定 topic 的 Memory Pack）
+- `with_mem_limit` -> `--with-mem-limit`（Memory Pack 最大条数，默认 5）
 
 运行时校验：
 - `done` 为空时，`name` 与 `message` 均必填。

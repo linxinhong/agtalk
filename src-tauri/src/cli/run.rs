@@ -63,6 +63,8 @@ struct AgentSpec {
     no_enter: bool,
     files: Vec<String>,
     with_mem: Option<String>,
+    #[serde(default = "default_limit")]
+    with_mem_limit: u32,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -326,6 +328,7 @@ async fn run_agent(base_dir: &Path, spec: AgentSpec, file: &str) -> Result<()> {
         notify: spec.notify,
         no_enter: spec.no_enter,
         with_mem: spec.with_mem,
+        with_mem_limit: spec.with_mem_limit,
     };
     handle_agent(args).await
 }
@@ -554,6 +557,7 @@ files:
             notify: a.notify,
             no_enter: a.no_enter,
             with_mem: a.with_mem,
+            with_mem_limit: a.with_mem_limit,
         };
         assert_eq!(args.message, "请 review");
         assert_eq!(args.name.as_deref(), Some("reviewer"));
