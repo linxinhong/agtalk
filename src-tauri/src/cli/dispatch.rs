@@ -944,9 +944,9 @@ pub fn print_help() {
     anstream::println!("{}", help::cmd("mem topic show <slug>", "查看 topic"));
     anstream::println!("{}", help::cmd("mem topic update <slug> [--title ...]", "更新 topic"));
     anstream::println!("{}", help::cmd("mem add <content> --topic <slug> --type <type>", "添加 memory"));
-    anstream::println!("{}", help::cmd("mem show <mem-id>", "查看 memory"));
-    anstream::println!("{}", help::cmd("mem update <mem-id> [--content ...]", "更新 memory"));
-    anstream::println!("{}", help::cmd("mem archive <mem-id>", "归档 memory"));
+    anstream::println!("{}", help::cmd("mem show <mem-id|prefix>", "查看 memory，支持短 ID 前缀"));
+    anstream::println!("{}", help::cmd("mem update <mem-id|prefix> [--content ...]", "更新 memory，支持短 ID 前缀"));
+    anstream::println!("{}", help::cmd("mem archive <mem-id|prefix>", "归档 memory，支持短 ID 前缀"));
     anstream::println!("{}", help::cmd("mem promote <msg-id> --topic <slug> --type <type>", "从消息提升为 memory"));
     anstream::println!("{}", help::cmd("mem search <query> [--topic <slug>]", "搜索 memory"));
     anstream::println!("{}", help::cmd("mem pack <topic-slug>", "生成 Memory Pack"));

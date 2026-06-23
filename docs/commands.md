@@ -176,6 +176,13 @@ agtalk mem search <query> [--topic <topic>]... [--type <type>] [--scope <global|
 agtalk mem pack <topic-slug> [--limit <limit>]
 ```
 
+`<mem-id>` 支持完整 UUID，也支持至少 4 位的前缀短 ID。短 ID 必须唯一匹配，否则会报错。
+
+```bash
+agtalk mem show 3f117a30
+agtalk mem archive 3f117a
+```
+
 说明：
 - `slug` 是 topic 的 URL 友好标识，创建后不可修改；重复创建会报错，不会静默覆盖。
 - `type`（item_type）建议值：`fact`（事实）、`decision`（设计决策）、`rule`（规则/约束）、`procedure`（操作流程）、`issue`（问题/待解决事项）、`snippet`（命令/代码片段）、`preference`（偏好）、`summary`（会话/阶段总结）、`note`（普通笔记）、`context`（背景上下文）。

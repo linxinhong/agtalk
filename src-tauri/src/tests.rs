@@ -2446,4 +2446,73 @@ mod tests {
         let archived = s.archive_mem_item(&item.id, "alice").unwrap();
         assert_eq!(archived.status, "archived");
     }
+
+    #[test]
+    fn test_mem_short_id_resolution() {
+        let s = storage();
+        s.register_participant(None, "alice", "agent", "Alice", "terminal", "{}", "", "agent")
+            .unwrap();
+        s.add_mem_topic(Some("ws-1"), "agtalk/session", "session", None, &[], 3, "alice")
+            .unwrap();
+        let item1 = s
+            .add_mem_item(
+                Some("ws-1"),
+                "fact",
+                "事实一",
+                "内容一",
+                None,
+                &["agtalk/session".into()],
+                &[],
+                3,
+                "confirmed",
+                "alice",
+                "manual",
+                "manual",
+            )
+            .unwrap();
+        let item2 = s
+            .add_mem_item(
+                Some("ws-1"),
+                "rule",
+                "规则二",
+                "内容二",
+                None,
+                &["agtalk/session".into()],
+                &[],
+                3,
+                "confirmed",
+                "alice",
+                "manual",
+                "manual",
+            )
+            .unwrap();
+
+        // 完整 ID 直接匹配
+        assert_eq!(s.resolve_mem_item_id(&item1.id).unwrap(), item1.id);
+
+        // 短 ID 匹配
+        let prefix1 = &item1.id[..8];
+        assert_eq!(s.resolve_mem_item_id(prefix1).unwrap(), item1.id);
+
+        // 过短前缀报错
+        assert!(s.resolve_mem_item_id("abc").is_err());
+
+        // 构造冲突：找两个 item 都有的前 4 位前缀
+        let mut conflict_prefix: Option<String> = None;
+        for i in 4..=item1.id.len().min(item2.id.len()) {
+            let p1 = &item1.id[..i];
+            let p2 = &item2.id[..i];
+            if p1 == p2 {
+                conflict_prefix = Some(p1.to_string());
+            } else {
+                break;
+            }
+        }
+        if let Some(prefix) = conflict_prefix {
+            assert!(s.resolve_mem_item_id(&prefix).is_err());
+        }
+
+        // 不存在的前缀报错
+        assert!(s.resolve_mem_item_id("zzzzzzzz").is_err());
+    }
 }

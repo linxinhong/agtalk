@@ -2678,6 +2678,29 @@ impl Storage {
         Ok(Some(item))
     }
 
+    /// 解析 memory ID：先完整匹配，再前缀匹配。前缀必须至少 4 位且唯一。
+    pub fn resolve_mem_item_id(&self, id_or_prefix: &str) -> Result<String> {
+        if let Some(item) = self.get_mem_item_by_id(id_or_prefix)? {
+            return Ok(item.id);
+        }
+        if id_or_prefix.len() < 4 {
+            anyhow::bail!("memory ID 前缀过短，至少提供 4 位字符");
+        }
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id FROM mem_items WHERE id LIKE ?1 || '%' ORDER BY created_at DESC LIMIT 2",
+        )?;
+        let ids: Vec<String> = stmt
+            .query_map(params![id_or_prefix], |r| r.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        match ids.len() {
+            0 => anyhow::bail!("memory 不存在: {}", id_or_prefix),
+            1 => Ok(ids.into_iter().next().unwrap()),
+            _ => anyhow::bail!("memory ID 前缀 '{}' 匹配到多个结果，请提供更完整的前缀", id_or_prefix),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn update_mem_item(
         &self,

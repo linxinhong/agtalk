@@ -1522,19 +1522,30 @@ pub(crate) async fn handle_msg(
             }
         }
 
-        ClientMsg::MemShow { mem_id } => match storage.get_mem_item_by_id(&mem_id) {
-            Ok(Some(item)) => ServerMsg::Ok {
-                data: serde_json::to_value(&item).unwrap_or_default(),
-            },
-            Ok(None) => ServerMsg::Error {
-                code: "not_found".into(),
-                message: format!("memory 不存在: {}", mem_id),
-            },
-            Err(e) => ServerMsg::Error {
-                code: "mem_show_failed".into(),
-                message: e.to_string(),
-            },
-        },
+        ClientMsg::MemShow { mem_id } => {
+            let resolved = match storage.resolve_mem_item_id(&mem_id) {
+                Ok(id) => id,
+                Err(e) => {
+                    return ServerMsg::Error {
+                        code: "not_found".into(),
+                        message: e.to_string(),
+                    }
+                }
+            };
+            match storage.get_mem_item_by_id(&resolved) {
+                Ok(Some(item)) => ServerMsg::Ok {
+                    data: serde_json::to_value(&item).unwrap_or_default(),
+                },
+                Ok(None) => ServerMsg::Error {
+                    code: "not_found".into(),
+                    message: format!("memory 不存在: {}", mem_id),
+                },
+                Err(e) => ServerMsg::Error {
+                    code: "mem_show_failed".into(),
+                    message: e.to_string(),
+                },
+            }
+        }
 
         #[allow(clippy::too_many_arguments)]
         ClientMsg::MemUpdate {
@@ -1548,8 +1559,17 @@ pub(crate) async fn handle_msg(
             status,
         } => {
             let actor = sender_from(session, None);
+            let resolved = match storage.resolve_mem_item_id(&mem_id) {
+                Ok(id) => id,
+                Err(e) => {
+                    return ServerMsg::Error {
+                        code: "not_found".into(),
+                        message: e.to_string(),
+                    }
+                }
+            };
             match storage.update_mem_item(
-                &mem_id,
+                &resolved,
                 title.as_deref(),
                 content.as_deref(),
                 summary.as_deref(),
@@ -1571,7 +1591,16 @@ pub(crate) async fn handle_msg(
 
         ClientMsg::MemArchive { mem_id } => {
             let actor = sender_from(session, None);
-            match storage.archive_mem_item(&mem_id, &actor) {
+            let resolved = match storage.resolve_mem_item_id(&mem_id) {
+                Ok(id) => id,
+                Err(e) => {
+                    return ServerMsg::Error {
+                        code: "not_found".into(),
+                        message: e.to_string(),
+                    }
+                }
+            };
+            match storage.archive_mem_item(&resolved, &actor) {
                 Ok(item) => ServerMsg::Ok {
                     data: serde_json::to_value(&item).unwrap_or_default(),
                 },
