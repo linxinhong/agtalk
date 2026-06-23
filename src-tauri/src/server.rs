@@ -1713,6 +1713,33 @@ pub(crate) async fn handle_msg(
             }
         }
 
+        ClientMsg::MemList {
+            workspace_id,
+            topic_slug,
+            item_type,
+            scope,
+            status,
+            limit,
+        } => {
+            let ws = workspace_id.or_else(|| session.as_ref().map(|s| s.workspace_id.clone()));
+            match storage.list_mem_items(
+                ws.as_deref(),
+                topic_slug.as_deref(),
+                item_type.as_deref(),
+                scope.as_deref(),
+                &status,
+                limit,
+            ) {
+                Ok(items) => ServerMsg::Ok {
+                    data: serde_json::to_value(&items).unwrap_or_default(),
+                },
+                Err(e) => ServerMsg::Error {
+                    code: "mem_list_failed".into(),
+                    message: e.to_string(),
+                },
+            }
+        }
+
         ClientMsg::Ping => ServerMsg::Ok {
             data: serde_json::json!({"pong": true}),
         },

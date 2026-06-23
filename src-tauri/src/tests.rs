@@ -2515,4 +2515,89 @@ mod tests {
         // 不存在的前缀报错
         assert!(s.resolve_mem_item_id("zzzzzzzz").is_err());
     }
+
+    #[test]
+    fn test_mem_list_items() {
+        let s = storage();
+        s.register_participant(None, "alice", "agent", "Alice", "terminal", "{}", "", "agent")
+            .unwrap();
+        s.add_mem_topic(Some("ws-1"), "agtalk/session", "session", None, &[], 3, "alice")
+            .unwrap();
+        s.add_mem_topic(Some("ws-1"), "agtalk/mem", "mem", None, &[], 3, "alice")
+            .unwrap();
+
+        let item1 = s
+            .add_mem_item(
+                Some("ws-1"),
+                "fact",
+                "事实一",
+                "内容一",
+                None,
+                &["agtalk/session".into()],
+                &[],
+                3,
+                "confirmed",
+                "alice",
+                "manual",
+                "manual",
+            )
+            .unwrap();
+        let item2 = s
+            .add_mem_item(
+                Some("ws-1"),
+                "rule",
+                "规则二",
+                "内容二",
+                None,
+                &["agtalk/mem".into()],
+                &[],
+                4,
+                "confirmed",
+                "alice",
+                "manual",
+                "manual",
+            )
+            .unwrap();
+
+        // 默认列出 active
+        let list = s.list_mem_items(Some("ws-1"), None, None, None, "active", 10).unwrap();
+        assert_eq!(list.len(), 2);
+        let ids: std::collections::HashSet<String> = list.iter().map(|i| i.id.clone()).collect();
+        assert!(ids.contains(&item1.id));
+        assert!(ids.contains(&item2.id));
+
+        // 按 topic 过滤
+        let list = s
+            .list_mem_items(Some("ws-1"), Some("agtalk/session"), None, None, "active", 10)
+            .unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, item1.id);
+
+        // 按 type 过滤
+        let list = s
+            .list_mem_items(Some("ws-1"), None, Some("rule"), None, "active", 10)
+            .unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, item2.id);
+
+        // limit 生效
+        let list = s.list_mem_items(Some("ws-1"), None, None, None, "active", 1).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, item2.id);
+
+        // archive 后 status=active 查不到
+        s.archive_mem_item(&item1.id, "alice").unwrap();
+        let list = s.list_mem_items(Some("ws-1"), None, None, None, "active", 10).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, item2.id);
+
+        // status=all 能查到 archived
+        let list = s.list_mem_items(Some("ws-1"), None, None, None, "all", 10).unwrap();
+        assert_eq!(list.len(), 2);
+
+        // status=archived 只查 archived
+        let list = s.list_mem_items(Some("ws-1"), None, None, None, "archived", 10).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, item1.id);
+    }
 }

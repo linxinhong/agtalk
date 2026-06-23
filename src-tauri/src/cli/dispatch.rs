@@ -96,6 +96,8 @@ enum MemCommand {
     Search(MemSearchArgs),
     #[command(about = "生成 Memory Pack")]
     Pack(MemPackArgs),
+    #[command(about = "列出 memory")]
+    List(MemListArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -248,6 +250,31 @@ struct MemSearchArgs {
 struct MemPackArgs {
     topic_slug: String,
     #[arg(short = 'l', long = "limit", default_value = "10", help = "包含条数")]
+    limit: u32,
+}
+
+#[derive(Debug, Args)]
+struct MemListArgs {
+    #[arg(short = 'p', long = "topic", help = "按 topic slug 过滤")]
+    topic: Option<String>,
+    #[arg(short = 't', long = "type", help = "按记忆类型过滤")]
+    item_type: Option<String>,
+    #[arg(
+        short = 'S',
+        long = "scope",
+        value_parser = ["global", "workspace"],
+        help = "global|workspace"
+    )]
+    scope: Option<String>,
+    #[arg(
+        short = 's',
+        long = "status",
+        default_value = "active",
+        value_parser = ["active", "archived", "all"],
+        help = "active|archived|all"
+    )]
+    status: String,
+    #[arg(short = 'l', long = "limit", default_value = "20", help = "返回条数")]
     limit: u32,
 }
 
@@ -707,6 +734,72 @@ pub(crate) async fn run_mem_pack(topic_slug: String, limit: u32) -> Result<()> {
     .await
 }
 
+pub(crate) async fn run_mem_list(
+    topic: Option<String>,
+    item_type: Option<String>,
+    scope: Option<String>,
+    status: String,
+    limit: u32,
+) -> Result<()> {
+    with_mem_client(|workspace_id, mut client| async move {
+        let resp = client
+            .mem_list(
+                workspace_id.as_deref(),
+                topic.as_deref(),
+                item_type.as_deref(),
+                scope.as_deref(),
+                &status,
+                limit,
+            )
+            .await?;
+        print_json_or_table(resp, |items: Vec<crate::storage::MemItem>| {
+            if items.is_empty() {
+                anstream::println!("未找到 memory");
+                return;
+            }
+            let mut table = Table::new();
+            table.set_header(vec![
+                "id",
+                "type",
+                "title",
+                "topic",
+                "status",
+                "importance",
+                "updated_at",
+            ]);
+            for item in items {
+                let topic_slugs: Vec<String> =
+                    item.topics.iter().map(|t| t.slug.clone()).collect();
+                let short_id = if item.id.len() > 8 {
+                    item.id[..8].to_string()
+                } else {
+                    item.id.clone()
+                };
+                table.add_row(vec![
+                    short_id,
+                    item.item_type,
+                    item.title,
+                    topic_slugs.join(", "),
+                    item.status,
+                    item.importance.to_string(),
+                    format_timestamp(item.updated_at),
+                ]);
+            }
+            anstream::println!("{}", table);
+        });
+        Ok(())
+    })
+    .await
+}
+
+fn format_timestamp(ts: f64) -> String {
+    let secs = ts.trunc() as i64;
+    let nanos = ((ts - ts.trunc()) * 1_000_000_000.0) as u32;
+    chrono::DateTime::<chrono::Utc>::from_timestamp(secs, nanos)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|| ts.to_string())
+}
+
 async fn handle_mem(cmd: MemCommand) -> Result<()> {
     match cmd {
         MemCommand::Topic(topic_cmd) => match topic_cmd {
@@ -782,6 +875,16 @@ async fn handle_mem(cmd: MemCommand) -> Result<()> {
             .await
         }
         MemCommand::Pack(args) => run_mem_pack(args.topic_slug, args.limit).await,
+        MemCommand::List(args) => {
+            run_mem_list(
+                args.topic,
+                args.item_type,
+                args.scope,
+                args.status,
+                args.limit,
+            )
+            .await
+        }
     }
 }
 
@@ -960,6 +1063,7 @@ pub fn print_help() {
     anstream::println!("{}", help::cmd("mem archive <mem-id|prefix>", "归档 memory，支持短 ID 前缀"));
     anstream::println!("{}", help::cmd("mem promote <msg-id> --topic <slug> --type <type>", "从消息提升为 memory"));
     anstream::println!("{}", help::cmd("mem search <query> [--topic <slug>]", "搜索 memory"));
+    anstream::println!("{}", help::cmd("mem list [--topic <slug>] [--status active|archived|all]", "列出 memory"));
     anstream::println!("{}", help::cmd("mem pack <topic-slug>", "生成 Memory Pack"));
     anstream::println!();
     anstream::println!("{}", help::section("环境"));
@@ -1590,6 +1694,7 @@ fn print_agent_help() {
     anstream::println!("  agtalk mem add \"使用 pnpm + vite；构建命令 pnpm build\" --type fact --title \"构建方式\" --topic project-setup --confidence high --scope workspace");
     anstream::println!("  agtalk mem add \"优先使用 Result/Option 显式错误处理\" --type rule --title \"Rust 错误处理规范\" --topic project-setup --tags \"rust,style\" --confidence high");
     anstream::println!("  agtalk mem search \"error handling\" --topic project-setup");
+    anstream::println!("  agtalk mem list --topic project-setup --status active");
     anstream::println!("  agtalk mem pack project-setup");
     anstream::println!("  # 从消息提升为 memory（source_ref 为 msg_id）；topic 不存在会报错，不会自动创建");
     anstream::println!("  agtalk mem promote <msg-id> --type fact --title \"从对话提取的关键结论\" --topic project-setup --confidence medium");
@@ -1684,9 +1789,9 @@ fn print_agent_help() {
     anstream::println!("  #   mem        mem_command + 对应字段");
     anstream::println!();
     anstream::println!("  # mem 字段说明：");
-    anstream::println!("  #   mem_command: topic_add | topic_list | topic_show | topic_update | add | show | update | archive | promote | search | pack");
-    anstream::println!("  #   slug / title / summary / aliases / priority / archive");
-    anstream::println!("  #   content / item_type / confidence / importance / scope / topics / tags / mem_id / source_ref / source_type / query / limit");
+    anstream::println!("  #   mem_command: topic_add | topic_list | topic_show | topic_update | add | show | update | archive | promote | search | list | pack");
+    anstream::println!("  #   slug / title / summary / aliases / priority / archive / all");
+    anstream::println!("  #   content / item_type / confidence / importance / scope / topics / tags / mem_id / source_ref / source_type / query / limit / status");
     anstream::println!();
     anstream::println!("  # 完整字段与示例见 docs/commands.md");
 }

@@ -173,6 +173,7 @@ agtalk mem archive <mem-id>
 agtalk mem promote <source-ref> [--source-type <message|artifact>] --type <type> --title <title> --confidence <low|medium|high>
   [--summary <summary>] [--topic <topic>]... [--tags <tags>] [--importance <1-5>]
 agtalk mem search <query> [--topic <topic>]... [--type <type>] [--scope <global|workspace>] [--limit <limit>]
+agtalk mem list [--topic <topic>] [--type <type>] [--scope <global|workspace>] [--status <active|archived|all>] [--limit <limit>]
 agtalk mem pack <topic-slug> [--limit <limit>]
 ```
 
@@ -193,7 +194,8 @@ agtalk mem archive 3f117a
 - `mem add` 的 `<content>` 为正文字符串（位置参数）。
 - `mem add` 指定的 topic 不存在时会直接报错，不会自动创建，避免 topic 被拼写错误污染。
 - `mem search` 基于 FTS5 全文索引；当前阶段对中文分词支持有限，建议用空格/英文关键词搜索。
-- `search` 与 `pack` 默认不包含 `archived` 状态的 memory。
+- `mem list` 不依赖 FTS，用于盘点已有 memory，默认只返回 `active` 状态，按 `updated_at` 降序排列。
+- `search` 与 `pack` 默认不包含 `archived` 状态的 memory；`mem list --status archived` 可单独查看。
 
 `inbox` 返回结构示例：
 
@@ -395,7 +397,7 @@ limit: 5
 ```
 
 `mem_command` 可选值：
-`topic_add`、`topic_list`、`topic_show`、`topic_update`、`add`、`show`、`update`、`archive`、`promote`、`search`、`pack`。
+`topic_add`、`topic_list`、`topic_show`、`topic_update`、`add`、`show`、`update`、`archive`、`promote`、`search`、`list`、`pack`。
 
 常用字段：
 - `slug` / `title` / `summary` / `aliases` / `priority` / `archive` / `all`

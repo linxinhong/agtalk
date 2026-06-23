@@ -320,6 +320,20 @@ pub enum ClientMsg {
         #[serde(default = "default_limit")]
         limit: u32,
     },
+    MemList {
+        #[serde(default)]
+        workspace_id: Option<String>,
+        #[serde(default)]
+        topic_slug: Option<String>,
+        #[serde(default)]
+        item_type: Option<String>,
+        #[serde(default)]
+        scope: Option<String>,
+        #[serde(default = "default_status_active")]
+        status: String,
+        #[serde(default = "default_limit")]
+        limit: u32,
+    },
 }
 
 /// Daemon → CLI/GUI 的响应消息
@@ -399,6 +413,10 @@ fn default_confidence() -> String {
 
 fn default_source_type() -> String {
     "manual".to_string()
+}
+
+fn default_status_active() -> String {
+    "active".to_string()
 }
 
 /// 序列化一条 IPC 消息为 JSON 行

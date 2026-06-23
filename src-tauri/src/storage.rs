@@ -2974,6 +2974,83 @@ impl Storage {
         Ok(results)
     }
 
+    /// 列出 memory 条目（不依赖 FTS，支持 topic/type/scope/status 过滤）。
+    /// 返回轻量列表，默认按 updated_at DESC 排序。
+    pub fn list_mem_items(
+        &self,
+        workspace_id: Option<&str>,
+        topic_slug: Option<&str>,
+        item_type: Option<&str>,
+        scope: Option<&str>,
+        status: &str,
+        limit: u32,
+    ) -> Result<Vec<MemItem>> {
+        let topic_ids: Vec<String> = if let Some(slug) = topic_slug {
+            self.get_mem_topic_by_slug(workspace_id, slug)
+                .ok()
+                .flatten()
+                .map(|t| vec![t.id])
+                .unwrap_or_default()
+        } else {
+            vec![]
+        };
+
+        let conn = self.conn();
+        let mut sql = String::from(
+            "SELECT i.id, i.space_id, s.scope, s.workspace_id, i.type, i.title, i.content, i.summary, i.status, i.confidence, i.importance, i.created_by, i.updated_by, i.created_at, i.updated_at \
+             FROM mem_items i JOIN mem_spaces s ON i.space_id = s.id WHERE i.status = ?",
+        );
+        let mut params: Vec<rusqlite::types::Value> = Vec::new();
+        params.push(status.to_string().into());
+
+        // status = "all" 时不按 status 过滤
+        if status == "all" {
+            sql = sql.replace("WHERE i.status = ?", "WHERE 1=1");
+            params.remove(0);
+        }
+
+        if let Some(scope_val) = scope {
+            if scope_val == "global" {
+                sql.push_str(" AND s.scope = 'global'");
+            } else if let Some(wid) = workspace_id {
+                sql.push_str(" AND s.workspace_id = ?");
+                params.push(wid.to_string().into());
+            }
+        } else if let Some(wid) = workspace_id {
+            sql.push_str(" AND (s.workspace_id = ? OR s.scope = 'global')");
+            params.push(wid.to_string().into());
+        }
+
+        if let Some(t) = item_type {
+            sql.push_str(" AND i.type = ?");
+            params.push(t.to_string().into());
+        }
+
+        if !topic_ids.is_empty() {
+            sql.push_str(" AND i.id IN (SELECT mem_id FROM mem_item_topics WHERE topic_id = ?)");
+            params.push(topic_ids[0].clone().into());
+        }
+
+        sql.push_str(" ORDER BY i.updated_at DESC LIMIT ?");
+        params.push((limit as i64).into());
+
+        let param_refs: Vec<&dyn rusqlite::ToSql> =
+            params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+        let mut items: Vec<MemItem> = {
+            let mut stmt = conn.prepare(&sql)?;
+            let rows: Vec<MemItem> = stmt
+                .query_map(&*param_refs, |r| self.row_to_item(r))?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        };
+        drop(conn);
+        for item in &mut items {
+            let _ = self.fill_mem_item_relations(item);
+        }
+        Ok(items)
+    }
+
     pub fn pack_mem(
         &self,
         workspace_id: Option<&str>,

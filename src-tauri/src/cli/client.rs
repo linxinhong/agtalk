@@ -505,4 +505,24 @@ impl Client {
         })
         .await
     }
+
+    pub async fn mem_list(
+        &mut self,
+        workspace_id: Option<&str>,
+        topic_slug: Option<&str>,
+        item_type: Option<&str>,
+        scope: Option<&str>,
+        status: &str,
+        limit: u32,
+    ) -> Result<ServerMsg> {
+        self.request(&ClientMsg::MemList {
+            workspace_id: workspace_id.map(|s| s.to_string()),
+            topic_slug: topic_slug.map(|s| s.to_string()),
+            item_type: item_type.map(|s| s.to_string()),
+            scope: scope.map(|s| s.to_string()),
+            status: status.to_string(),
+            limit,
+        })
+        .await
+    }
 }

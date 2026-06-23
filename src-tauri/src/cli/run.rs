@@ -6,7 +6,7 @@
 use super::dispatch::{
     handle_agent, handle_ask_flow, handle_attachment, handle_chats, handle_detail, handle_inbox,
     handle_me, handle_peers, handle_reply, handle_wait, run_mem_add, run_mem_archive,
-    run_mem_pack, run_mem_promote, run_mem_search, run_mem_show, run_mem_topic_add,
+    run_mem_list, run_mem_pack, run_mem_promote, run_mem_search, run_mem_show, run_mem_topic_add,
     run_mem_topic_list, run_mem_topic_show, run_mem_topic_update, run_mem_update, AgentArgs,
     AttachmentArgs, DetailArgs, InboxArgs, PeersArgs, QuestionArgs, ReplyCommand, WaitArgs,
 };
@@ -160,6 +160,7 @@ struct MemSpec {
     #[serde(rename = "source_type")]
     source_type: Option<String>,
     query: Option<String>,
+    #[serde(alias = "topic")]
     topic_slug: Option<String>,
     #[serde(default = "default_limit")]
     limit: u32,
@@ -294,6 +295,16 @@ async fn run_mem(spec: MemSpec) -> Result<()> {
         "pack" => {
             let topic_slug = spec.topic_slug.filter(|s| !s.is_empty()).ok_or_else(|| anyhow!("mem pack 缺少必填字段 'topic_slug'"))?;
             run_mem_pack(topic_slug, spec.limit).await
+        }
+        "list" => {
+            run_mem_list(
+                spec.topic_slug.clone(),
+                spec.item_type.clone(),
+                spec.scope.clone(),
+                spec.status.clone().unwrap_or_else(|| "active".to_string()),
+                spec.limit,
+            )
+            .await
         }
         other => anyhow::bail!("不支持的 mem_command: {}", other),
     }
