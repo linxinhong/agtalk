@@ -206,6 +206,9 @@ async fn run_mem(spec: MemSpec) -> Result<()> {
     let item_type = spec.item_type.clone().unwrap_or_else(|| "fact".to_string());
     let confidence = spec.confidence.clone().unwrap_or_else(|| "medium".to_string());
     let scope = spec.scope.clone().unwrap_or_else(|| "workspace".to_string());
+    if scope != "global" && scope != "workspace" {
+        anyhow::bail!("mem scope 只支持 global 或 workspace，当前值 '{}' 无效", scope);
+    }
     let source_type = spec.source_type.clone().unwrap_or_else(|| "message".to_string());
     let priority = spec.priority.unwrap_or(3);
     let importance = spec.importance.unwrap_or(3);

@@ -166,7 +166,13 @@ struct MemAddArgs {
     importance: i32,
     #[arg(short = 'c', long = "confidence", default_value = "medium", help = "low|medium|high")]
     confidence: String,
-    #[arg(short = 'S', long = "scope", default_value = "workspace", help = "global|workspace")]
+    #[arg(
+        short = 'S',
+        long = "scope",
+        default_value = "workspace",
+        value_parser = ["global", "workspace"],
+        help = "global|workspace"
+    )]
     scope: String,
 }
 
@@ -227,7 +233,12 @@ struct MemSearchArgs {
     topic: Vec<String>,
     #[arg(short = 't', long = "type", help = "记忆类型: fact|decision|rule|procedure|issue|snippet|preference|summary|note|context")]
     item_type: Option<String>,
-    #[arg(short = 'S', long = "scope", help = "global|workspace")]
+    #[arg(
+        short = 'S',
+        long = "scope",
+        value_parser = ["global", "workspace"],
+        help = "global|workspace"
+    )]
     scope: Option<String>,
     #[arg(short = 'l', long = "limit", default_value = "20", help = "返回条数")]
     limit: u32,
