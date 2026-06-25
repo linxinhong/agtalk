@@ -1848,7 +1848,7 @@ pub(crate) async fn handle_msg(
             };
 
             // 参数规范化
-            let timeout_ms = timeout_ms.clamp(100, 30000);
+            let timeout_ms = timeout_ms.clamp(100, 600_000);
             let limit = if limit == 0 { 10 } else { limit.min(50) };
             let filter_str = filter.as_str();
             let participant_name = session_info.participant_name.clone();

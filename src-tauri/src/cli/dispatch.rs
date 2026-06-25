@@ -290,7 +290,7 @@ struct PollInboxArgs {
         help = "unread|pending|action_required|all"
     )]
     filter: String,
-    #[arg(short = 't', long = "timeout", default_value = "30000", help = "最长等待毫秒数（最大 30000）")]
+    #[arg(short = 't', long = "timeout", default_value = "30000", help = "最长等待毫秒数（默认 30000，最大 600000）")]
     timeout: u64,
     #[arg(short = 'l', long = "limit", default_value = "10", help = "返回条数（最大 50）")]
     limit: u32,
@@ -825,7 +825,7 @@ async fn handle_poll_inbox(args: PollInboxArgs) -> Result<()> {
         "all" => crate::ipc::InboxFilter::All,
         _ => crate::ipc::InboxFilter::Unread,
     };
-    let timeout_ms = args.timeout.clamp(100, 30000);
+    let timeout_ms = args.timeout.clamp(100, 600_000);
     let limit = if args.limit == 0 { 10 } else { args.limit.min(50) };
 
     let identity = crate::identity::resolve_identity(None)?;
@@ -1885,7 +1885,7 @@ fn print_agent_help() {
     anstream::println!("  #   - 只能 poll 当前 session 对应 participant 的 inbox");
     anstream::println!("  #   - 返回前 pending 消息会被标记为 delivered");
     anstream::println!("  #   - 不自动 read/done；处理完成后需显式调用 ReadMessage / Reply / Done");
-    anstream::println!("  #   - timeout_ms 最大 30000，limit 最大 50");
+    anstream::println!("  #   - timeout_ms 默认 30000，最大 600000（10 分钟），limit 最大 50");
     anstream::println!("  #   - 同一 participant 同时只能有一个挂起 poll，否则返回 poll_already_active");
 }
 

@@ -98,8 +98,10 @@ X-Agtalk-Token: <token>
 |------|------|------|--------|------|
 | `type` | string | 是 | — | 固定为 `poll_inbox` |
 | `filter` | string | 否 | `unread` | `unread` / `pending` / `action_required` / `all` |
-| `timeout_ms` | number | 否 | `30000` | 最长等待毫秒数，最大 `30000` |
+| `timeout_ms` | number | 否 | `30000` | 最长等待毫秒数，默认 30 秒，最大可设为 10 分钟（`600000`） |
 | `limit` | number | 否 | `10` | 返回条数上限，最大 `50` |
+
+`timeout_ms` 建议根据 Agent 调度策略设置：高频短轮询用默认 30 秒；低频次后台 Agent 可设 1～10 分钟，减少空轮询开销。
 
 ### curl 快速验证
 
@@ -236,7 +238,9 @@ while True:
 
 ## Python 最小示例
 
-完整可运行脚本已作为 memory 沉淀在 `http-agent` topic 下，可通过以下命令查看：
+完整可运行脚本：[examples/http_agent_poll.py](../examples/http_agent_poll.py)
+
+同时已作为 memory 沉淀在 `http-agent` topic 下：
 
 ```bash
 agtalk mem show 64d85564
