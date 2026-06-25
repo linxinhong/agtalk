@@ -1128,6 +1128,15 @@ pub fn print_help() {
         help::cmd("daemon <start|stop|restart|status>", "管理后台 daemon")
     );
     anstream::println!();
+    anstream::println!("{}", help::section("HTTP API（Agent 长轮询）"));
+    anstream::println!("  daemon 启动后会在本地监听一个 HTTP 端口（默认 19527，");
+    anstream::println!("  由 daemon.http_port 配置），地址为 127.0.0.1。");
+    anstream::println!("  所有请求通过 POST /api 发送 ClientMsg JSON，复用与 Unix socket 相同的协议。");
+    anstream::println!("  外部 Agent 可通过 PollInbox 长轮询拉取自己的待处理消息。");
+    anstream::println!("  agtalk poll-inbox [--filter ...] [--timeout <ms>] [--limit <n>]");
+    anstream::println!("    长轮询收件箱（测试/调试）");
+    anstream::println!("  示例 HTTP 请求头：X-Agtalk-Session-Id / X-Agtalk-Token");
+    anstream::println!();
     anstream::println!("{}", help::section("帮助"));
     anstream::println!("{}", help::cmd("--agent-help", "面向 AI 的精简提问用法"));
     anstream::println!("{}", help::cmd("<命令> --help", "子命令详细用法"));
@@ -1841,6 +1850,43 @@ fn print_agent_help() {
     anstream::println!("  #   content / item_type / confidence / importance / scope / topics / tags / mem_id / source_ref / source_type / query / limit / status");
     anstream::println!();
     anstream::println!("  # 完整字段与示例见 docs/commands.md");
+    anstream::println!();
+    anstream::println!("{}", help::section("HTTP API / Agent 长轮询（PollInbox）"));
+    anstream::println!("  # daemon 在本地监听 HTTP（默认 127.0.0.1:19527，端口由 daemon.http_port 配置）");
+    anstream::println!("  # 所有语义通过 POST /api 发送 ClientMsg JSON，与 Unix socket 协议一致");
+    anstream::println!("  # 外部 Agent 可用 PollInbox 长轮询拉取自己的待处理消息");
+    anstream::println!();
+    anstream::println!("  # 请求示例：");
+    anstream::println!("  POST /api");
+    anstream::println!("  X-Agtalk-Session-Id: <session_id>");
+    anstream::println!("  X-Agtalk-Token: <token>");
+    anstream::println!("  Content-Type: application/json");
+    anstream::println!();
+    anstream::println!("  {{");
+    anstream::println!("    \"type\": \"poll_inbox\",");
+    anstream::println!("    \"filter\": \"unread\",");
+    anstream::println!("    \"timeout_ms\": 30000,");
+    anstream::println!("    \"limit\": 10");
+    anstream::println!("  }}");
+    anstream::println!();
+    anstream::println!("  # 返回示例：");
+    anstream::println!("  {{");
+    anstream::println!("    \"type\": \"ok\",");
+    anstream::println!("    \"data\": {{");
+    anstream::println!("      \"messages\": [...],");
+    anstream::println!("      \"timed_out\": false,");
+    anstream::println!("      \"empty\": false,");
+    anstream::println!("      \"limit\": 10,");
+    anstream::println!("      \"timeout_ms\": 30000");
+    anstream::println!("    }}");
+    anstream::println!("  }}");
+    anstream::println!();
+    anstream::println!("  # 关键语义：");
+    anstream::println!("  #   - 只能 poll 当前 session 对应 participant 的 inbox");
+    anstream::println!("  #   - 返回前 pending 消息会被标记为 delivered");
+    anstream::println!("  #   - 不自动 read/done；处理完成后需显式调用 ReadMessage / Reply / Done");
+    anstream::println!("  #   - timeout_ms 最大 30000，limit 最大 50");
+    anstream::println!("  #   - 同一 participant 同时只能有一个挂起 poll，否则返回 poll_already_active");
 }
 
 fn short_id(id: &str) -> String {
