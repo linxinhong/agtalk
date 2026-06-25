@@ -43,6 +43,18 @@ pub(crate) struct PollKey {
 /// 共享的 PollInbox waiter：每个 participant 同时只允许一个挂起 poll。
 pub(crate) type PollWaiters = Arc<Mutex<HashMap<PollKey, oneshot::Sender<()>>>>;
 
+/// 确保 PollInbox waiter 在 future 被 cancel / 正常返回 / panic 时都能被清理。
+struct PollWaiterGuard {
+    waiters: PollWaiters,
+    key: PollKey,
+}
+
+impl Drop for PollWaiterGuard {
+    fn drop(&mut self) {
+        self.waiters.lock().unwrap().remove(&self.key);
+    }
+}
+
 /// 将本地 .agtalk/sessions/<name>.json 的状态标记为 left。
 fn mark_local_session_left(name: &str) -> Result<()> {
     if let Some(mut sf) = crate::session::read_session(name)? {
@@ -1875,6 +1887,11 @@ pub(crate) async fn handle_msg(
                 }
                 waiters.insert(key.clone(), tx);
             }
+            // guard 确保 future 被 cancel / 正常返回 / panic 时都能清理 waiter
+            let _guard = PollWaiterGuard {
+                waiters: poll_waiters.clone(),
+                key: key.clone(),
+            };
 
             // 注册后再查一次，避免竞态
             match poll_inbox_once(
@@ -1884,7 +1901,6 @@ pub(crate) async fn handle_msg(
                 limit,
             ) {
                 Ok((items, _)) if !items.is_empty() => {
-                    poll_waiters.lock().unwrap().remove(&key);
                     let result = crate::ipc::PollInboxResult {
                         empty: false,
                         timed_out: false,
@@ -1897,7 +1913,6 @@ pub(crate) async fn handle_msg(
                     };
                 }
                 Err(e) => {
-                    poll_waiters.lock().unwrap().remove(&key);
                     return ServerMsg::Error {
                         code: "poll_inbox_failed".into(),
                         message: e.to_string(),
@@ -1913,9 +1928,6 @@ pub(crate) async fn handle_msg(
             )
             .await
             .is_err();
-
-            // 超时或被唤醒后都要移除自己
-            poll_waiters.lock().unwrap().remove(&key);
 
             // 最后再查一次
             match poll_inbox_once(

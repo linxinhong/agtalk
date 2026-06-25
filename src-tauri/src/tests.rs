@@ -2861,4 +2861,58 @@ mod tests {
             _ => panic!("应返回 poll_already_active"),
         }
     }
+
+    #[tokio::test]
+    async fn test_poll_inbox_waiter_cleaned_on_cancel() {
+        let s = Arc::new(storage());
+        let notify = NotifyPluginRegistry::new();
+        let waiters = empty_poll_waiters();
+
+        let mut bob_session: Option<crate::storage::SessionInfo> = None;
+        let bob_notify = serde_json::json!({
+            "plugin": "terminal",
+            "endpoint": { "session": "s2" },
+            "send_enter": true,
+        });
+        let resp = join_via_server(&s, &notify, "bob", bob_notify.clone(), false, &mut bob_session).await;
+        assert!(matches!(resp, ServerMsg::Ok { .. }));
+
+        // 启动一个长时间 poll，然后 abort 模拟 connection dropped
+        let s2 = s.clone();
+        let waiters2 = waiters.clone();
+        let poll_handle = tokio::spawn(async move {
+            poll_inbox_via_server(
+                &s2,
+                &waiters2,
+                &mut {
+                    let mut sess: Option<crate::storage::SessionInfo> = None;
+                    let notify2 = NotifyPluginRegistry::new();
+                    let _ = join_via_server(&s2, &notify2, "bob", serde_json::json!({}), true, &mut sess).await;
+                    sess
+                },
+                crate::ipc::InboxFilter::Unread,
+                60000,
+                10,
+            )
+            .await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        poll_handle.abort();
+        let _ = poll_handle.await;
+
+        // abort 后 waiter 应被清理，同一个 participant 可以再次 poll
+        let resp = poll_inbox_via_server(
+            &s,
+            &waiters,
+            &mut bob_session,
+            crate::ipc::InboxFilter::Unread,
+            100,
+            10,
+        )
+        .await;
+        let result = extract_poll_result(resp).expect("abort 后应能再次 poll");
+        assert!(result.empty);
+        assert!(result.timed_out);
+    }
 }
