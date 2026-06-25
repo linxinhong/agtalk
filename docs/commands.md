@@ -149,6 +149,10 @@ agtalk attachment <att-id>           查看附件全文（自动标记已读）
 agtalk chats                         查看对话列表
 agtalk config <get|set|list> [key] [value]  管理全局配置
 agtalk daemon <start|stop|restart|status>   管理后台 daemon
+agtalk poll-inbox                    长轮询收件箱（Agent HTTP Polling）
+  --filter <unread|pending|action_required|all>   过滤条件，默认 unread
+  --timeout <ms>                     最长等待毫秒数，默认 30000，最大 30000
+  --limit <n>                        返回条数，默认 10，最大 50
 ```
 
 ### 长期知识库 (mem)
@@ -196,6 +200,17 @@ agtalk mem archive 3f117a
 - `mem search` 基于 FTS5 全文索引；当前阶段对中文分词支持有限，建议用空格/英文关键词搜索。
 - `mem list` 不依赖 FTS，用于盘点已有 memory，默认只返回 `active` 状态，按 `updated_at` 降序排列。
 - `search` 与 `pack` 默认不包含 `archived` 状态的 memory；`mem list --status archived` 可单独查看。
+
+#### 长轮询收件箱（poll-inbox）
+
+`agtalk poll-inbox` 供外部 Agent 通过 HTTP 长轮询方式拉取自己的待处理消息。它复用现有鉴权（`X-Agtalk-Session-Id` / `X-Agtalk-Token`），不新增数据库表。
+
+- 默认 `filter=unread`、`timeout=30000ms`、`limit=10`。
+- 超时返回 `timed_out=true`；有新消息时立即返回。
+- 返回前会将 `pending` 状态的消息标记为 `delivered`。
+- 不会自动 `read` / `done`；Agent 拿到消息后应显式调用 `read` / `reply` / `done`。
+- 同一 participant 同时只能有一个挂起的 `poll-inbox`，第二个会返回 `poll_already_active`。
+- `timeout` 最大 30000ms，`limit` 最大 50。
 
 `inbox` 返回结构示例：
 

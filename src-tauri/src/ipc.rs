@@ -334,6 +334,34 @@ pub enum ClientMsg {
         #[serde(default = "default_limit")]
         limit: u32,
     },
+    PollInbox {
+        #[serde(default = "default_inbox_filter")]
+        filter: InboxFilter,
+        #[serde(default = "default_timeout_ms")]
+        timeout_ms: u64,
+        #[serde(default = "default_limit")]
+        limit: u32,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InboxFilter {
+    Unread,
+    Pending,
+    ActionRequired,
+    All,
+}
+
+impl InboxFilter {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            InboxFilter::Unread => "unread",
+            InboxFilter::Pending => "pending",
+            InboxFilter::ActionRequired => "action_required",
+            InboxFilter::All => "all",
+        }
+    }
 }
 
 /// Daemon → CLI/GUI 的响应消息
@@ -379,6 +407,15 @@ pub enum ServerMsg {
     },
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PollInboxResult {
+    pub messages: Vec<crate::storage::InboxItem>,
+    pub timed_out: bool,
+    pub empty: bool,
+    pub limit: u32,
+    pub timeout_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SendAttachment {
     pub path: String,
@@ -417,6 +454,14 @@ fn default_source_type() -> String {
 
 fn default_status_active() -> String {
     "active".to_string()
+}
+
+fn default_inbox_filter() -> InboxFilter {
+    InboxFilter::Unread
+}
+
+fn default_timeout_ms() -> u64 {
+    30000
 }
 
 /// 序列化一条 IPC 消息为 JSON 行

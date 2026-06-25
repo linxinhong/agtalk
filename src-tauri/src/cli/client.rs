@@ -525,4 +525,18 @@ impl Client {
         })
         .await
     }
+
+    pub async fn poll_inbox(
+        &mut self,
+        filter: crate::ipc::InboxFilter,
+        timeout_ms: u64,
+        limit: u32,
+    ) -> Result<ServerMsg> {
+        self.request(&ClientMsg::PollInbox {
+            filter,
+            timeout_ms,
+            limit,
+        })
+        .await
+    }
 }

@@ -1398,6 +1398,35 @@ impl Storage {
         Ok(())
     }
 
+    /// 将指定 recipient 视角下多条 pending 消息标记为 delivered。
+    pub fn mark_delivered_for_messages(
+        &self,
+        msg_ids: &[String],
+        participant_name: &str,
+    ) -> Result<()> {
+        if msg_ids.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn();
+        let p = get_participant_row(&conn, participant_name)?;
+        let placeholders: Vec<String> = msg_ids.iter().map(|_| "?".to_string()).collect();
+        let sql = format!(
+            "UPDATE message_recipients
+             SET status = 'delivered', delivered_at = unixepoch('subsec')
+             WHERE message_id IN ({}) AND recipient_id = ? AND status = 'pending'",
+            placeholders.join(",")
+        );
+        let mut params: Vec<rusqlite::types::Value> = msg_ids
+            .iter()
+            .map(|id| id.clone().into())
+            .collect();
+        params.push(p.id.into());
+        let param_refs: Vec<&dyn rusqlite::ToSql> =
+            params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+        conn.execute(&sql, &*param_refs)?;
+        Ok(())
+    }
+
     pub fn list_inbox(
         &self,
         participant: &str,

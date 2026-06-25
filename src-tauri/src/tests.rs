@@ -1480,9 +1480,14 @@ mod tests {
         Arc::new(Mutex::new(HashMap::new()))
     }
 
+    fn empty_poll_waiters() -> crate::server::PollWaiters {
+        Arc::new(Mutex::new(HashMap::new()))
+    }
+
     async fn send_via_server(
         storage: &Storage,
         notify_plugins: &NotifyPluginRegistry,
+        poll_waiters: &crate::server::PollWaiters,
         from: &str,
         to: &str,
         body: &str,
@@ -1510,6 +1515,7 @@ mod tests {
             &transports,
             notify_plugins,
             &pending,
+            poll_waiters,
             &mut session,
         )
         .await
@@ -1545,7 +1551,7 @@ mod tests {
         let fake = Arc::new(FakeNotifyPlugin::default());
         registry.register(fake.clone());
 
-        let resp = send_via_server(&s, &registry, "alice", "bob", "task", false, None).await;
+        let resp = send_via_server(&s, &registry, &empty_poll_waiters(), "alice", "bob", "task", false, None).await;
         let data = match resp {
             crate::ipc::ServerMsg::Ok { data } => data,
             _ => panic!("预期 Ok 响应"),
@@ -1576,7 +1582,7 @@ mod tests {
         let fake = Arc::new(FakeNotifyPlugin::default());
         registry.register(fake.clone());
 
-        let resp = send_via_server(&s, &registry, "alice", "bob", "task", true, None).await;
+        let resp = send_via_server(&s, &registry, &empty_poll_waiters(), "alice", "bob", "task", true, None).await;
         let data = match resp {
             crate::ipc::ServerMsg::Ok { data } => data,
             _ => panic!("预期 Ok 响应"),
@@ -1620,7 +1626,7 @@ mod tests {
         let mut registry = NotifyPluginRegistry::new();
         registry.register(Arc::new(FailingNotifyPlugin));
 
-        let resp = send_via_server(&s, &registry, "alice", "bob", "task", true, None).await;
+        let resp = send_via_server(&s, &registry, &empty_poll_waiters(), "alice", "bob", "task", true, None).await;
         let data = match resp {
             crate::ipc::ServerMsg::Ok { data } => data,
             _ => panic!("预期 Ok 响应"),
@@ -1657,7 +1663,7 @@ mod tests {
         let mut registry = NotifyPluginRegistry::new();
         registry.register(Arc::new(FakeNotifyPlugin::default()));
 
-        let resp = send_via_server(&s, &registry, "alice", "bob", "task", true, None).await;
+        let resp = send_via_server(&s, &registry, &empty_poll_waiters(), "alice", "bob", "task", true, None).await;
         let data = match resp {
             crate::ipc::ServerMsg::Ok { data } => data,
             _ => panic!("预期 Ok 响应"),
@@ -1688,7 +1694,7 @@ mod tests {
         let fake = Arc::new(FakeNotifyPlugin::default());
         registry.register(fake.clone());
 
-        send_via_server(&s, &registry, "alice", "bob", "task", true, Some(false)).await;
+        send_via_server(&s, &registry, &empty_poll_waiters(), "alice", "bob", "task", true, Some(false)).await;
         assert!(!fake.calls.lock().unwrap()[0].send_enter);
     }
 
@@ -1761,6 +1767,7 @@ mod tests {
             &transports,
             &notify,
             pending,
+            &empty_poll_waiters(),
             &mut session,
         )
         .await
@@ -1788,6 +1795,7 @@ mod tests {
             &transports,
             &notify,
             pending,
+            &empty_poll_waiters(),
             &mut session,
         )
         .await
@@ -1813,6 +1821,7 @@ mod tests {
             &transports,
             &notify,
             pending,
+            &empty_poll_waiters(),
             &mut session,
         )
         .await
@@ -2055,6 +2064,7 @@ mod tests {
                 transports,
                 notify,
                 pending,
+                &empty_poll_waiters(),
                 session,
             )
             .await;
@@ -2118,6 +2128,7 @@ mod tests {
             &transports,
             &notify,
             &pending,
+            &empty_poll_waiters(),
             &mut session,
         )
         .await;
@@ -2171,6 +2182,54 @@ mod tests {
         assert!(s.list_inbox("bob", None, 50).unwrap().is_empty());
     }
 
+    // ─── PollInbox 集成测试 ─────────────────────────────
+
+    async fn poll_inbox_via_server(
+        storage: &Storage,
+        poll_waiters: &crate::server::PollWaiters,
+        session: &mut Option<crate::storage::SessionInfo>,
+        filter: crate::ipc::InboxFilter,
+        timeout_ms: u64,
+        limit: u32,
+    ) -> crate::ipc::ServerMsg {
+        let transports = TransportRegistry::new();
+        let pending = empty_pending_asks();
+        handle_msg(
+            ClientMsg::PollInbox {
+                filter,
+                timeout_ms,
+                limit,
+            },
+            storage,
+            &transports,
+            &NotifyPluginRegistry::new(),
+            &pending,
+            poll_waiters,
+            session,
+        )
+        .await
+    }
+
+    #[derive(serde::Deserialize)]
+    struct TestPollResult {
+        messages: Vec<serde_json::Value>,
+        timed_out: bool,
+        empty: bool,
+        #[allow(dead_code)]
+        limit: u32,
+        #[allow(dead_code)]
+        timeout_ms: u64,
+    }
+
+    fn extract_poll_result(resp: crate::ipc::ServerMsg) -> Option<TestPollResult> {
+        match resp {
+            crate::ipc::ServerMsg::Ok { data } => {
+                serde_json::from_value::<TestPollResult>(data).ok()
+            }
+            _ => None,
+        }
+    }
+
     // ─── session takeover 集成测试 ──────────────────────
 
     async fn join_via_server(
@@ -2201,6 +2260,7 @@ mod tests {
             &transports,
             notify_plugins,
             &pending,
+            &empty_poll_waiters(),
             session,
         )
         .await
@@ -2245,6 +2305,7 @@ mod tests {
             &transports,
             &registry,
             &pending,
+            &empty_poll_waiters(),
             &mut session1,
         )
         .await;
@@ -2599,5 +2660,205 @@ mod tests {
         let list = s.list_mem_items(Some("ws-1"), None, None, None, "archived", 10).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, item1.id);
+    }
+
+    #[tokio::test]
+    async fn test_poll_inbox_basic() {
+        let s = Arc::new(storage());
+        let notify = NotifyPluginRegistry::new();
+        let waiters = empty_poll_waiters();
+
+        // alice 和 bob 加入 workspace
+        let mut alice_session: Option<crate::storage::SessionInfo> = None;
+        let alice_notify = serde_json::json!({
+            "plugin": "terminal",
+            "endpoint": { "session": "s1" },
+            "send_enter": true,
+        });
+        let resp = join_via_server(&s, &notify, "alice", alice_notify.clone(), false, &mut alice_session).await;
+        assert!(matches!(resp, ServerMsg::Ok { .. }));
+
+        let mut bob_session: Option<crate::storage::SessionInfo> = None;
+        let bob_notify = serde_json::json!({
+            "plugin": "terminal",
+            "endpoint": { "session": "s2" },
+            "send_enter": true,
+        });
+        let resp = join_via_server(&s, &notify, "bob", bob_notify, false, &mut bob_session).await;
+        assert!(matches!(resp, ServerMsg::Ok { .. }));
+
+        // alice 给 bob 发消息
+        let resp = send_via_server(&s, &notify, &waiters, "alice", "bob", "hi bob", false, None).await;
+        assert!(matches!(resp, ServerMsg::Ok { .. }));
+
+        // bob poll inbox，应立即返回
+        let resp = poll_inbox_via_server(
+            &s,
+            &waiters,
+            &mut bob_session,
+            crate::ipc::InboxFilter::Unread,
+            30000,
+            10,
+        )
+        .await;
+        let result = extract_poll_result(resp).expect("应返回 PollInboxResult");
+        assert!(!result.empty);
+        assert_eq!(result.messages.len(), 1);
+        assert_eq!(
+            result.messages[0]
+                .get("delivery")
+                .and_then(|d| d.get("status"))
+                .and_then(|s| s.as_str()),
+            Some("pending")
+        );
+
+        // 再次 poll unread filter 仍会返回 delivered（at-least-once）
+        let resp = poll_inbox_via_server(
+            &s,
+            &waiters,
+            &mut bob_session,
+            crate::ipc::InboxFilter::Unread,
+            100,
+            10,
+        )
+        .await;
+        let result = extract_poll_result(resp).expect("应返回 PollInboxResult");
+        assert!(!result.empty);
+        assert_eq!(result.messages.len(), 1);
+        assert_eq!(
+            result.messages[0]
+                .get("delivery")
+                .and_then(|d| d.get("status"))
+                .and_then(|s| s.as_str()),
+            Some("delivered")
+        );
+
+        // all filter 也能看到 delivered
+        let resp = poll_inbox_via_server(
+            &s,
+            &waiters,
+            &mut bob_session,
+            crate::ipc::InboxFilter::All,
+            100,
+            10,
+        )
+        .await;
+        let result = extract_poll_result(resp).expect("应返回 PollInboxResult");
+        assert!(!result.empty);
+        assert_eq!(result.messages.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_poll_inbox_timeout_and_wake() {
+        let s = Arc::new(storage());
+        let notify = NotifyPluginRegistry::new();
+        let waiters = empty_poll_waiters();
+
+        let mut alice_session: Option<crate::storage::SessionInfo> = None;
+        let alice_notify = serde_json::json!({
+            "plugin": "terminal",
+            "endpoint": { "session": "s1" },
+            "send_enter": true,
+        });
+        let resp = join_via_server(&s, &notify, "alice", alice_notify.clone(), false, &mut alice_session).await;
+        assert!(matches!(resp, ServerMsg::Ok { .. }));
+
+        let mut bob_session: Option<crate::storage::SessionInfo> = None;
+        let bob_notify = serde_json::json!({
+            "plugin": "terminal",
+            "endpoint": { "session": "s2" },
+            "send_enter": true,
+        });
+        let resp = join_via_server(&s, &notify, "bob", bob_notify, false, &mut bob_session).await;
+        assert!(matches!(resp, ServerMsg::Ok { .. }));
+
+        // 先启动一个挂起的 poll
+        let s2 = s.clone();
+        let waiters2 = waiters.clone();
+        let poll_handle = tokio::spawn(async move {
+            poll_inbox_via_server(
+                &s2,
+                &waiters2,
+                &mut {
+                    // 重新获取 bob session：简单地再 join 一次（takeover）
+                    let mut sess: Option<crate::storage::SessionInfo> = None;
+                    let notify2 = NotifyPluginRegistry::new();
+                    let _ = join_via_server(&s2, &notify2, "bob", serde_json::json!({}), true, &mut sess).await;
+                    sess
+                },
+                crate::ipc::InboxFilter::Unread,
+                10000,
+                10,
+            )
+            .await
+        });
+
+        // 等 poll 注册完成
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // alice 给 bob 发消息，应唤醒 poll
+        let _ = send_via_server(&s, &notify, &waiters, "alice", "bob", "wake up", false, None).await;
+
+        let resp = tokio::time::timeout(std::time::Duration::from_secs(5), poll_handle)
+            .await
+            .expect("poll 应在超时前被唤醒")
+            .expect("spawn 任务不应 panic");
+        let result = extract_poll_result(resp).expect("应返回 PollInboxResult");
+        assert!(!result.empty);
+        assert!(!result.timed_out);
+        assert_eq!(result.messages.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_poll_inbox_already_active() {
+        let s = Arc::new(storage());
+        let notify = NotifyPluginRegistry::new();
+        let waiters = empty_poll_waiters();
+
+        let mut bob_session: Option<crate::storage::SessionInfo> = None;
+        let bob_notify = serde_json::json!({
+            "plugin": "terminal",
+            "endpoint": { "session": "s2" },
+            "send_enter": true,
+        });
+        let resp = join_via_server(&s, &notify, "bob", bob_notify.clone(), false, &mut bob_session).await;
+        assert!(matches!(resp, ServerMsg::Ok { .. }));
+
+        // 第一个 poll 挂起
+        let s2 = s.clone();
+        let waiters2 = waiters.clone();
+        let _poll_handle = tokio::spawn(async move {
+            poll_inbox_via_server(
+                &s2,
+                &waiters2,
+                &mut {
+                    let mut sess: Option<crate::storage::SessionInfo> = None;
+                    let notify2 = NotifyPluginRegistry::new();
+                    let _ = join_via_server(&s2, &notify2, "bob", serde_json::json!({}), true, &mut sess).await;
+                    sess
+                },
+                crate::ipc::InboxFilter::Unread,
+                10000,
+                10,
+            )
+            .await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // 同一个 participant 再 poll，应返回 poll_already_active
+        let resp = poll_inbox_via_server(
+            &s,
+            &waiters,
+            &mut bob_session,
+            crate::ipc::InboxFilter::Unread,
+            100,
+            10,
+        )
+        .await;
+        match resp {
+            ServerMsg::Error { code, .. } => assert_eq!(code, "poll_already_active"),
+            _ => panic!("应返回 poll_already_active"),
+        }
     }
 }

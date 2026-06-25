@@ -33,6 +33,16 @@ pub(crate) struct Waiter {
 /// 共享的待处理 Ask：msg_id → 所有在等待的 waiter
 pub(crate) type PendingAsks = Arc<Mutex<HashMap<String, Vec<Waiter>>>>;
 
+/// PollInbox 的等待键
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct PollKey {
+    pub workspace_id: String,
+    pub participant_id: String,
+}
+
+/// 共享的 PollInbox waiter：每个 participant 同时只允许一个挂起 poll。
+pub(crate) type PollWaiters = Arc<Mutex<HashMap<PollKey, oneshot::Sender<()>>>>;
+
 /// 将本地 .agtalk/sessions/<name>.json 的状态标记为 left。
 fn mark_local_session_left(name: &str) -> Result<()> {
     if let Some(mut sf) = crate::session::read_session(name)? {
@@ -47,6 +57,7 @@ struct HttpState {
     transports: Arc<TransportRegistry>,
     notify_plugins: Arc<NotifyPluginRegistry>,
     pending_asks: PendingAsks,
+    poll_waiters: PollWaiters,
 }
 
 pub async fn run(
@@ -69,12 +80,14 @@ pub async fn run(
     tracing::info!("daemon HTTP 监听: 127.0.0.1:{}", http_port);
 
     let pending_asks: PendingAsks = Arc::new(Mutex::new(HashMap::new()));
+    let poll_waiters: PollWaiters = Arc::new(Mutex::new(HashMap::new()));
 
     let state = Arc::new(HttpState {
         storage: storage.clone(),
         transports: transports.clone(),
         notify_plugins: notify_plugins.clone(),
         pending_asks: pending_asks.clone(),
+        poll_waiters: poll_waiters.clone(),
     });
 
     let app = Router::new()
@@ -95,9 +108,10 @@ pub async fn run(
         let transports = transports.clone();
         let notify_plugins = notify_plugins.clone();
         let pending = pending_asks.clone();
+        let waiters = poll_waiters.clone();
         tokio::spawn(async move {
             if let Err(e) =
-                handle_connection(stream, storage, transports, notify_plugins, pending).await
+                handle_connection(stream, storage, transports, notify_plugins, pending, waiters).await
             {
                 tracing::error!("连接处理错误: {}", e);
             }
@@ -193,6 +207,7 @@ async fn handle_http(
         &state.transports,
         &state.notify_plugins,
         &state.pending_asks,
+        &state.poll_waiters,
         &mut session,
     )
     .await;
@@ -206,6 +221,7 @@ async fn handle_connection(
     transports: Arc<TransportRegistry>,
     notify_plugins: Arc<NotifyPluginRegistry>,
     pending_asks: PendingAsks,
+    poll_waiters: PollWaiters,
 ) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -237,6 +253,7 @@ async fn handle_connection(
             &transports,
             &notify_plugins,
             &pending_asks,
+            &poll_waiters,
             &mut session,
         )
         .await;
@@ -376,12 +393,54 @@ async fn try_notify(
     plugin.notify(&ctx).await.map_err(|e| e.to_string())
 }
 
+/// 执行一次 inbox 查询，并尝试将返回的 pending 消息标记为 delivered。
+fn poll_inbox_once(
+    storage: &Storage,
+    participant_name: &str,
+    filter: &str,
+    limit: u32,
+) -> Result<(Vec<crate::storage::InboxItem>, Vec<String>)> {
+    let items = storage.list_inbox(participant_name, Some(filter), limit)?;
+    let pending_ids: Vec<String> = items
+        .iter()
+        .filter(|i| i.delivery.status == "pending")
+        .map(|i| i.id.clone())
+        .collect();
+    if !pending_ids.is_empty() {
+        storage.mark_delivered_for_messages(&pending_ids, participant_name)?;
+    }
+    Ok((items, pending_ids))
+}
+
+/// 通知指定 participant 的挂起 PollInbox。
+fn notify_poll_waiter(
+    storage: &Storage,
+    poll_waiters: &PollWaiters,
+    participant_id: &str,
+) {
+    let workspace_id = storage
+        .get_active_session_for_participant(participant_id)
+        .ok()
+        .flatten()
+        .map(|s| s.workspace_id)
+        .unwrap_or_default();
+    let key = PollKey {
+        workspace_id,
+        participant_id: participant_id.to_string(),
+    };
+    let tx = poll_waiters.lock().unwrap().remove(&key);
+    if let Some(tx) = tx {
+        let _ = tx.send(());
+    }
+}
+
 pub(crate) async fn handle_msg(
     msg: ClientMsg,
     storage: &Storage,
     transports: &TransportRegistry,
     notify_plugins: &NotifyPluginRegistry,
     pending_asks: &PendingAsks,
+    poll_waiters: &PollWaiters,
     session: &mut Option<SessionInfo>,
 ) -> ServerMsg {
     // 已认证连接：每次请求重新校验 session 仍 active，并刷新活跃时间
@@ -797,6 +856,10 @@ pub(crate) async fn handle_msg(
                 Ok(message) => {
                     let msg_id = message.id.clone();
 
+                    if let Ok(Some(p)) = storage.get_participant_by_name(&to) {
+                        notify_poll_waiter(storage, poll_waiters, &p.id);
+                    }
+
                     // 1. 若回复已持久化（极速回复），直接返回
                     if let Some((choice, reason)) = read_approval_response(storage, &msg_id) {
                         return ServerMsg::AskResponse {
@@ -937,6 +1000,10 @@ pub(crate) async fn handle_msg(
                 };
             }
 
+            if let Ok(Some(participant)) = storage.get_participant_by_name(&original.sender_name) {
+                notify_poll_waiter(storage, poll_waiters, &participant.id);
+            }
+
             notify_waiters(
                 pending_asks,
                 &msg_id,
@@ -1068,6 +1135,7 @@ pub(crate) async fn handle_msg(
             ) {
                 Ok(message) => {
                     if let Ok(Some(participant)) = storage.get_participant_by_name(&to) {
+                        notify_poll_waiter(storage, poll_waiters, &participant.id);
                         if let Some(transport) = transports.get(&participant.transport) {
                             let _ = transport
                                 .deliver(&message.id, &sender, &body, &participant.transport_config)
@@ -1735,6 +1803,142 @@ pub(crate) async fn handle_msg(
                 },
                 Err(e) => ServerMsg::Error {
                     code: "mem_list_failed".into(),
+                    message: e.to_string(),
+                },
+            }
+        }
+
+        ClientMsg::PollInbox {
+            filter,
+            timeout_ms,
+            limit,
+        } => {
+            let session_info = match session {
+                Some(s) => s.clone(),
+                None => {
+                    return ServerMsg::Error {
+                        code: "auth_required".into(),
+                        message: "PollInbox 需要 session 鉴权".into(),
+                    }
+                }
+            };
+
+            // 参数规范化
+            let timeout_ms = timeout_ms.clamp(100, 30000);
+            let limit = if limit == 0 { 10 } else { limit.min(50) };
+            let filter_str = filter.as_str();
+            let participant_name = session_info.participant_name.clone();
+            let participant_id = session_info.participant_id.clone();
+            let workspace_id = session_info.workspace_id.clone();
+
+            // 第一次查询
+            match poll_inbox_once(
+                storage,
+                &participant_name,
+                filter_str,
+                limit,
+            ) {
+                Ok((items, _)) if !items.is_empty() => {
+                    let result = crate::ipc::PollInboxResult {
+                        empty: false,
+                        timed_out: false,
+                        limit,
+                        timeout_ms,
+                        messages: items,
+                    };
+                    return ServerMsg::Ok {
+                        data: serde_json::to_value(&result).unwrap_or_default(),
+                    };
+                }
+                Err(e) => {
+                    return ServerMsg::Error {
+                        code: "poll_inbox_failed".into(),
+                        message: e.to_string(),
+                    }
+                }
+                Ok(_) => {}
+            }
+
+            // 没有消息：注册 waiter
+            let key = PollKey {
+                workspace_id: workspace_id.clone(),
+                participant_id: participant_id.clone(),
+            };
+            let (tx, rx) = oneshot::channel();
+            {
+                let mut waiters = poll_waiters.lock().unwrap();
+                if waiters.contains_key(&key) {
+                    return ServerMsg::Error {
+                        code: "poll_already_active".into(),
+                        message: "当前 participant 已有一个挂起中的 PollInbox 请求".into(),
+                    };
+                }
+                waiters.insert(key.clone(), tx);
+            }
+
+            // 注册后再查一次，避免竞态
+            match poll_inbox_once(
+                storage,
+                &participant_name,
+                filter_str,
+                limit,
+            ) {
+                Ok((items, _)) if !items.is_empty() => {
+                    poll_waiters.lock().unwrap().remove(&key);
+                    let result = crate::ipc::PollInboxResult {
+                        empty: false,
+                        timed_out: false,
+                        limit,
+                        timeout_ms,
+                        messages: items,
+                    };
+                    return ServerMsg::Ok {
+                        data: serde_json::to_value(&result).unwrap_or_default(),
+                    };
+                }
+                Err(e) => {
+                    poll_waiters.lock().unwrap().remove(&key);
+                    return ServerMsg::Error {
+                        code: "poll_inbox_failed".into(),
+                        message: e.to_string(),
+                    };
+                }
+                Ok(_) => {}
+            }
+
+            // 等待唤醒或超时
+            let timed_out = tokio::time::timeout(
+                std::time::Duration::from_millis(timeout_ms),
+                rx,
+            )
+            .await
+            .is_err();
+
+            // 超时或被唤醒后都要移除自己
+            poll_waiters.lock().unwrap().remove(&key);
+
+            // 最后再查一次
+            match poll_inbox_once(
+                storage,
+                &participant_name,
+                filter_str,
+                limit,
+            ) {
+                Ok((items, _)) => {
+                    let empty = items.is_empty();
+                    let result = crate::ipc::PollInboxResult {
+                        empty,
+                        timed_out,
+                        limit,
+                        timeout_ms,
+                        messages: items,
+                    };
+                    ServerMsg::Ok {
+                        data: serde_json::to_value(&result).unwrap_or_default(),
+                    }
+                }
+                Err(e) => ServerMsg::Error {
+                    code: "poll_inbox_failed".into(),
                     message: e.to_string(),
                 },
             }

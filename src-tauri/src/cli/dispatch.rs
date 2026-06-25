@@ -76,6 +76,8 @@ enum Commands {
     Daemon(DaemonCommand),
     #[command(about = "长期知识库", subcommand)]
     Mem(MemCommand),
+    #[command(about = "长轮询收件箱（Agent HTTP Polling）")]
+    PollInbox(PollInboxArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -275,6 +277,22 @@ struct MemListArgs {
     )]
     status: String,
     #[arg(short = 'l', long = "limit", default_value = "20", help = "返回条数")]
+    limit: u32,
+}
+
+#[derive(Debug, Args)]
+struct PollInboxArgs {
+    #[arg(
+        short = 'f',
+        long = "filter",
+        default_value = "unread",
+        value_parser = ["unread", "pending", "action_required", "all"],
+        help = "unread|pending|action_required|all"
+    )]
+    filter: String,
+    #[arg(short = 't', long = "timeout", default_value = "30000", help = "最长等待毫秒数（最大 30000）")]
+    timeout: u64,
+    #[arg(short = 'l', long = "limit", default_value = "10", help = "返回条数（最大 50）")]
     limit: u32,
 }
 
@@ -800,6 +818,32 @@ fn format_timestamp(ts: f64) -> String {
         .unwrap_or_else(|| ts.to_string())
 }
 
+async fn handle_poll_inbox(args: PollInboxArgs) -> Result<()> {
+    let filter = match args.filter.as_str() {
+        "pending" => crate::ipc::InboxFilter::Pending,
+        "action_required" => crate::ipc::InboxFilter::ActionRequired,
+        "all" => crate::ipc::InboxFilter::All,
+        _ => crate::ipc::InboxFilter::Unread,
+    };
+    let timeout_ms = args.timeout.clamp(100, 30000);
+    let limit = if args.limit == 0 { 10 } else { args.limit.min(50) };
+
+    let identity = crate::identity::resolve_identity(None)?;
+    let mut client =
+        Client::connect_and_auth(&identity.socket, &identity.session_id, &identity.token).await?;
+    let resp = client.poll_inbox(filter, timeout_ms, limit).await?;
+    match resp {
+        ServerMsg::Ok { data } => {
+            anstream::println!("{}", serde_json::to_string_pretty(&data).unwrap_or_default());
+            Ok(())
+        }
+        ServerMsg::Error { code, message } => {
+            anyhow::bail!("错误 [{}]: {}", code, message)
+        }
+        other => anyhow::bail!("未预期的响应: {:?}", other),
+    }
+}
+
 async fn handle_mem(cmd: MemCommand) -> Result<()> {
     match cmd {
         MemCommand::Topic(topic_cmd) => match topic_cmd {
@@ -1066,6 +1110,8 @@ pub fn print_help() {
     anstream::println!("{}", help::cmd("mem list [--topic <slug>] [--status active|archived|all]", "列出 memory"));
     anstream::println!("{}", help::cmd("mem pack <topic-slug>", "生成 Memory Pack"));
     anstream::println!();
+    anstream::println!("{}", help::cmd("poll-inbox [--filter <filter>] [--timeout <ms>] [--limit <n>]", "长轮询收件箱（Agent HTTP Polling）"));
+    anstream::println!();
     anstream::println!("{}", help::section("环境"));
     anstream::println!("{}", help::cmd("init", "初始化环境"));
     anstream::println!("{}", help::cmd("settings", "打开 GUI 设置"));
@@ -1213,6 +1259,7 @@ pub fn dispatch(argv: &[String]) {
             rt.block_on(handle_daemon(&args))
         }
         Commands::Mem(cmd) => rt.block_on(handle_mem(cmd)),
+        Commands::PollInbox(args) => rt.block_on(handle_poll_inbox(args)),
     };
 
     if let Err(e) = result {
