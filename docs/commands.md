@@ -151,7 +151,7 @@ agtalk config <get|set|list> [key] [value]  管理全局配置
 agtalk daemon <start|stop|restart|status>   管理后台 daemon
 agtalk poll-inbox                    长轮询收件箱（Agent HTTP Polling）
   --filter <unread|pending|action_required|all>   过滤条件，默认 unread
-  --timeout <ms>                     最长等待毫秒数，默认 30000，最大 30000
+  --timeout <ms>                     最长等待毫秒数，默认 30000，最大 600000（10 分钟）
   --limit <n>                        返回条数，默认 10，最大 50
 ```
 
@@ -212,7 +212,7 @@ agtalk mem archive 3f117a
 - 返回前会将 `pending` 状态的消息标记为 `delivered`。
 - 不会自动 `read` / `done`；Agent 拿到消息后应显式调用 `read` / `reply` / `done`。
 - 同一 participant 同时只能有一个挂起的 `poll-inbox`，第二个会返回 `poll_already_active`。
-- `timeout` 最大 30000ms，`limit` 最大 50。
+- `timeout` 默认 30000ms，最大可设 600000ms（10 分钟）；`limit` 最大 50。
 
 `inbox` 返回结构示例：
 
