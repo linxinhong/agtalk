@@ -3,9 +3,12 @@ mod tests {
     use crate::config::AgConfig;
     use crate::ipc::{ClientMsg, ServerMsg};
     use crate::notify::{NotifyContext, NotifyPlugin, NotifyPluginRegistry};
-    use crate::server::handle_msg;
+    use crate::server::{handle_http, handle_msg, HttpState};
     use crate::storage::Storage;
     use crate::transport::TransportRegistry;
+    use axum::extract::State;
+    use axum::Json;
+    use axum::http::HeaderMap;
     use async_trait::async_trait;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -2914,5 +2917,67 @@ mod tests {
         let result = extract_poll_result(resp).expect("abort 后应能再次 poll");
         assert!(result.empty);
         assert!(result.timed_out);
+    }
+
+    fn make_http_state(storage: Arc<Storage>) -> Arc<HttpState> {
+        Arc::new(HttpState {
+            storage,
+            transports: Arc::new(TransportRegistry::new()),
+            notify_plugins: Arc::new(NotifyPluginRegistry::new()),
+            pending_asks: empty_pending_asks(),
+            poll_waiters: empty_poll_waiters(),
+        })
+    }
+
+    #[tokio::test]
+    async fn test_poll_inbox_http_requires_session_token() {
+        let s = Arc::new(storage());
+        let state = make_http_state(s.clone());
+        let notify = NotifyPluginRegistry::new();
+
+        let mut bob_session: Option<crate::storage::SessionInfo> = None;
+        let bob_notify = serde_json::json!({
+            "plugin": "terminal",
+            "endpoint": { "session": "s2" },
+            "send_enter": true,
+        });
+        let resp = join_via_server(&s, &notify, "bob", bob_notify, false, &mut bob_session).await;
+        assert!(matches!(resp, ServerMsg::Ok { .. }));
+        let bob_info = bob_session.unwrap();
+        let bob_token = s
+            .get_active_session_id_and_token(&bob_info.participant_id)
+            .unwrap()
+            .map(|(_, tok)| tok)
+            .expect("bob 应有 active session");
+
+        // 仅传 X-Agtalk-Name 不应允许 PollInbox
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Agtalk-Name", "bob".parse().unwrap());
+        let msg = ClientMsg::PollInbox {
+            filter: crate::ipc::InboxFilter::Unread,
+            timeout_ms: 100,
+            limit: 10,
+        };
+        let (status, Json(resp)) = handle_http(State(state.clone()), headers, axum::Json(msg)).await;
+        assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+        match resp {
+            ServerMsg::Error { code, .. } => {
+                assert_eq!(code, "poll_inbox_requires_session_token");
+            }
+            _ => panic!("应返回 poll_inbox_requires_session_token"),
+        }
+
+        // 正确 session_id/token 可以 PollInbox
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Agtalk-Session-Id", bob_info.session_id.parse().unwrap());
+        headers.insert("X-Agtalk-Token", bob_token.parse().unwrap());
+        let msg = ClientMsg::PollInbox {
+            filter: crate::ipc::InboxFilter::Unread,
+            timeout_ms: 100,
+            limit: 10,
+        };
+        let (status, Json(resp)) = handle_http(State(state), headers, axum::Json(msg)).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(matches!(resp, ServerMsg::Ok { .. }));
     }
 }

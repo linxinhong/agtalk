@@ -64,12 +64,12 @@ fn mark_local_session_left(name: &str) -> Result<()> {
     Ok(())
 }
 
-struct HttpState {
-    storage: Arc<Storage>,
-    transports: Arc<TransportRegistry>,
-    notify_plugins: Arc<NotifyPluginRegistry>,
-    pending_asks: PendingAsks,
-    poll_waiters: PollWaiters,
+pub(crate) struct HttpState {
+    pub storage: Arc<Storage>,
+    pub transports: Arc<TransportRegistry>,
+    pub notify_plugins: Arc<NotifyPluginRegistry>,
+    pub pending_asks: PendingAsks,
+    pub poll_waiters: PollWaiters,
 }
 
 pub async fn run(
@@ -132,7 +132,7 @@ pub async fn run(
 }
 
 /// HTTP 入口：解析 ClientMsg，按需从 header 认证，调用 handle_msg 后返回 ServerMsg。
-async fn handle_http(
+pub(crate) async fn handle_http(
     State(state): State<Arc<HttpState>>,
     headers: HeaderMap,
     Json(msg): Json<ClientMsg>,
@@ -186,7 +186,19 @@ async fn handle_http(
             }
         }
 
-        // 2) 未传 session_id/token 时，fallback 到 X-Agtalk-Name：取该 participant 的 active session
+        // 2) PollInbox 等敏感接口不允许 name fallback，必须显式提供 session_id/token
+        let requires_strict_auth = matches!(msg, ClientMsg::PollInbox { .. });
+        if session.is_none() && requires_strict_auth {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(ServerMsg::Error {
+                    code: "poll_inbox_requires_session_token".into(),
+                    message: "PollInbox 必须提供 X-Agtalk-Session-Id 和 X-Agtalk-Token".into(),
+                }),
+            );
+        }
+
+        // 3) 未传 session_id/token 时，fallback 到 X-Agtalk-Name：取该 participant 的 active session
         if session.is_none() {
             if let Some(name) = headers.get("X-Agtalk-Name").and_then(|v| v.to_str().ok()) {
                 if let Ok(Some(p)) = state.storage.get_participant_by_name(name) {
@@ -201,7 +213,7 @@ async fn handle_http(
             }
         }
 
-        // 3) 仍然无 session 则拒绝
+        // 4) 仍然无 session 则拒绝
         if session.is_none() {
             return (
                 StatusCode::UNAUTHORIZED,
