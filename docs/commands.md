@@ -205,6 +205,8 @@ agtalk mem archive 3f117a
 
 `agtalk poll-inbox` 供外部 Agent 通过 HTTP 长轮询方式拉取自己的待处理消息。它复用现有鉴权（`X-Agtalk-Session-Id` / `X-Agtalk-Token`），不新增数据库表。
 
+完整接入指南与 Python 示例见 [`docs/agent-http-client.md`](agent-http-client.md)。
+
 - 默认 `filter=unread`、`timeout=30000ms`、`limit=10`。
 - 超时返回 `timed_out=true`；有新消息时立即返回。
 - 返回前会将 `pending` 状态的消息标记为 `delivered`。
