@@ -139,6 +139,14 @@ function isAgtalkInjected(text) {
   );
 }
 
+function isThinkingPlaceholder(text) {
+  if (typeof text !== 'string') return true;
+  const lower = text.trim().toLowerCase();
+  // ChatGPT / Claude 等平台的生成中占位文本（多语言）
+  const placeholders = ['正在思考', 'thinking', 'thinking…', '思考中', 'generating', '加载中', 'loading'];
+  return placeholders.some(function (p) { return lower === p || lower.includes(p); });
+}
+
 function getMessageItems() {
   if (!currentPlatform) return [];
   return Array.from(document.querySelectorAll(currentPlatform.selectors.messageItems));
@@ -153,7 +161,11 @@ function captureAndSend() {
     if (!currentPlatform.isAiMessage(aiNode)) { resetState(); return; }
 
     const aiText = currentPlatform.extractText(aiNode, false);
-    if (!aiText || isAgtalkInjected(aiText)) { resetState(); return; }
+    if (!aiText || isAgtalkInjected(aiText) || isThinkingPlaceholder(aiText)) {
+      console.log('[CS] 跳过占位/注入文本:', aiText.slice(0, 40));
+      resetState();
+      return;
+    }
 
     const hash = djb2(aiText);
     if (hash === lastAiHash) { resetState(); return; }
