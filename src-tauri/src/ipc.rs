@@ -117,6 +117,12 @@ pub enum ClientMsg {
     ListParticipants {
         #[serde(default)]
         participant_type: Option<String>,
+        /// 是否包含已注销（软删除）的参与者
+        #[serde(default)]
+        include_deleted: bool,
+        /// 是否只返回在线的参与者
+        #[serde(default)]
+        active_only: bool,
     },
     /// 列出对话
     ListConversations {

@@ -119,8 +119,12 @@ agtalk leave                     离开本地通信网络（本地 session.json 
   --purge                        同时删除本地 session.json 凭证
 agtalk cleanup                   清理当前 workspace 已退役的 session 记录与本地凭证文件
   --dry-run                      仅列出会被清理的 participant，不删除
+agtalk unregister <name>         注销本地 participant（软删除，保留消息历史）
 agtalk me                        查看 Agent 自己的信息
-agtalk peers                     列出所有在线参与者
+agtalk peers                     列出已注册参与者（默认隐藏已注销）
+  --all                          包含已注销（软删除）的参与者
+  --active                       仅显示在线参与者
+  -v, --verbose                  显示详细排障信息
 ```
 
 **session takeover 规则**：
@@ -360,6 +364,8 @@ command: chats
 version: 1
 command: peers
 verbose: false
+all: false
+active: false
 ```
 
 ```yaml

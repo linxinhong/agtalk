@@ -233,9 +233,23 @@ impl Client {
         .await
     }
 
-    pub async fn list_participants(&mut self, participant_type: Option<&str>) -> Result<ServerMsg> {
+    pub async fn list_participants(
+        &mut self,
+        participant_type: Option<&str>,
+        include_deleted: bool,
+        active_only: bool,
+    ) -> Result<ServerMsg> {
         self.request(&ClientMsg::ListParticipants {
             participant_type: participant_type.map(|s| s.to_string()),
+            include_deleted,
+            active_only,
+        })
+        .await
+    }
+
+    pub async fn unregister(&mut self, name: &str) -> Result<ServerMsg> {
+        self.request(&ClientMsg::Unregister {
+            name: name.to_string(),
         })
         .await
     }

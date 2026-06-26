@@ -1310,8 +1310,12 @@ pub(crate) async fn handle_msg(
             },
         },
 
-        ClientMsg::ListParticipants { participant_type } => {
-            match storage.list_peers(participant_type.as_deref()) {
+        ClientMsg::ListParticipants {
+            participant_type,
+            include_deleted,
+            active_only,
+        } => {
+            match storage.list_peers(participant_type.as_deref(), include_deleted, active_only) {
                 Ok(list) => ServerMsg::Ok {
                     data: serde_json::to_value(&list).unwrap_or_default(),
                 },

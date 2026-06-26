@@ -158,8 +158,16 @@ pub async fn mark_read(msg_id: String, participant: String) -> Result<String, St
 
 #[tauri::command]
 #[allow(dead_code)]
-pub async fn list_participants(participant_type: Option<String>) -> Result<String, String> {
-    let msg = crate::ipc::ClientMsg::ListParticipants { participant_type };
+pub async fn list_participants(
+    participant_type: Option<String>,
+    include_deleted: Option<bool>,
+    active_only: Option<bool>,
+) -> Result<String, String> {
+    let msg = crate::ipc::ClientMsg::ListParticipants {
+        participant_type,
+        include_deleted: include_deleted.unwrap_or(false),
+        active_only: active_only.unwrap_or(false),
+    };
     daemon_request(&request_json(&msg)).await
 }
 

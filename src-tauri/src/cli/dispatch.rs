@@ -52,6 +52,8 @@ enum Commands {
     Leave(LeaveCommand),
     #[command(about = "清理已退役 session")]
     Cleanup(CleanupCommand),
+    #[command(about = "注销本地 participant（软删除，保留消息历史）")]
+    Unregister(UnregisterArgs),
     #[command(about = "查看 Agent 自己的信息")]
     Me,
     #[command(about = "列出所有在线参与者")]
@@ -1246,6 +1248,7 @@ pub fn dispatch(argv: &[String]) {
         }
         Commands::Leave(cmd) => rt.block_on(handle_leave(cmd.purge)),
         Commands::Cleanup(cmd) => rt.block_on(handle_cleanup(cmd.dry_run)),
+        Commands::Unregister(args) => rt.block_on(handle_unregister(&args)),
         Commands::Me => rt.block_on(handle_me()),
         Commands::Peers(args) => rt.block_on(handle_peers(&args)),
         Commands::Inbox(args) => rt.block_on(handle_inbox(&args)),
@@ -1336,6 +1339,16 @@ pub(crate) struct InboxArgs {
 pub(crate) struct PeersArgs {
     #[arg(long, short, help = "显示详细排障信息")]
     pub(crate) verbose: bool,
+    #[arg(long, help = "包含已注销（软删除）的参与者")]
+    pub(crate) all: bool,
+    #[arg(long, help = "仅显示在线参与者")]
+    pub(crate) active: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct UnregisterArgs {
+    #[arg(help = "要注销的 participant 名称")]
+    pub(crate) name: String,
 }
 
 #[derive(Debug, clap::Args)]
@@ -1701,8 +1714,10 @@ fn print_agent_help() {
     anstream::println!("  #   例如：codex-coder-Alex、claude-reviewer-Bob、kimi-planner-Cathy");
     anstream::println!("  # 保留名不能注册：me、human");
     anstream::println!();
-    anstream::println!("  # 先查看当前有哪些在线 Agent");
+    anstream::println!("  # 先查看当前有哪些 Agent（默认隐藏已注销）");
     anstream::println!("  agtalk peers");
+    anstream::println!("  agtalk peers --active      # 仅在线");
+    anstream::println!("  agtalk peers --all         # 包含已注销");
     anstream::println!();
     anstream::println!("{}", help::section("Agent 间协作（注册 + 对话）"));
     anstream::println!("  # 给 Agent 发普通消息 / 回复时建议加 -i 提醒对方查收；标记完成不需要 -i");
@@ -1729,6 +1744,8 @@ fn print_agent_help() {
     anstream::println!("  agtalk leave --purge");
     anstream::println!("  # 清理当前 workspace 已退役 session 记录与本地文件");
     anstream::println!("  agtalk cleanup");
+    anstream::println!("  # 注销 participant（软删除，保留消息历史；重新 join 可恢复）");
+    anstream::println!("  agtalk unregister codex-coder-Alex");
     anstream::println!("  agtalk inbox");
     anstream::println!("  # 回复消息（带附件）");
     anstream::println!("  agtalk agent \"已通过，可合并\" -n codex-coder-Alex -r <msg-id> -i -f ./result.log");
@@ -1738,7 +1755,7 @@ fn print_agent_help() {
     anstream::println!("  # 若一个终端有多个 active session，可为命令指定身份");
     anstream::println!("  AGTALK_NAME=codex-coder-Alex agtalk me");
     anstream::println!();
-    anstream::println!("  # 列出在线 Agent / 查看自己");
+    anstream::println!("  # 列出 Agent / 查看自己");
     anstream::println!("  agtalk peers");
     anstream::println!("  agtalk me");
     anstream::println!();
@@ -1840,7 +1857,7 @@ fn print_agent_help() {
     anstream::println!("  #   detail     msg_id");
     anstream::println!("  #   attachment attachment_id");
     anstream::println!("  #   chats      （无字段）");
-    anstream::println!("  #   peers      verbose");
+    anstream::println!("  #   peers      verbose / all / active");
     anstream::println!("  #   me         （无字段）");
     anstream::println!("  #   mem        mem_command + 对应字段");
     anstream::println!();
@@ -3158,9 +3175,28 @@ pub(crate) async fn handle_me() -> Result<()> {
 pub(crate) async fn handle_peers(args: &PeersArgs) -> Result<()> {
     // peers 不需要认证，任何人都可以查看在线参与者列表
     let mut cli = Client::connect(&crate::paths::socket_path()).await?;
-    let resp = cli.list_participants(None).await?;
+    let resp = cli
+        .list_participants(None, args.all, args.active)
+        .await?;
     print_peers(&resp, args.verbose)?;
     Ok(())
+}
+
+pub(crate) async fn handle_unregister(args: &UnregisterArgs) -> Result<()> {
+    let identity = identity::resolve_identity(None)?;
+    let mut cli =
+        Client::connect_and_auth(&identity.socket, &identity.session_id, &identity.token).await?;
+    let resp = cli.unregister(&args.name).await?;
+    match resp {
+        ServerMsg::Ok { .. } => {
+            anstream::println!("已注销 participant: {}", args.name);
+            Ok(())
+        }
+        _ => {
+            anstream::println!("{}", serde_json::to_string_pretty(&resp)?);
+            Ok(())
+        }
+    }
 }
 
 pub(crate) async fn handle_chats() -> Result<()> {

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::config::AgConfig;
 
-const CURRENT_VERSION: u32 = 10;
+const CURRENT_VERSION: u32 = 11;
 
 pub struct Storage {
     conn: Mutex<Connection>,
@@ -171,6 +171,8 @@ impl Storage {
         conn.execute_batch(SCHEMA_V9_ADDITIONS)?;
         // v10: 长期知识库 mem
         conn.execute_batch(SCHEMA_V10_ADDITIONS)?;
+        // v11: 软删除参与者，保留消息历史
+        ensure_column(&conn, "participants", "deleted", "INTEGER NOT NULL DEFAULT 0")?;
         if version < CURRENT_VERSION {
             conn.pragma_update(None, "user_version", CURRENT_VERSION)?;
         }
@@ -412,6 +414,8 @@ pub struct Participant {
     pub intro: String,
     pub role: String,
     pub status: String,
+    #[serde(default)]
+    pub deleted: bool,
     pub last_seen_at: f64,
     pub created_at: f64,
 }
@@ -712,10 +716,30 @@ impl Storage {
             anyhow::bail!("'{}' 是保留名称，不能注册为 participant", name);
         }
 
+        let conn = self.conn();
+        // 保留原有 id 以维持消息历史；软删除后重新注册即复活
+        if let Some(existing) = get_participant_by_name_impl(&conn, name)? {
+            conn.execute(
+                "UPDATE participants
+                 SET type = ?1, display_name = ?2, transport = ?3, transport_config = ?4,
+                     intro = ?5, role = ?6, status = 'online', last_seen_at = unixepoch('subsec'), deleted = 0
+                 WHERE id = ?7",
+                params![
+                    participant_type,
+                    display_name,
+                    transport,
+                    transport_config,
+                    intro,
+                    role,
+                    existing.id
+                ],
+            )?;
+            return get_participant_row(&conn, &existing.id);
+        }
+
         let id = id
             .map(|s| s.to_string())
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let conn = self.conn();
         conn.execute(
             "INSERT INTO participants (id, name, type, display_name, transport, transport_config, intro, role, status)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'online')",
@@ -760,8 +784,11 @@ impl Storage {
     }
 
     pub fn unregister_participant(&self, name: &str) -> Result<()> {
-        self.conn()
-            .execute("DELETE FROM participants WHERE name = ?1", params![name])?;
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE participants SET status = 'offline', deleted = 1 WHERE name = ?1",
+            params![name],
+        )?;
         Ok(())
     }
 
@@ -776,7 +803,7 @@ impl Storage {
     ) -> Result<()> {
         self.conn().execute(
             "UPDATE participants
-             SET type = ?1, role = ?2, intro = ?3, transport = ?4, status = 'online', last_seen_at = unixepoch('subsec')
+             SET type = ?1, role = ?2, intro = ?3, transport = ?4, status = 'online', last_seen_at = unixepoch('subsec'), deleted = 0
              WHERE name = ?5",
             params![participant_type, role, intro, transport, name],
         )?;
@@ -787,22 +814,49 @@ impl Storage {
         get_participant_by_name_impl(&self.conn(), name)
     }
 
-    pub fn list_participants(&self, participant_type: Option<&str>) -> Result<Vec<Participant>> {
+    pub fn list_participants(
+        &self,
+        participant_type: Option<&str>,
+        include_deleted: bool,
+    ) -> Result<Vec<Participant>> {
         let conn = self.conn();
-        let sql = match participant_type {
-            Some(_) => "SELECT * FROM participants WHERE type = ?1 ORDER BY name",
-            None => "SELECT * FROM participants ORDER BY name",
-        };
-        let mut stmt = conn.prepare(sql)?;
-        let rows: Vec<Participant> = match participant_type {
-            Some(t) => stmt
-                .query_map(params![t], row_to_participant)?
-                .filter_map(|r| r.ok())
-                .collect(),
-            None => stmt
-                .query_map([], row_to_participant)?
-                .filter_map(|r| r.ok())
-                .collect(),
+        let rows: Vec<Participant> = match (participant_type, include_deleted) {
+            (Some(t), true) => {
+                let mut stmt = conn
+                    .prepare("SELECT * FROM participants WHERE type = ?1 ORDER BY name")?;
+                let rows: Vec<Participant> = stmt
+                    .query_map(params![t], row_to_participant)?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                rows
+            }
+            (Some(t), false) => {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM participants WHERE type = ?1 AND deleted = 0 ORDER BY name",
+                )?;
+                let rows: Vec<Participant> = stmt
+                    .query_map(params![t], row_to_participant)?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                rows
+            }
+            (None, true) => {
+                let mut stmt = conn.prepare("SELECT * FROM participants ORDER BY name")?;
+                let rows: Vec<Participant> = stmt
+                    .query_map([], row_to_participant)?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                rows
+            }
+            (None, false) => {
+                let mut stmt =
+                    conn.prepare("SELECT * FROM participants WHERE deleted = 0 ORDER BY name")?;
+                let rows: Vec<Participant> = stmt
+                    .query_map([], row_to_participant)?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                rows
+            }
         };
         Ok(rows)
     }
@@ -830,10 +884,18 @@ impl Storage {
         Ok(sessions)
     }
 
-    pub fn list_peers(&self, participant_type: Option<&str>) -> Result<Vec<PeerInfo>> {
-        let participants = self.list_participants(participant_type)?;
+    pub fn list_peers(
+        &self,
+        participant_type: Option<&str>,
+        include_deleted: bool,
+        active_only: bool,
+    ) -> Result<Vec<PeerInfo>> {
+        let participants = self.list_participants(participant_type, include_deleted)?;
         let mut result = Vec::with_capacity(participants.len());
         for p in participants {
+            if active_only && p.status != "online" {
+                continue;
+            }
             // 注意：list_active_sessions_for_participant 也会获取 self.conn()，
             // 所以这里必须在每次循环内分别获取锁，避免嵌套死锁。
             let sessions = self.list_active_sessions_for_participant(&p.id)?;
@@ -1838,6 +1900,7 @@ fn row_to_participant(row: &rusqlite::Row) -> rusqlite::Result<Participant> {
         intro: row.get("intro")?,
         role: row.get("role")?,
         status: row.get("status")?,
+        deleted: row.get::<_, i32>("deleted")? != 0,
         last_seen_at: row.get("last_seen_at")?,
         created_at: row.get("created_at")?,
     })
@@ -2178,7 +2241,7 @@ impl Storage {
         )?;
         let status = if active_count > 0 { "online" } else { "offline" };
         conn.execute(
-            "UPDATE participants SET status = ?1 WHERE id = ?2",
+            "UPDATE participants SET status = ?1 WHERE id = ?2 AND deleted = 0",
             params![status, participant_id],
         )?;
         Ok(())

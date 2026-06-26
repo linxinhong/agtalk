@@ -133,6 +133,8 @@ struct AttachmentSpec {
 #[serde(default)]
 struct PeersSpec {
     verbose: bool,
+    all: bool,
+    active: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -197,7 +199,14 @@ pub async fn handle_run(file: &str) -> Result<()> {
         RunCommandSpec::Detail(s) => run_detail(s, file).await,
         RunCommandSpec::Attachment(s) => run_attachment(s, file).await,
         RunCommandSpec::Chats => handle_chats().await,
-        RunCommandSpec::Peers(s) => handle_peers(&PeersArgs { verbose: s.verbose }).await,
+        RunCommandSpec::Peers(s) => {
+            handle_peers(&PeersArgs {
+                verbose: s.verbose,
+                all: s.all,
+                active: s.active,
+            })
+            .await
+        }
         RunCommandSpec::Me => handle_me().await,
         RunCommandSpec::Mem(s) => run_mem(*s).await,
     }

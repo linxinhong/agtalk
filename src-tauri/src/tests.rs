@@ -75,8 +75,8 @@ mod tests {
             .unwrap();
         s.register_participant(None, "b", "human", "B", "popup", "{}", "", "agent")
             .unwrap();
-        assert_eq!(s.list_participants(None).unwrap().len(), 2);
-        assert_eq!(s.list_participants(Some("agent")).unwrap().len(), 1);
+        assert_eq!(s.list_participants(None, false).unwrap().len(), 2);
+        assert_eq!(s.list_participants(Some("agent"), false).unwrap().len(), 1);
     }
 
     #[test]
@@ -218,7 +218,17 @@ mod tests {
         s.register_participant(None, "alice", "agent", "A", "terminal", "{}", "", "agent")
             .unwrap();
         s.unregister_participant("alice").unwrap();
-        assert!(s.get_participant_by_name("alice").unwrap().is_none());
+        // 软删除：仍可通过 name 查到（保留消息历史），但默认列表中不可见
+        let p = s.get_participant_by_name("alice").unwrap().expect("软删除后仍应存在");
+        assert!(p.deleted);
+        assert_eq!(s.list_participants(None, false).unwrap().len(), 0);
+        assert_eq!(s.list_participants(None, true).unwrap().len(), 1);
+        // 重新注册可复活
+        s.register_participant(None, "alice", "agent", "A", "terminal", "{}", "", "agent")
+            .unwrap();
+        let p = s.get_participant_by_name("alice").unwrap().expect("重新注册后应复活");
+        assert!(!p.deleted);
+        assert_eq!(s.list_participants(None, false).unwrap().len(), 1);
     }
 
     #[test]
