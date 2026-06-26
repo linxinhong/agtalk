@@ -61,6 +61,12 @@ pub struct AgConfig {
     pub storage: StorageConfig,
     #[serde(default)]
     pub notify: NotifyConfig,
+    #[serde(default = "default_http_port")]
+    pub http_port: u16,
+}
+
+fn default_http_port() -> u16 {
+    19527
 }
 
 fn default_inline_limit() -> usize {
@@ -127,6 +133,7 @@ impl Default for AgConfig {
             message: MessageConfig::default(),
             storage: StorageConfig::default(),
             notify: NotifyConfig::default(),
+            http_port: default_http_port(),
         }
     }
 }

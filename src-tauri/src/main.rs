@@ -83,10 +83,11 @@ fn run_daemon() {
     let notify_plugins = Arc::new(notify::NotifyPluginRegistry::from_config(&config.notify));
 
     let socket = paths::socket_path();
+    let http_port = config.http_port;
 
-    tracing::info!("daemon 启动: {}", socket);
+    tracing::info!("daemon 启动: {} http_port={}", socket, http_port);
     rt.block_on(async {
-        if let Err(e) = server::run(&socket, storage, transports, notify_plugins).await {
+        if let Err(e) = server::run(&socket, http_port, storage, transports, notify_plugins).await {
             tracing::error!("daemon 异常退出: {}", e);
         }
     });
