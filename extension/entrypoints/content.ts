@@ -11,7 +11,7 @@ export default defineContentScript({
   main() {
     console.log('[WXT CS] agtalk content script injected on', window.location.href);
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-      if (message?.type === 'PING_BACKGROUND') {
+      if (message?.type === 'PING') {
         sendResponse({ pong: true, source: 'wxt-content' });
         return true;
       }
