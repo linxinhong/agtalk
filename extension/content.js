@@ -15,8 +15,6 @@
   agentBio: 'Web AI bridge participant',
   agentCapabilities: '',
   targetAgent: '',
-  activePeer: '',
-  connectedPeers: [],
   enabled: true,
   autoForward: false,
   autoReceive: true,
@@ -33,15 +31,12 @@ let currentState = STATE.IDLE;
 let lastAiHash = null;
 let observerA = null;
 let observerB = null;
+let textCheckTimer = null;
+let lastAiText = '';
+let stableCount = 0;
 let stopButtonPreviouslyPresent = false;
 let currentPlatform = null;
 let runtimeConfig = { ...DEFAULT_CONFIG };
-let peerPickerState = null;
-let extensionAlive = true;
-let actionButtonUpdateTimer = null;
-let captureDebounceTimer = null;
-let bootstrapObserver = null;
-let navigationHooksInstalled = false;
 
 // 所有内置平台（由 manifest 按顺序注入）
 const BUILTIN_PLATFORMS = [
@@ -63,78 +58,12 @@ function matchPlatform() {
   return null;
 }
 
-function isContextInvalidatedMessage(message) {
-  return typeof message === 'string' && (
-    message.includes('Extension context invalidated') ||
-    message.includes('Extension context was invalidated')
-  );
-}
-
-function deactivateExtensionContext(reason) {
-  if (!extensionAlive) return;
-  extensionAlive = false;
-  console.warn('[CS] 扩展上下文已失效，停止 agtalk content script:', reason || '');
-  teardownObservers();
-  hidePeerPicker();
-}
-
-function safeRuntimeSendMessage(message, callback) {
-  if (!extensionAlive || typeof chrome === 'undefined' || !chrome.runtime?.id) {
-    deactivateExtensionContext('runtime unavailable');
-    if (callback) callback({ ok: false, error: 'extension_context_invalidated' });
-    return;
-  }
-  try {
-    chrome.runtime.sendMessage(message, (response) => {
-      const lastError = chrome.runtime.lastError;
-      if (lastError) {
-        if (isContextInvalidatedMessage(lastError.message)) {
-          deactivateExtensionContext(lastError.message);
-        } else {
-          console.error('[CS] sendMessage 失败:', lastError.message);
-        }
-        if (callback) callback({ ok: false, error: lastError.message });
-        return;
-      }
-      if (callback) callback(response);
-    });
-  } catch (err) {
-    if (isContextInvalidatedMessage(err.message)) {
-      deactivateExtensionContext(err.message);
-    } else {
-      console.error('[CS] sendMessage 异常:', err.message);
-    }
-    if (callback) callback({ ok: false, error: err.message });
-  }
-}
-
 function loadRuntimeConfig() {
-  if (!extensionAlive || typeof chrome === 'undefined' || !chrome.runtime?.id) return;
-  try {
-    chrome.storage.local.get(['agtalk_config'], (result) => {
-      if (result.agtalk_config) {
-        runtimeConfig = { ...DEFAULT_CONFIG, ...result.agtalk_config };
-      }
-    });
-  } catch (err) {
-    if (isContextInvalidatedMessage(err.message)) {
-      deactivateExtensionContext(err.message);
-    }
-  }
-}
-
-try {
-  chrome.storage.onChanged.addListener((changes) => {
-    if (!extensionAlive) return;
-    if (changes.agtalk_config) {
-      runtimeConfig = { ...DEFAULT_CONFIG, ...changes.agtalk_config.newValue };
-      console.log('[CS] 配置已更新，目标 agent:', runtimeConfig.targetAgent);
+  chrome.storage.local.get(['agtalk_config'], (result) => {
+    if (result.agtalk_config) {
+      runtimeConfig = { ...DEFAULT_CONFIG, ...result.agtalk_config };
     }
   });
-} catch (err) {
-  if (isContextInvalidatedMessage(err.message)) {
-    deactivateExtensionContext(err.message);
-  }
 }
 
 function isVisible(el) {
@@ -185,14 +114,6 @@ function isAgtalkInjected(text) {
   );
 }
 
-function escapeHtml(str) {
-  return String(str || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
 function getMessageItems() {
   if (!currentPlatform) return [];
   return Array.from(document.querySelectorAll(currentPlatform.selectors.messageItems));
@@ -203,11 +124,8 @@ function captureAndSend() {
     const items = getMessageItems();
     if (items.length === 0) { resetState(); return; }
 
-    // 锁定最后一轮 assistant 消息，避免抓到历史回答或思考过程
-    let aiIndex = items.length - 1;
-    while (aiIndex >= 0 && !currentPlatform.isAiMessage(items[aiIndex])) aiIndex--;
-    if (aiIndex < 0) { resetState(); return; }
-    const aiNode = items[aiIndex];
+    const aiNode = items[items.length - 1];
+    if (!currentPlatform.isAiMessage(aiNode)) { resetState(); return; }
 
     const aiText = currentPlatform.extractText(aiNode, false);
     if (!aiText || isAgtalkInjected(aiText)) { resetState(); return; }
@@ -217,8 +135,8 @@ function captureAndSend() {
     lastAiHash = hash;
 
     let userText = '';
-    if (aiIndex >= 1) {
-      const userNode = items[aiIndex - 1];
+    if (items.length >= 2) {
+      const userNode = items[items.length - 2];
       if (currentPlatform.isUserMessage(userNode)) {
         userText = currentPlatform.extractText(userNode, true);
       }
@@ -235,8 +153,13 @@ function captureAndSend() {
     if (parsed.toAgent) payload.toAgent = parsed.toAgent;
 
     console.log('[CS] 准备发送:', payload.turn.user.slice(0, 30), '→', payload.turn.assistant.slice(0, 30));
-    safeRuntimeSendMessage({ type: 'CHAT_TURN', payload }, (response) => {
-      if (response?.ok === false) return;
+    chrome.runtime.sendMessage({ type: 'CHAT_TURN', payload }, (response) => {
+      if (chrome.runtime.lastError) {
+        if (!chrome.runtime.lastError.message.includes('context invalidated')) {
+          console.error('[CS] sendMessage 失败:', chrome.runtime.lastError.message);
+        }
+        return;
+      }
       console.log('[CS] 消息已送达 background:', response);
     });
 
@@ -249,10 +172,10 @@ function resetState() {
 }
 
 function initObserverA() {
-  const container = document.querySelector(currentPlatform.selectors.chatContainer) || document.body;
+  const container = document.querySelector(currentPlatform.selectors.chatContainer);
   if (!container) return;
   observerA = new MutationObserver(() => {
-    scheduleActionButtonUpdate();
+    addAgtalkActionButtons();
   });
   observerA.observe(container, { childList: true, subtree: true });
 }
@@ -263,44 +186,21 @@ function addAgtalkActionButtons() {
     addSiderAgtalkButtons();
   } else if (currentPlatform.id === 'chatglm') {
     addChatglmAgtalkButtons();
-  } else if (currentPlatform.id === 'chatgpt') {
-    addChatgptAgtalkButtons();
-  } else if (currentPlatform.id === 'claude') {
-    addClaudeAgtalkButtons();
   }
 }
 
-function scheduleActionButtonUpdate() {
-  if (actionButtonUpdateTimer) return;
-  actionButtonUpdateTimer = setTimeout(() => {
-    actionButtonUpdateTimer = null;
-    if (!extensionAlive || !currentPlatform) return;
+let actionButtonScanTimer = null;
+function startActionButtonScan() {
+  if (actionButtonScanTimer) return;
+  actionButtonScanTimer = setInterval(() => {
     addAgtalkActionButtons();
-  }, 150);
+  }, 2000);
 }
-
-function teardownObservers() {
-  if (observerA) {
-    observerA.disconnect();
-    observerA = null;
+function stopActionButtonScan() {
+  if (actionButtonScanTimer) {
+    clearInterval(actionButtonScanTimer);
+    actionButtonScanTimer = null;
   }
-  if (observerB) {
-    observerB.disconnect();
-    observerB = null;
-  }
-  if (bootstrapObserver) {
-    bootstrapObserver.disconnect();
-    bootstrapObserver = null;
-  }
-  if (actionButtonUpdateTimer) {
-    clearTimeout(actionButtonUpdateTimer);
-    actionButtonUpdateTimer = null;
-  }
-  if (captureDebounceTimer) {
-    clearTimeout(captureDebounceTimer);
-    captureDebounceTimer = null;
-  }
-  stopButtonPreviouslyPresent = false;
 }
 
 function addSiderAgtalkButtons() {
@@ -331,7 +231,7 @@ function addSiderAgtalkButtons() {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const text = extractSiderMessageText(msgInner);
-      sendToAgtalk(text, getClickAnchor(e));
+      sendToAgtalk(text);
     });
 
     actionsRow.appendChild(btn);
@@ -367,7 +267,7 @@ function addChatglmAgtalkButtons() {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const text = currentPlatform.extractText(answer, false);
-      sendToAgtalk(text, getClickAnchor(e));
+      sendToAgtalk(text);
     });
 
     leftPart.appendChild(btn);
@@ -377,364 +277,78 @@ function addChatglmAgtalkButtons() {
   if (added > 0) console.log('[CS] ChatGLM 已添加', added, '个 agtalk 按钮');
 }
 
-function addChatgptAgtalkButtons() {
-  // ChatGPT 每条 AI 回复下方都有操作栏；中英双语兼容
-  const actionBars = document.querySelectorAll('[aria-label="回复操作"], [aria-label="Reply actions"]');
-  let added = 0;
-  actionBars.forEach((bar) => {
-    if (bar.dataset.agtalkButtonAdded) return;
-
-    // 找到当前操作栏所属的 assistant 消息容器
-    // ChatGPT 操作栏与 assistant 消息是同级兄弟，统一在 .agent-turn 容器内
-    const turnContainer = bar.closest('.agent-turn');
-    const turn = turnContainer
-      ? turnContainer.querySelector('[data-message-author-role="assistant"]')
-      : bar.parentElement?.previousElementSibling?.matches?.('[data-message-author-role="assistant"]')
-        ? bar.parentElement.previousElementSibling
-        : null;
-    if (!turn) return;
-
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'text-token-text-secondary hover:bg-token-surface-hover rounded-lg agtalk-send-btn';
-    btn.setAttribute('aria-label', '发送到 agtalk');
-    btn.title = '发送到 agtalk';
-    btn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;pointer-events:auto;';
-    btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 14 14" fill="none" style="display:block;">
-      <path d="M1.5 7L12.5 1.5L7 12.5V7H1.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" fill="none"/>
-    </svg>`;
-
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const text = currentPlatform.extractText(turn, false);
-      sendToAgtalk(text, getClickAnchor(e));
-    });
-
-    bar.appendChild(btn);
-    bar.dataset.agtalkButtonAdded = 'true';
-    added++;
-  });
-  if (added > 0) console.log('[CS] ChatGPT 已添加', added, '个 agtalk 按钮');
-}
-
-function addClaudeAgtalkButtons() {
-  // Claude 操作栏：role="group" aria-label="Message actions"（中英兼容）
-  const actionBars = document.querySelectorAll('[role="group"][aria-label="Message actions"], [role="group"][aria-label="消息操作"], [data-testid="message-actions"], [aria-label*="actions"], [aria-label*="操作"]');
-  let added = 0;
-  actionBars.forEach((bar) => {
-    if (bar.dataset.agtalkButtonAdded) return;
-
-    // 操作栏与 assistant 消息在同一 turn 容器内
-    const turn = bar.closest('[data-test-render-count], [data-testid="assistant-message"], [data-is-streaming], article, .group, main');
-    if (!turn) return;
-
-    const assistantNode = turn.matches?.('[data-testid="assistant-message"]')
-      ? turn
-      : turn.querySelector('[data-testid="assistant-message"], [data-is-streaming]');
-    const fallbackTextNode = turn.querySelector('.font-claude-message, .font-claude-response, .standard-markdown');
-
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'agtalk-send-btn';
-    btn.setAttribute('aria-label', '发送到 agtalk');
-    btn.title = '发送到 agtalk';
-    btn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;pointer-events:auto;margin-left:4px;border-radius:6px;color:inherit;background:transparent;border:none;cursor:pointer;';
-    btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 14 14" fill="none" style="display:block;">
-      <path d="M1.5 7L12.5 1.5L7 12.5V7H1.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" fill="none"/>
-    </svg>`;
-
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      let text = '';
-      if (assistantNode && currentPlatform) {
-        text = currentPlatform.extractText(assistantNode, false);
-      }
-      if (!text && fallbackTextNode) {
-        text = fallbackTextNode.innerText.trim();
-      }
-      sendToAgtalk(text, getClickAnchor(e));
-    });
-
-    bar.appendChild(btn);
-    bar.dataset.agtalkButtonAdded = 'true';
-    added++;
-  });
-  if (added > 0) console.log('[CS] Claude 已添加', added, '个 agtalk 按钮');
-}
-
-function getClickAnchor(event) {
-  if (!event) return null;
-  return { x: event.clientX, y: event.clientY };
-}
-
-function sendToAgtalk(text, anchor = null) {
+function sendToAgtalk(text) {
   if (!text) {
-    showPeerPickerNotice('没有可发送的内容', '', false, anchor);
+    alert('没有可发送的内容');
     return;
   }
-  // 优先使用当前 tab 已关联的 peer 直接发送
-  safeRuntimeSendMessage({ type: 'GET_TAB_ASSOCIATION' }, (response) => {
-    if (response?.ok && response.peer) {
-      safeRuntimeSendMessage({
-        type: 'AGTALK_SEND',
-        toAgent: response.peer,
-        body: text,
-      }, (sendResponse) => {
-        if (sendResponse?.ok) {
-          console.log(`[CS] 已直接发送到关联 peer: target=${sendResponse.to || response.peer}, msg_id=${sendResponse.msg_id || 'undefined'}`);
-        } else {
-          console.error('[CS] 直接发送失败:', sendResponse?.error);
-          if (sendResponse?.error) showPeerPickerNotice('发送失败', sendResponse.error, false, anchor);
-        }
-      });
+  if (!runtimeConfig.targetAgent) {
+    alert('未设置目标 agtalk Agent，请在扩展 popup 设置中选择目标 Peer');
+    return;
+  }
+  chrome.runtime.sendMessage({
+    type: 'AGTALK_SEND',
+    toAgent: runtimeConfig.targetAgent,
+    body: text,
+  }, (response) => {
+    if (chrome.runtime.lastError) {
+      console.error('[CS] 发送到 agtalk 失败:', chrome.runtime.lastError.message);
       return;
     }
-    openPeerPicker(text, anchor);
-  });
-}
-
-function openPeerPicker(text, anchor = null) {
-  safeRuntimeSendMessage({ type: 'GET_CONNECTED_PEERS' }, (response) => {
-    if (response?.ok === false) {
-      showPeerPickerNotice('无法获取已连接 Peer', response.error || '请重新加载扩展和当前页面', false, anchor);
-      return;
+    if (response?.ok) {
+      console.log('[CS] 已发送到 agtalk:', response.msg_id);
+    } else {
+      console.error('[CS] 发送到 agtalk 失败:', response?.error);
     }
-    const linkedPeer = response?.recommendedPeer || '';
-    const peers = Array.isArray(response?.peers)
-      ? response.peers
-        .filter((peer) => peer.connected && peer.name && peer.name !== runtimeConfig.agentName)
-        .map((peer) => ({ ...peer, linked: peer.name === linkedPeer, recommended: peer.name === linkedPeer }))
-      : [];
-    if (peers.length === 0) {
-      showPeerPickerNotice('没有已连接的 Peer', '请先在收件箱连接一个 Agent', true, anchor);
-      return;
-    }
-    peers.sort((a, b) => Number(!!b.recommended) - Number(!!a.recommended) || a.name.localeCompare(b.name));
-    showPeerPicker(text, peers, anchor, linkedPeer);
   });
-}
-
-function peerPickerShell(title, bodyHtml, anchor = null) {
-  hidePeerPicker();
-  const host = document.createElement('div');
-  host.id = 'agtalk-peer-picker';
-  host.style.cssText = [
-    'position:fixed',
-    'z-index:2147483647',
-    anchor ? 'left:0' : 'right:16px',
-    anchor ? 'top:0' : 'bottom:16px',
-    'width:320px',
-    'max-width:calc(100vw - 32px)',
-    'background:#fff',
-    'color:#111',
-    'border:1px solid rgba(0,0,0,.15)',
-    'border-radius:8px',
-    'box-shadow:0 10px 24px rgba(0,0,0,.16)',
-    'font:12px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
-  ].join(';');
-  host.innerHTML = `
-    <div style="padding:8px 10px;border-bottom:1px solid rgba(0,0,0,.08);display:flex;justify-content:space-between;gap:6px;align-items:center;">
-      <strong style="font-size:12px;">${escapeHtml(title)}</strong>
-      <button type="button" data-close style="width:22px;height:22px;border:none;background:transparent;font-size:14px;cursor:pointer;line-height:1;">x</button>
-    </div>
-    ${bodyHtml}
-  `;
-  document.body.appendChild(host);
-  if (anchor) positionPeerPicker(host, anchor);
-  peerPickerState = { host };
-  host.querySelector('[data-close]').addEventListener('click', hidePeerPicker);
-  document.addEventListener('keydown', onPeerPickerKeyDown, true);
-  return host;
-}
-
-function positionPeerPicker(host, anchor) {
-  const margin = 12;
-  const gap = 8;
-  const rect = host.getBoundingClientRect();
-  const width = rect.width || 320;
-  const height = rect.height || 120;
-  let left = anchor.x + gap;
-  let top = anchor.y + gap;
-  if (left + width + margin > window.innerWidth) {
-    left = anchor.x - width - gap;
-  }
-  if (top + height + margin > window.innerHeight) {
-    top = anchor.y - height - gap;
-  }
-  left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
-  top = Math.max(margin, Math.min(top, window.innerHeight - height - margin));
-  host.style.left = `${left}px`;
-  host.style.top = `${top}px`;
-}
-
-function showPeerPickerNotice(title, detail = '', includeOpenInbox = false, anchor = null) {
-  const host = peerPickerShell(title, `
-    <div style="padding:12px;display:grid;gap:10px;">
-      ${detail ? `<div style="color:#555;">${escapeHtml(detail)}</div>` : ''}
-      ${includeOpenInbox ? '<button type="button" data-open-inbox style="border:1px solid rgba(0,0,0,.12);background:#0b57d0;color:#fff;border-radius:8px;padding:8px 10px;cursor:pointer;">打开收件箱</button>' : ''}
-    </div>
-  `, anchor);
-  const openBtn = host.querySelector('[data-open-inbox]');
-  if (openBtn) {
-    openBtn.addEventListener('click', () => {
-      safeRuntimeSendMessage({ type: 'OPEN_INBOX' }, () => hidePeerPicker());
-    });
-  }
-}
-
-function showPeerPicker(text, peers, anchor = null, linkedPeer = '') {
-  const host = peerPickerShell('发送到 Peer', `
-    <div style="padding:6px 10px;border-bottom:1px solid rgba(0,0,0,.08);color:#555;font-size:10px;display:flex;justify-content:space-between;align-items:center;">
-      <span>已连接 ${peers.length} 个 Peer</span>
-      ${linkedPeer ? `<span data-header-linked style="color:#1a7f37;font-size:9px;">已关联 ${escapeHtml(linkedPeer)}</span>` : ''}
-    </div>
-    <div style="max-height:220px;overflow:auto;padding:6px;display:grid;gap:4px;">
-      ${peers.map((peer) => {
-        const isLinked = peer.name === linkedPeer;
-        const linkTitle = isLinked ? '已关联当前页面（点击取消）' : '关联当前页面';
-        const linkIcon = isLinked ? '🔗' : '🔌';
-        const linkColor = isLinked ? '#1a7f37' : '#888';
-        return `
-        <div data-peer-row="${escapeHtml(peer.name)}" style="display:flex;align-items:stretch;gap:4px;">
-          <button type="button" data-peer="${escapeHtml(peer.name)}" style="flex:1;text-align:left;border:1px solid rgba(0,0,0,.12);background:#f8f9fb;border-radius:6px;padding:6px 8px;cursor:pointer;min-height:38px;">
-            <div style="display:flex;align-items:center;gap:6px;min-width:0;">
-              ${peer.recommended ? '<span style="display:inline-flex;align-items:center;padding:1px 5px;border-radius:999px;background:#e8f0fe;color:#174ea6;font-size:9px;line-height:1;flex:0 0 auto;">推荐</span>' : ''}
-              <div style="font-weight:700;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;">${escapeHtml(peer.name)}</div>
-            </div>
-            <div style="color:#666;font-size:10px;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(formatPeerInfo(peer))}</div>
-          </button>
-          <button type="button" data-link-peer="${escapeHtml(peer.name)}" title="${linkTitle}" style="flex:0 0 32px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(0,0,0,.12);background:#fff;border-radius:6px;cursor:pointer;font-size:14px;color:${linkColor};">
-            ${linkIcon}
-          </button>
-        </div>
-        `;
-      }).join('')}
-    </div>
-  `, anchor);
-  peerPickerState = { text, host, linkedPeer };
-  host.querySelectorAll('[data-peer]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const toAgent = btn.dataset.peer;
-      hidePeerPicker();
-      safeRuntimeSendMessage({
-        type: 'AGTALK_SEND',
-        toAgent,
-        body: text,
-      }, (response) => {
-        if (response?.ok) {
-          console.log(`[CS] 已发送到 agtalk: target=${response.to || toAgent}, msg_id=${response.msg_id || 'undefined'}`);
-        } else {
-          console.error('[CS] 发送到 agtalk 失败:', response?.error);
-          if (response?.error) showPeerPickerNotice('发送失败', response.error, false, anchor);
-        }
-      });
-    });
-  });
-  host.querySelectorAll('[data-link-peer]').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const peer = btn.dataset.linkPeer;
-      const isLinked = peer === linkedPeer;
-      if (isLinked) {
-        // 取消关联：发送空 peer
-        safeRuntimeSendMessage({ type: 'ASSOCIATE_TAB_PEER', peer: '' }, (response) => {
-          if (response?.ok) {
-            refreshPeerPickerLinkState(host, '', peers.map((p) => p.name));
-          } else {
-            console.error('[CS] 取消关联失败:', response?.error);
-          }
-        });
-      } else {
-        safeRuntimeSendMessage({ type: 'ASSOCIATE_TAB_PEER', peer }, (response) => {
-          if (response?.ok) {
-            refreshPeerPickerLinkState(host, peer, peers.map((p) => p.name));
-          } else {
-            console.error('[CS] 关联失败:', response?.error);
-          }
-        });
-      }
-    });
-  });
-}
-
-function refreshPeerPickerLinkState(host, linkedPeer, peerNames) {
-  if (!host) return;
-  peerNames.forEach((name) => {
-    const btn = host.querySelector(`[data-link-peer="${CSS.escape(name)}"]`);
-    const row = host.querySelector(`[data-peer-row="${CSS.escape(name)}"]`);
-    if (!btn) return;
-    const isLinked = name === linkedPeer;
-    btn.title = isLinked ? '已关联当前页面（点击取消）' : '关联当前页面';
-    btn.textContent = isLinked ? '🔗' : '🔌';
-    btn.style.color = isLinked ? '#1a7f37' : '#888';
-    if (row) row.style.background = isLinked ? '#f6fef9' : '';
-  });
-  const headerLinked = host.querySelector('[data-header-linked]');
-  if (headerLinked) {
-    headerLinked.textContent = linkedPeer ? `已关联 ${linkedPeer}` : '';
-    headerLinked.style.display = linkedPeer ? 'inline' : 'none';
-  }
-  if (peerPickerState) peerPickerState.linkedPeer = linkedPeer;
-}
-
-function formatPeerInfo(peer) {
-  const parts = [
-    peer.type || 'peer',
-    peer.role || '',
-    peer.status || '',
-    peer.transport || '',
-  ].filter(Boolean);
-  return parts.length ? parts.join(' / ') : 'peer';
-}
-
-function onPeerPickerKeyDown(e) {
-  if (e.key === 'Escape') {
-    hidePeerPicker();
-  }
-}
-
-function hidePeerPicker() {
-  if (peerPickerState?.host && peerPickerState.host.parentNode) {
-    peerPickerState.host.parentNode.removeChild(peerPickerState.host);
-  }
-  peerPickerState = null;
-  document.removeEventListener('keydown', onPeerPickerKeyDown, true);
 }
 
 function initObserverB() {
   observerB = new MutationObserver(() => {
-    if (!extensionAlive) return;
     const isPresent = currentPlatform.isStopButtonPresent();
     if (isPresent && !stopButtonPreviouslyPresent && currentState === STATE.IDLE) {
       currentState = STATE.STREAMING;
       console.log('[CS] 进入 STREAMING 状态');
+      startTextCheck();
     }
     if (!isPresent && stopButtonPreviouslyPresent && currentState === STATE.STREAMING) {
       console.log('[CS] 停止按钮消失，启动文本稳定检测');
-    }
-    if (isPresent || stopButtonPreviouslyPresent) {
-      if (currentState === STATE.IDLE) {
-        currentState = STATE.STREAMING;
-      }
-      scheduleCaptureCheck();
+      startTextCheck();
     }
     stopButtonPreviouslyPresent = isPresent;
   });
   observerB.observe(document.body, { childList: true, subtree: true });
 }
 
-function scheduleCaptureCheck() {
-  if (captureDebounceTimer) clearTimeout(captureDebounceTimer);
-  captureDebounceTimer = setTimeout(() => {
-    captureDebounceTimer = null;
-    if (!extensionAlive || !currentPlatform || currentState !== STATE.STREAMING) return;
-    if (currentPlatform.isStopButtonPresent()) {
-      scheduleCaptureCheck();
+function startTextCheck() {
+  if (textCheckTimer) clearInterval(textCheckTimer);
+  lastAiText = '';
+  stableCount = 0;
+
+  textCheckTimer = setInterval(() => {
+    if (currentState !== STATE.STREAMING) {
+      clearInterval(textCheckTimer);
+      textCheckTimer = null;
       return;
     }
-    currentState = STATE.COMPLETE;
-    captureAndSend();
-  }, Math.max(700, runtimeConfig.captureDelay || 300));
+    const items = getMessageItems();
+    if (items.length === 0) return;
+    const latest = items[items.length - 1];
+    if (!currentPlatform.isAiMessage(latest)) return;
+    const currentText = currentPlatform.extractText(latest, false);
+    if (currentText === lastAiText && currentText.length > 0) {
+      stableCount++;
+      if (stableCount >= 5) {
+        clearInterval(textCheckTimer);
+        textCheckTimer = null;
+        currentState = STATE.COMPLETE;
+        captureAndSend();
+      }
+    } else {
+      lastAiText = currentText;
+      stableCount = 0;
+    }
+  }, 800);
 }
 
 async function handleAgtalkIncoming(item) {
@@ -755,90 +369,60 @@ async function handleAgtalkIncoming(item) {
 
   // 注入成功后标记已读（后台 autoInject 已尝试标记，这里是二次确认）
   if (result?.success || result?.ok) {
-    safeRuntimeSendMessage({ type: 'AGTALK_MARK_READ', msgId: item.id }, (response) => {
-      if (response?.ok === false) return;
+    chrome.runtime.sendMessage({ type: 'AGTALK_MARK_READ', msgId: item.id }, () => {
+      if (chrome.runtime.lastError) return;
       console.log('[CS] 已标记消息已读:', item.id);
     });
   }
 }
 
-function setupPlatformObservers() {
-  if (!extensionAlive) return false;
-  currentPlatform = matchPlatform();
-  if (!currentPlatform) {
-    console.log('[CS] 当前页面不匹配任何平台');
-    return false;
-  }
-  const container = document.querySelector(currentPlatform.selectors.chatContainer);
-  if (!container) {
-    return false;
-  }
-  console.log('[CS] 平台:', currentPlatform.name, '容器已就绪');
-  teardownObservers();
-  initObserverA();
-  initObserverB();
-  addAgtalkActionButtons();
-  return true;
-}
-
-function startBootstrapObserver() {
-  if (bootstrapObserver || !extensionAlive) return;
-  const root = document.documentElement || document.body;
-  if (!root) return;
-  bootstrapObserver = new MutationObserver(() => {
-    if (!extensionAlive) return;
-    if (setupPlatformObservers()) {
-      if (bootstrapObserver) {
-        bootstrapObserver.disconnect();
-        bootstrapObserver = null;
-      }
+function waitForContainer() {
+  let attempts = 0;
+  const timer = setInterval(() => {
+    attempts++;
+    currentPlatform = matchPlatform();
+    if (!currentPlatform) {
+      clearInterval(timer);
+      console.log('[CS] 当前页面不匹配任何平台');
+      return;
     }
-  });
-  bootstrapObserver.observe(root, { childList: true, subtree: true });
-}
-
-function installNavigationHooks() {
-  if (navigationHooksInstalled) return;
-  navigationHooksInstalled = true;
-  const notify = () => window.dispatchEvent(new Event('agtalk-locationchange'));
-  const wrap = (method) => {
-    const original = history[method];
-    if (typeof original !== 'function' || original.__agtalkWrapped) return;
-    const wrapped = function (...args) {
-      const result = original.apply(this, args);
-      notify();
-      return result;
-    };
-    wrapped.__agtalkWrapped = true;
-    history[method] = wrapped;
-  };
-  wrap('pushState');
-  wrap('replaceState');
-  window.addEventListener('popstate', notify);
-  window.addEventListener('agtalk-locationchange', () => {
-    if (!extensionAlive) return;
-    teardownObservers();
-    resetState();
-    if (!setupPlatformObservers()) {
-      startBootstrapObserver();
+    const container = document.querySelector(currentPlatform.selectors.chatContainer);
+    if (container) {
+      clearInterval(timer);
+      console.log('[CS] 平台:', currentPlatform.name, '容器已就绪');
+      initObserverA();
+      initObserverB();
+      startActionButtonScan();
+      watchUrlChange();
+      return;
     }
-  });
+    if (attempts >= 60) {
+      clearInterval(timer);
+      console.error('[CS] 容器加载超时');
+    }
+  }, 500);
 }
 
-function bootstrapContentScript() {
-  if (!extensionAlive) return;
-  teardownObservers();
-  resetState();
-  if (!setupPlatformObservers()) {
-    startBootstrapObserver();
-  }
+function watchUrlChange() {
+  let lastUrl = window.location.href;
+  const timer = setInterval(() => {
+    if (window.location.href !== lastUrl) {
+      lastUrl = window.location.href;
+      if (observerA) observerA.disconnect();
+      if (observerB) observerB.disconnect();
+      stopActionButtonScan();
+      if (textCheckTimer) { clearInterval(textCheckTimer); textCheckTimer = null; }
+      resetState();
+      stopButtonPreviouslyPresent = false;
+      lastAiText = '';
+      stableCount = 0;
+      waitForContainer();
+    }
+  }, 500);
+  window._urlWatchInterval = timer;
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!extensionAlive) {
-    sendResponse({ ok: false, error: 'extension_context_invalidated' });
-    return true;
-  }
   if (message.type === 'PING') {
     sendResponse({ pong: true, platform: currentPlatform?.id || null });
     return true;
@@ -862,11 +446,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 loadRuntimeConfig();
-installNavigationHooks();
 console.log('[CS] agtalk Web Bridge content script 已加载');
-bootstrapContentScript();
-safeRuntimeSendMessage({ type: 'REGISTER_AGENT' }, (res) => {
-  if (res?.ok === false) return;
+waitForContainer();
+chrome.runtime.sendMessage({ type: 'REGISTER_AGENT' }, (res) => {
+  if (chrome.runtime.lastError) return;
   console.log('[CS] 自动注册结果:', res?.ok ? '成功' : (res?.error || '失败'));
 });
 })();
