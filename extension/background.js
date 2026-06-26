@@ -20,6 +20,8 @@ const DEFAULT_CONFIG = {
   agentBio: 'Web AI bridge participant',
   agentCapabilities: '',
   targetAgent: '',
+  activePeer: '',
+  connectedPeers: [],
   enabled: true,
   autoForward: false,
   autoReceive: true,
@@ -34,7 +36,7 @@ const DEFAULT_CONFIG = {
   workspaceName: 'web-bridge',
   captureDelay: 300,
 };
-let runtimeConfig = { ...DEFAULT_CONFIG };
+let runtimeConfig = normalizeConfig(DEFAULT_CONFIG);
 let agtalkClient = null;
 let inboxPollTimer = null;
 let lastInboxIds = new Set();
@@ -42,14 +44,20 @@ let inboxInitialized = false;
 let connectionState = { connected: false, error: null, reconnecting: false };
 let connectionWatchTimer = null;
 let reconnectAttempt = 0;
+let tabPeerHints = {};
 let initResolve = null;
 const initPromise = new Promise((resolve) => { initResolve = resolve; });
 
 // 加载配置与 session
-chrome.storage.local.get(['agtalk_config', 'agtalk_session'], (result) => {
+chrome.storage.local.get(['agtalk_config', 'agtalk_session', 'agtalk_tab_peer_hints'], (result) => {
   if (result.agtalk_config) {
-    runtimeConfig = { ...DEFAULT_CONFIG, ...result.agtalk_config };
+    const normalized = normalizeConfig(result.agtalk_config);
+    runtimeConfig = normalized;
+    if (JSON.stringify(normalized) !== JSON.stringify(result.agtalk_config)) {
+      chrome.storage.local.set({ agtalk_config: normalized });
+    }
   }
+  tabPeerHints = normalizeTabPeerHints(result.agtalk_tab_peer_hints);
   initAgtalkClient(result.agtalk_session).then(() => {
     initResolve();
   }).catch((err) => {
@@ -60,10 +68,131 @@ chrome.storage.local.get(['agtalk_config', 'agtalk_session'], (result) => {
 
 chrome.storage.onChanged.addListener((changes) => {
   if (changes.agtalk_config) {
-    runtimeConfig = { ...DEFAULT_CONFIG, ...changes.agtalk_config.newValue };
+    runtimeConfig = normalizeConfig(changes.agtalk_config.newValue);
     reconcileInboxPolling();
   }
+  if (changes.agtalk_tab_peer_hints) {
+    tabPeerHints = normalizeTabPeerHints(changes.agtalk_tab_peer_hints.newValue);
+  }
 });
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  const key = String(tabId);
+  if (!tabPeerHints[key]) return;
+  delete tabPeerHints[key];
+  persistTabPeerHints().catch(() => {});
+});
+
+function normalizeConfig(config) {
+  const merged = { ...DEFAULT_CONFIG, ...(config || {}) };
+  const connectedPeers = Array.isArray(merged.connectedPeers)
+    ? merged.connectedPeers.map((peer) => String(peer).trim()).filter(Boolean)
+    : [];
+  const legacyTarget = merged.targetAgent ? String(merged.targetAgent).trim() : '';
+  if (legacyTarget && !connectedPeers.includes(legacyTarget)) {
+    connectedPeers.unshift(legacyTarget);
+  }
+  merged.connectedPeers = Array.from(new Set(connectedPeers));
+  const activePeer = merged.activePeer ? String(merged.activePeer).trim() : '';
+  if (activePeer && !merged.connectedPeers.includes(activePeer)) {
+    merged.connectedPeers.unshift(activePeer);
+  }
+  merged.activePeer = merged.connectedPeers.includes(activePeer)
+    ? activePeer
+    : (merged.connectedPeers[0] || legacyTarget || '');
+  merged.targetAgent = merged.activePeer || legacyTarget || '';
+  return merged;
+}
+
+async function persistRuntimeConfig() {
+  return new Promise((resolve) => {
+    chrome.storage.local.set({ agtalk_config: runtimeConfig }, resolve);
+  });
+}
+
+function normalizeTabPeerHints(hints) {
+  if (!hints || typeof hints !== 'object' || Array.isArray(hints)) return {};
+  const result = {};
+  for (const [tabId, value] of Object.entries(hints)) {
+    if (!value || typeof value !== 'object') continue;
+    const peer = String(value.peer || '').trim();
+    if (!peer) continue;
+    result[String(tabId)] = {
+      peer,
+      url: String(value.url || ''),
+      updated_at: Number(value.updated_at || Date.now()),
+    };
+  }
+  return result;
+}
+
+async function persistTabPeerHints() {
+  return new Promise((resolve) => {
+    chrome.storage.local.set({ agtalk_tab_peer_hints: tabPeerHints }, resolve);
+  });
+}
+
+function getConnectedPeers() {
+  return Array.isArray(runtimeConfig.connectedPeers) ? runtimeConfig.connectedPeers : [];
+}
+
+function getRecommendedPeerForTab(tabId) {
+  const connected = new Set(getConnectedPeers());
+  const hint = tabId != null ? tabPeerHints[String(tabId)] : null;
+  if (hint?.peer && connected.has(hint.peer)) return hint.peer;
+  if (runtimeConfig.activePeer && connected.has(runtimeConfig.activePeer)) return runtimeConfig.activePeer;
+  return getConnectedPeers()[0] || '';
+}
+
+async function associateTabPeer(tabId, peer, url = '') {
+  if (tabId == null) return;
+  const key = String(tabId);
+  if (!peer) {
+    if (tabPeerHints[key]) {
+      const next = { ...tabPeerHints };
+      delete next[key];
+      tabPeerHints = next;
+      await persistTabPeerHints();
+    }
+    return;
+  }
+  tabPeerHints = {
+    ...tabPeerHints,
+    [key]: {
+      peer: String(peer).trim(),
+      url: String(url || ''),
+      updated_at: Date.now(),
+    },
+  };
+  await persistTabPeerHints();
+}
+
+function isConnectedPeer(name) {
+  return !!name && getConnectedPeers().includes(name);
+}
+
+function resolveTargetPeer(explicit) {
+  if (explicit) {
+    return isConnectedPeer(explicit) ? explicit : '';
+  }
+  const target = runtimeConfig.activePeer || runtimeConfig.targetAgent || '';
+  if (target && isConnectedPeer(target)) return target;
+  return getConnectedPeers()[0] || '';
+}
+
+async function hydrateLocalFlags(items) {
+  if (!Array.isArray(items) || items.length === 0) return items || [];
+  const hydrated = await Promise.all(items.map(async (item) => {
+    try {
+      const local = await MessageStore.getById(item.id);
+      if (!local) return item;
+      return { ...item, _injected: !!local.injected, injected: !!local.injected };
+    } catch (err) {
+      return item;
+    }
+  }));
+  return hydrated;
+}
 
 function getDaemonUrl() {
   return runtimeConfig.daemonUrl || runtimeConfig.agtalkUrl || 'http://127.0.0.1:19527';
@@ -280,8 +409,29 @@ async function dispatchIncomingToWebTabs(item) {
   if (!Array.isArray(allTabs) || allTabs.length === 0) return;
 
   const message = { type: 'AGTALK_INCOMING', item };
+  const fromPeer = item.from?.name || item.from_agent || '';
 
-  // 优先注入到当前激活的匹配标签页，避免同时注入到多个后台标签页
+  // 1. 若消息来源 peer 有关联 tab，优先注入到该 tab
+  if (fromPeer) {
+    const linkedTabId = findTabIdByPeer(fromPeer, allTabs);
+    if (linkedTabId != null) {
+      try {
+        await ensureContentScriptInjected(linkedTabId);
+        await new Promise((resolve, reject) => {
+          chrome.tabs.sendMessage(linkedTabId, message, (res) => {
+            if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+            resolve(res);
+          });
+        });
+        notifyAutoInject(item);
+        return;
+      } catch (err) {
+        console.warn('[BG] 注入已关联 tab 失败，回退到当前激活标签页:', err.message);
+      }
+    }
+  }
+
+  // 2. 优先注入到当前激活的匹配标签页，避免同时注入到多个后台标签页
   const activeTabs = await new Promise((resolve) => chrome.tabs.query({ active: true, currentWindow: true, url: patterns }, resolve));
   if (Array.isArray(activeTabs) && activeTabs.length > 0) {
     try {
@@ -299,13 +449,26 @@ async function dispatchIncomingToWebTabs(item) {
     return;
   }
 
-  // 没有激活的匹配标签页时，回退到所有匹配标签页（仅发送，不主动注入后台标签页）
+  // 3. 没有激活的匹配标签页时，回退到所有匹配标签页（仅发送，不主动注入后台标签页）
   for (const tab of allTabs) {
     chrome.tabs.sendMessage(tab.id, message, () => {
-      chrome.runtime.lastError;
+      if (chrome.runtime.lastError) {
+        console.error('[BG] 发送 AGTALK_INCOMING 到后台标签页失败:', tab.id, chrome.runtime.lastError.message);
+      }
     });
   }
   notifyAutoInject(item);
+}
+
+function findTabIdByPeer(peer, tabs) {
+  if (!peer || !tabs) return null;
+  for (const [tabId, hint] of Object.entries(tabPeerHints)) {
+    if (hint.peer === peer) {
+      const id = Number(tabId);
+      if (tabs.some((t) => t.id === id)) return id;
+    }
+  }
+  return null;
 }
 
 function notifyAutoInject(item) {
@@ -328,7 +491,7 @@ async function forwardToAgtalk(payload) {
   if (!agtalkClient?.sessionId) await ensureJoined();
   if (!agtalkClient?.sessionId) throw new Error('agtalk 未连接');
 
-  const toAgent = payload.toAgent || payload.replyToAgent || runtimeConfig.targetAgent;
+  const toAgent = resolveTargetPeer(payload.toAgent || payload.replyToAgent);
   if (!toAgent) {
     console.log('[BG] 未指定目标 Agent，跳过转发');
     return;
@@ -347,49 +510,54 @@ async function forwardToAgtalk(payload) {
     contentType: 'text',
     notify: true,
   });
-  console.log('[BG] agtalk 转发成功:', data?.id);
-  if (data) {
-    MessageStore.save({
-      id: data.id,
-      chat_id: payload.conversation_id,
-      from: { name: runtimeConfig.agentName, type: 'web' },
-      recipients: [{ recipient_name: toAgent, status: 'pending' }],
-      subject: payload.conversation_id,
-      content: { body: payload.turn.assistant },
-      content_type: 'text',
-      created_at: new Date().toISOString(),
-      reply_to_id: payload.replyToMsgId,
-    }).catch((err) => console.error('[BG] 保存转发消息失败:', err.message));
-  }
+  // daemon 返回 { message: {...}, notify: {...} }
+  const msg = data?.message;
+  const msgId = msg?.id || data?.id || `tmp-${Date.now()}`;
+  console.log(`[BG] agtalk 转发成功: target=${toAgent}, msg_id=${msgId}`);
+  const saveItem = msg && msg.id ? msg : {
+    id: msgId,
+    chat_id: payload.conversation_id,
+    from: { name: runtimeConfig.agentName, type: 'web' },
+    recipients: [{ recipient_name: toAgent, status: 'pending' }],
+    subject: payload.conversation_id,
+    content: { body: payload.turn.assistant },
+    content_type: 'text',
+    created_at: new Date().toISOString(),
+    reply_to_id: payload.replyToMsgId,
+  };
+  MessageStore.save(saveItem).catch((err) => console.error('[BG] 保存转发消息失败:', err.message, 'item.id=', saveItem.id));
   return data;
 }
 
 async function agtalkDirectSend(toAgent, body, subject, replyTo) {
   if (!agtalkClient?.sessionId) await ensureJoined();
   if (!agtalkClient?.sessionId) return { ok: false, error: 'agtalk 未连接' };
-  if (!toAgent) return { ok: false, error: '未指定目标 Agent' };
+  const target = resolveTargetPeer(toAgent);
+  if (!target) return { ok: false, error: '未指定目标 Agent' };
 
   const data = await agtalkClient.send({
-    to: toAgent,
+    to: target,
     body: body || '',
     conversationId: subject || null,
     replyTo: replyTo || null,
     contentType: 'text',
     notify: true,
   });
-  if (data) {
-    MessageStore.save({
-      id: data.id,
-      from: { name: runtimeConfig.agentName, type: 'web' },
-      recipients: [{ recipient_name: toAgent, status: 'pending' }],
-      subject,
-      content: { body },
-      content_type: 'text',
-      created_at: new Date().toISOString(),
-      reply_to_id: replyTo,
-    }).catch((err) => console.error('[BG] 保存发送消息失败:', err.message));
-  }
-  return { ok: true, msg_id: data?.id, data };
+  // daemon 返回 { message: {...}, notify: {...} }
+  const msg = data?.message;
+  const msgId = msg?.id || data?.id || `tmp-${Date.now()}`;
+  const saveItem = msg && msg.id ? msg : {
+    id: msgId,
+    from: { name: runtimeConfig.agentName, type: 'web' },
+    recipients: [{ recipient_name: target, status: 'pending' }],
+    subject,
+    content: { body },
+    content_type: 'text',
+    created_at: new Date().toISOString(),
+    reply_to_id: replyTo,
+  };
+  MessageStore.save(saveItem).catch((err) => console.error('[BG] 保存发送消息失败:', err.message, 'item.id=', saveItem.id));
+  return { ok: true, msg_id: msgId, to: target, data };
 }
 
 async function agtalkInbox(agent, status) {
@@ -398,7 +566,7 @@ async function agtalkInbox(agent, status) {
 
   const target = agent || runtimeConfig.agentName;
   const items = await agtalkClient.inbox({ participant: target, status: status || 'all', limit: 1000, peek: false });
-  return { ok: true, agent: target, count: items.length, items };
+  return { ok: true, agent: target, count: items.length, items: await hydrateLocalFlags(items) };
 }
 
 async function checkAgtalkConnection() {
@@ -450,6 +618,59 @@ async function agtalkInboxStats() {
   }
 }
 
+async function getConnectedPeerDetails(tabId = null) {
+  const connected = new Set(getConnectedPeers());
+  let peers = [];
+  try {
+    const result = await agtalkGetPeers();
+    peers = Array.isArray(result.peers)
+      ? result.peers
+          .filter((peer) => peer.name && peer.name !== runtimeConfig.agentName)
+          .map((peer) => ({
+            ...peer,
+            connected: connected.has(peer.name),
+            active: peer.name === runtimeConfig.activePeer,
+          }))
+      : [];
+  } catch (err) {
+    console.warn('[BG] 获取 peer 列表失败，降级使用本地连接配置:', err.message);
+    peers = getConnectedPeers().map((name) => ({
+      name,
+      type: 'peer',
+      role: 'connected',
+      status: 'unknown',
+      connected: true,
+      active: name === runtimeConfig.activePeer,
+    }));
+  }
+  const known = new Set(peers.map((peer) => peer.name));
+  for (const name of getConnectedPeers()) {
+    if (!known.has(name)) {
+      peers.push({
+        name,
+        type: 'peer',
+        role: 'connected',
+        status: 'unknown',
+        connected: true,
+        active: name === runtimeConfig.activePeer,
+      });
+    }
+  }
+  peers.sort((a, b) => {
+    const aScore = (a.connected ? 0 : 1) + (a.active ? -1 : 0);
+    const bScore = (b.connected ? 0 : 1) + (b.active ? -1 : 0);
+    if (aScore !== bScore) return aScore - bScore;
+    return a.name.localeCompare(b.name);
+  });
+  return {
+    ok: true,
+    peers,
+    activePeer: runtimeConfig.activePeer || '',
+    connectedPeers: getConnectedPeers(),
+    recommendedPeer: getRecommendedPeerForTab(tabId),
+  };
+}
+
 async function agtalkMarkDone(msgId, agent) {
   if (!agtalkClient?.sessionId) await ensureJoined();
   if (!agtalkClient?.sessionId) return { ok: false, error: 'agtalk 未连接' };
@@ -475,6 +696,22 @@ async function agtalkGetPeers() {
   if (!agtalkClient?.sessionId) return { ok: false, error: 'agtalk 未连接' };
   const participants = await agtalkClient.listParticipants();
   return { ok: true, peers: participants || [] };
+}
+
+async function agtalkDetail(msgId, agent) {
+  if (!agtalkClient?.sessionId) await ensureJoined();
+  if (!agtalkClient?.sessionId) return { ok: false, error: 'agtalk 未连接' };
+  const target = agent || runtimeConfig.agentName;
+  const data = await agtalkClient.detail(msgId, target);
+  return { ok: true, item: data };
+}
+
+async function agtalkAttachment(attachmentId, agent) {
+  if (!agtalkClient?.sessionId) await ensureJoined();
+  if (!agtalkClient?.sessionId) return { ok: false, error: 'agtalk 未连接' };
+  const target = agent || runtimeConfig.agentName;
+  const data = await agtalkClient.attachment(attachmentId, target);
+  return { ok: true, attachment: data?.attachment, content: data?.content };
 }
 
 // Service Worker 消息总线
@@ -505,7 +742,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     case 'SAVE_CONFIG': {
       const urlChanged = message.config.daemonUrl && message.config.daemonUrl !== getDaemonUrl();
-      runtimeConfig = { ...runtimeConfig, ...message.config };
+      runtimeConfig = normalizeConfig({ ...runtimeConfig, ...message.config });
       chrome.storage.local.set({ agtalk_config: runtimeConfig }, () => {
         if (urlChanged) {
           agtalkClient = new AgtalkClient(getDaemonUrl());
@@ -536,16 +773,54 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
       return true;
     case 'GET_RECENT_MESSAGES':
-      MessageStore.getRecent(message.limit || 100).then((items) => finish({ ok: true, items })).catch((err) => finish({ ok: false, error: err.message }));
+      MessageStore.getRecent(message.limit || 100).then((items) => hydrateLocalFlags(items)).then((items) => finish({ ok: true, items })).catch((err) => finish({ ok: false, error: err.message }));
       return true;
     case 'SEARCH_MESSAGES':
       MessageStore.search(message.query || '', message.limit || 50).then((items) => finish({ ok: true, items })).catch((err) => finish({ ok: false, error: err.message }));
       return true;
     case 'AGTALK_SEND':
-      agtalkDirectSend(message.toAgent, message.body, message.subject, message.replyTo).then(finish).catch((err) => finish({ ok: false, error: err.message }));
+      agtalkDirectSend(message.toAgent, message.body, message.subject, message.replyTo).then(async (result) => {
+        if (result?.ok && sender?.tab?.id && message.toAgent) {
+          await associateTabPeer(sender.tab.id, message.toAgent, sender.tab.url || '');
+        }
+        finish(result);
+      }).catch((err) => finish({ ok: false, error: err.message }));
       return true;
     case 'AGTALK_INBOX':
       agtalkInbox(message.agent, message.status).then(finish).catch((err) => finish({ ok: false, error: err.message }));
+      return true;
+    case 'GET_CONNECTED_PEERS':
+      getConnectedPeerDetails(sender?.tab?.id || null).then(finish).catch((err) => finish({ ok: false, error: err.message }));
+      return true;
+    case 'GET_TAB_ASSOCIATION': {
+      const tabId2 = sender?.tab?.id || message.tabId;
+      const linkedPeer = tabId2 != null ? getRecommendedPeerForTab(tabId2) : '';
+      finish({ ok: true, peer: linkedPeer, tabId: tabId2 });
+      return true;
+    }
+    case 'ASSOCIATE_TAB_PEER': {
+      const tabId = sender?.tab?.id || message.tabId;
+      const url = sender?.tab?.url || message.url || '';
+      if (tabId == null || !message.peer) {
+        finish({ ok: false, error: '缺少 tabId 或 peer' });
+        return true;
+      }
+      try {
+        await associateTabPeer(tabId, message.peer, url);
+        finish({ ok: true, peer: message.peer, tabId });
+      } catch (err) {
+        finish({ ok: false, error: err.message });
+      }
+      return true;
+    }
+    case 'OPEN_INBOX':
+      chrome.tabs.create({ url: chrome.runtime.getURL('inbox/inbox.html') }, () => {
+        if (chrome.runtime.lastError) {
+          finish({ ok: false, error: chrome.runtime.lastError.message });
+        } else {
+          finish({ ok: true });
+        }
+      });
       return true;
     case 'AGTALK_INBOX_STATS':
       agtalkInboxStats().then((stats) => finish({ ok: true, ...stats })).catch((err) => finish({ ok: false, error: err.message }));
@@ -557,10 +832,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       agtalkMarkRead(message.msgId, message.agent).then(finish).catch((err) => finish({ ok: false, error: err.message }));
       return true;
     case 'CHECK_AGTALK_STATUS':
-      checkAgtalkConnection().then(finish).catch((err) => finish({ connected: false, error: err.message }));
+      checkAgtalkConnection().then((status) => finish({ ...status, activePeer: runtimeConfig.activePeer || '', connectedPeers: getConnectedPeers() })).catch((err) => finish({ connected: false, error: err.message }));
       return true;
     case 'AGTALK_PEERS':
       agtalkGetPeers().then(finish).catch((err) => finish({ ok: false, error: err.message }));
+      return true;
+    case 'AGTALK_DETAIL':
+      agtalkDetail(message.msgId, message.agent).then(finish).catch((err) => finish({ ok: false, error: err.message }));
+      return true;
+    case 'AGTALK_ATTACHMENT':
+      agtalkAttachment(message.attachmentId, message.agent).then(finish).catch((err) => finish({ ok: false, error: err.message }));
       return true;
     case 'DELIVER_TO_ACTIVE_TAB': {
       const tabs = await new Promise((resolve) => chrome.tabs.query({ active: true, currentWindow: true }, resolve));
@@ -577,6 +858,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             resolve(r);
           });
         });
+        if (res?.ok) {
+          await MessageStore.save(message.item).catch(() => {});
+          await MessageStore.markInjected(message.item.id).catch(() => {});
+          await associateTabPeer(tab.id, message.item.from?.name || message.item.from_agent || message.item.recipients?.[0]?.recipient_name || '', tab.url || '');
+        }
         finish({ ok: true, result: res });
       } catch (err) {
         finish({ ok: false, error: err.message });
