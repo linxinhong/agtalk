@@ -112,8 +112,14 @@ function normalizeTabPeerHints(hints) {
   for (const [tabId, value] of Object.entries(hints)) {
     if (!value || typeof value !== 'object') continue;
     const peer = String(value.peer || '').trim();
-    if (!peer) continue;
-    out[String(tabId)] = { peer, url: String(value.url || ''), updated_at: Number(value.updated_at || Date.now()) };
+    const autoReplyPeer = String(value.autoReplyPeer || '').trim();
+    if (!peer && !autoReplyPeer) continue;
+    out[String(tabId)] = {
+      peer,
+      autoReplyPeer,
+      url: String(value.url || ''),
+      updated_at: Number(value.updated_at || Date.now()),
+    };
   }
   return out;
 }
@@ -139,8 +145,15 @@ function getRecommendedPeerForTab(tabId) {
 async function associateTabPeer(tabId, peer, url = '') {
   if (tabId == null) return;
   const key = String(tabId);
+  const existing = tabPeerHints[key] || {};
   if (!peer) {
-    if (tabPeerHints[key]) {
+    if (existing.autoReplyPeer) {
+      tabPeerHints = {
+        ...tabPeerHints,
+        [key]: { ...existing, peer: '', url: String(url || existing.url || ''), updated_at: Date.now() },
+      };
+      await persistTabPeerHints();
+    } else if (tabPeerHints[key]) {
       const next = { ...tabPeerHints };
       delete next[key];
       tabPeerHints = next;
@@ -150,9 +163,50 @@ async function associateTabPeer(tabId, peer, url = '') {
   }
   tabPeerHints = {
     ...tabPeerHints,
-    [key]: { peer: String(peer).trim(), url: String(url || ''), updated_at: Date.now() },
+    [key]: {
+      ...existing,
+      peer: String(peer).trim(),
+      url: String(url || existing.url || ''),
+      updated_at: Date.now(),
+    },
   };
   await persistTabPeerHints();
+}
+
+async function setAutoReplyPeer(tabId, peer, url = '') {
+  if (tabId == null) return;
+  const key = String(tabId);
+  const existing = tabPeerHints[key] || {};
+  if (!peer) {
+    if (existing.peer) {
+      tabPeerHints = {
+        ...tabPeerHints,
+        [key]: { ...existing, autoReplyPeer: '', url: String(url || existing.url || ''), updated_at: Date.now() },
+      };
+      await persistTabPeerHints();
+    } else if (tabPeerHints[key]) {
+      const next = { ...tabPeerHints };
+      delete next[key];
+      tabPeerHints = next;
+      await persistTabPeerHints();
+    }
+    return;
+  }
+  tabPeerHints = {
+    ...tabPeerHints,
+    [key]: {
+      ...existing,
+      autoReplyPeer: String(peer).trim(),
+      url: String(url || existing.url || ''),
+      updated_at: Date.now(),
+    },
+  };
+  await persistTabPeerHints();
+}
+
+function getAutoReplyPeer(tabId) {
+  if (tabId == null) return '';
+  return tabPeerHints[String(tabId)]?.autoReplyPeer || '';
 }
 
 function isConnectedPeer(name) {
@@ -333,7 +387,9 @@ async function pollInbox() {
     for (const item of newItems) {
       lastInboxIds.add(item.id);
       MessageStore.save(item).catch((err) => console.error('[BG] 保存消息失败:', err.message));
-      if (runtimeConfig.autoInject) {
+      const fromPeer = item.from?.name || item.from_agent || '';
+      const isAutoReply = isAutoReplyMessage(fromPeer);
+      if (runtimeConfig.autoInject || isAutoReply) {
         await dispatchIncomingToWebTabs(item);
         MessageStore.markInjected(item.id).catch(() => {});
         // 自动注入后只标记已读，不标记完成，这样消息仍保留在 inbox 中
@@ -383,7 +439,27 @@ async function dispatchIncomingToWebTabs(item) {
   const message = { type: 'AGTALK_INCOMING', item };
   const fromPeer = item.from?.name || item.from_agent || '';
 
-  // 1. 若消息来源 peer 有关联 tab，优先注入到该 tab
+  // 1. 若消息来源 peer 是某个 tab 的自动回复 Agent，优先注入到该 tab
+  if (fromPeer) {
+    const autoReplyTabId = findTabIdByAutoReplyPeer(fromPeer, allTabs);
+    if (autoReplyTabId != null) {
+      try {
+        await ensureContentScriptInjected(autoReplyTabId);
+        await new Promise((resolve, reject) => {
+          chrome.tabs.sendMessage(autoReplyTabId, message, (res) => {
+            if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+            resolve(res);
+          });
+        });
+        console.log('[BG] 自动回复消息已注入 tab:', autoReplyTabId, 'from:', fromPeer);
+      } catch (err) {
+        console.warn('[BG] 注入自动回复 tab 失败:', err.message);
+      }
+      return;
+    }
+  }
+
+  // 2. 若消息来源 peer 有关联 tab，优先注入到该 tab
   if (fromPeer) {
     const linkedTabId = findTabIdByPeer(fromPeer, allTabs);
     if (linkedTabId != null) {
@@ -442,6 +518,25 @@ function findTabIdByPeer(peer, tabs) {
   if (!peer || !tabs) return null;
   for (const [tabIdStr, hint] of Object.entries(tabPeerHints)) {
     if (hint.peer === peer) {
+      const id = Number(tabIdStr);
+      if (tabs.some((t) => t.id === id)) return id;
+    }
+  }
+  return null;
+}
+
+function isAutoReplyMessage(fromPeer) {
+  if (!fromPeer) return false;
+  for (const hint of Object.values(tabPeerHints)) {
+    if (hint.autoReplyPeer === fromPeer) return true;
+  }
+  return false;
+}
+
+function findTabIdByAutoReplyPeer(peer, tabs) {
+  if (!peer || !tabs) return null;
+  for (const [tabIdStr, hint] of Object.entries(tabPeerHints)) {
+    if (hint.autoReplyPeer === peer) {
       const id = Number(tabIdStr);
       if (tabs.some((t) => t.id === id)) return id;
     }
@@ -819,6 +914,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const tabId = sender?.tab?.id || message.tabId;
       const linkedPeer = getRecommendedPeerForTab(tabId);
       finish({ ok: true, peer: linkedPeer, tabId });
+      return true;
+    }
+    case 'SET_AUTO_REPLY_PEER': {
+      const tabId = sender?.tab?.id || message.tabId;
+      const url = sender?.tab?.url || message.url || '';
+      if (tabId == null) {
+        finish({ ok: false, error: '缺少 tabId（只能在 content script 中调用）' });
+        return true;
+      }
+      try {
+        await setAutoReplyPeer(tabId, message.peer || '', url);
+        finish({ ok: true, peer: message.peer || '', tabId });
+      } catch (err) {
+        finish({ ok: false, error: err.message });
+      }
+      return true;
+    }
+    case 'GET_AUTO_REPLY_PEER': {
+      const tabId = sender?.tab?.id || message.tabId;
+      const peer = getAutoReplyPeer(tabId);
+      finish({ ok: true, peer, tabId });
+      return true;
+    }
+    case 'PAUSE_AUTO_REPLY': {
+      const tabId = sender?.tab?.id || message.tabId;
+      const url = sender?.tab?.url || message.url || '';
+      if (tabId != null) {
+        await setAutoReplyPeer(tabId, '', url);
+      }
+      finish({ ok: true, peer: '', tabId });
       return true;
     }
     case 'GET_CONNECTED_PEERS':

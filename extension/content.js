@@ -167,6 +167,13 @@ function captureAndSend() {
       }
     }
 
+    // 如果上一条 user 消息是 agtalk 自动注入的 Agent 回复，说明这是 Agent 回复后页面 AI 的回应，不再转发，避免循环
+    if (isAgtalkInjected(userText)) {
+      console.log('[CS] 跳过由 agtalk 注入消息触发的 AI 回复转发');
+      resetState();
+      return;
+    }
+
     const parsed = parseDirectives(userText);
     const payload = {
       source: runtimeConfig.agentName || `${currentPlatform.id}_web`,
@@ -178,9 +185,19 @@ function captureAndSend() {
     if (parsed.toAgent) payload.toAgent = parsed.toAgent;
 
     console.log('[CS] 准备发送:', payload.turn.user.slice(0, 30), '→', payload.turn.assistant.slice(0, 30));
-    safeSendMessage({ type: 'CHAT_TURN', payload }, function (response) {
-      console.log('[CS] 消息已送达 background:', response);
-    });
+
+    if (currentAutoReplyPeer) {
+      // 自动对话模式：把 AI 回复转发给指定 Agent
+      safeSendMessage({
+        type: 'AGTALK_SEND', toAgent: currentAutoReplyPeer, body: payload.turn.assistant,
+      }, function (response) {
+        console.log('[CS] 自动转发 AI 回复到:', currentAutoReplyPeer, response);
+      });
+    } else if (runtimeConfig.autoForward) {
+      safeSendMessage({ type: 'CHAT_TURN', payload }, function (response) {
+        console.log('[CS] 消息已送达 background:', response);
+      });
+    }
 
     resetState();
   }, runtimeConfig.captureDelay || 300);
@@ -254,10 +271,11 @@ function addSiderAgtalkButtons() {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const text = extractSiderMessageText(msgInner);
-      sendToAgtalk(text, getClickAnchor(e));
+      onAgtalkButtonClick(text, getClickAnchor(e));
     });
 
     actionsRow.appendChild(btn);
+    updateAgtalkButtonUI(btn, currentAutoReplyPeer);
     msgInner.dataset.agtalkButtonAdded = 'true';
     added++;
   });
@@ -290,10 +308,11 @@ function addChatglmAgtalkButtons() {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const text = currentPlatform.extractText(answer, false);
-      sendToAgtalk(text, getClickAnchor(e));
+      onAgtalkButtonClick(text, getClickAnchor(e));
     });
 
     leftPart.appendChild(btn);
+    updateAgtalkButtonUI(btn, currentAutoReplyPeer);
     answer.dataset.agtalkButtonAdded = 'true';
     added++;
   });
@@ -328,10 +347,11 @@ function addChatgptAgtalkButtons() {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const text = currentPlatform.extractText(turn, false);
-      sendToAgtalk(text, getClickAnchor(e));
+      onAgtalkButtonClick(text, getClickAnchor(e));
     });
 
     bar.appendChild(btn);
+    updateAgtalkButtonUI(btn, currentAutoReplyPeer);
     bar.dataset.agtalkButtonAdded = 'true';
     added++;
   });
@@ -372,10 +392,11 @@ function addClaudeAgtalkButtons() {
       if (!text && fallbackTextNode) {
         text = fallbackTextNode.innerText.trim();
       }
-      sendToAgtalk(text, getClickAnchor(e));
+      onAgtalkButtonClick(text, getClickAnchor(e));
     });
 
     bar.appendChild(btn);
+    updateAgtalkButtonUI(btn, currentAutoReplyPeer);
     bar.dataset.agtalkButtonAdded = 'true';
     added++;
   });
@@ -396,22 +417,70 @@ function sendToAgtalk(text, anchor = null) {
     showPeerPickerNotice('没有可发送的内容', '', false, anchor);
     return;
   }
-  safeSendMessage({ type: 'GET_TAB_ASSOCIATION' }, function (response) {
-    if (!response || !response.ok) { openPeerPicker(text, anchor); return; }
-    if (response.peer) {
-      safeSendMessage({
-        type: 'AGTALK_SEND', toAgent: response.peer, body: text,
-      }, function (sendResponse) {
-        if (sendResponse && sendResponse.ok) {
-          console.log('[CS] 已发送到关联 peer:', response.peer);
-        } else if (sendResponse && sendResponse.error) {
-          showPeerPickerNotice('发送失败', sendResponse.error, false, anchor);
-        }
-      });
-      return;
-    }
-    openPeerPicker(text, anchor);
+  // 总是弹出 peer picker 让用户选择，不再自动发送到关联 Agent
+  openPeerPicker(text, anchor);
+}
+
+function getAutoReplyPeer(cb) {
+  safeSendMessage({ type: 'GET_AUTO_REPLY_PEER' }, function (response) {
+    cb(response && response.ok ? response.peer : '');
   });
+}
+
+function setAutoReplyPeer(peer, cb) {
+  safeSendMessage({ type: 'SET_AUTO_REPLY_PEER', peer: peer || '' }, function (response) {
+    if (response && response.ok) {
+      currentAutoReplyPeer = response.peer || '';
+      refreshAllAgtalkButtonsUI();
+      if (cb) cb(null, currentAutoReplyPeer);
+    } else {
+      if (cb) cb(response && response.error ? response.error : '设置失败');
+    }
+  });
+}
+
+let currentAutoReplyPeer = '';
+
+function refreshAutoReplyState(cb) {
+  getAutoReplyPeer(function (peer) {
+    currentAutoReplyPeer = peer || '';
+    refreshAllAgtalkButtonsUI();
+    if (cb) cb(currentAutoReplyPeer);
+  });
+}
+
+function refreshAllAgtalkButtonsUI() {
+  document.querySelectorAll('.agtalk-send-btn').forEach(function (btn) {
+    updateAgtalkButtonUI(btn, currentAutoReplyPeer);
+  });
+}
+
+function updateAgtalkButtonUI(btn, autoReplyPeer) {
+  if (!btn) return;
+  if (autoReplyPeer) {
+    btn.title = '自动回复中（点击暂停）：' + autoReplyPeer;
+    btn.setAttribute('aria-label', '暂停自动回复');
+    btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="display:block;">
+      <rect x="3" y="2" width="4" height="12" rx="1"/>
+      <rect x="9" y="2" width="4" height="12" rx="1"/>
+    </svg>`;
+    btn.style.color = '#1a7f37';
+  } else {
+    btn.title = '发送到 agtalk';
+    btn.setAttribute('aria-label', '发送到 agtalk');
+    btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 14 14" fill="none" style="display:block;">
+      <path d="M1.5 7L12.5 1.5L7 12.5V7H1.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" fill="none"/>
+    </svg>`;
+    btn.style.color = '';
+  }
+}
+
+function onAgtalkButtonClick(text, anchor) {
+  if (currentAutoReplyPeer) {
+    pauseAutoReply();
+    return;
+  }
+  sendToAgtalk(text, anchor);
 }
 
 /* ─── Peer Picker 弹出层 ─── */
@@ -489,9 +558,10 @@ function showPeerPickerNotice(title, detail, includeOpenInbox, anchor) {
 }
 
 function showPeerPicker(text, peers, anchor, linkedPeer) {
-  var html = '<div style="padding:6px 10px;border-bottom:1px solid rgba(0,0,0,.08);color:#555;font-size:10px;display:flex;justify-content:space-between;">' +
+  var autoReplyMode = false;
+  var html = '<div style="padding:6px 10px;border-bottom:1px solid rgba(0,0,0,.08);color:#555;font-size:10px;display:flex;justify-content:space-between;align-items:center;">' +
     '<span>已连接 ' + peers.length + ' 个 Agent</span>' +
-    (linkedPeer ? '<span data-header-linked style="color:#1a7f37;font-size:9px;">已关联 ' + escapeHtml(linkedPeer) + '</span>' : '') +
+    '<button type="button" data-auto-reply-toggle title="自动回复开关" style="border:1px solid rgba(0,0,0,.12);background:#fff;border-radius:6px;padding:2px 6px;cursor:pointer;font-size:10px;color:#555;">自动：关</button>' +
     '</div>' +
     '<div style="max-height:220px;overflow:auto;padding:6px;display:grid;gap:4px;">';
 
@@ -513,12 +583,45 @@ function showPeerPicker(text, peers, anchor, linkedPeer) {
   html += '</div>';
 
   var host = peerPickerShell('发送到 Agent', html, anchor);
-  agtalkPeerPickerState = { text: text, host: host, linkedPeer: linkedPeer };
+  agtalkPeerPickerState = { text: text, host: host, linkedPeer: linkedPeer, autoReplyMode: autoReplyMode };
+
+  function updateAutoReplyToggleUI() {
+    var toggleBtn = host.querySelector('[data-auto-reply-toggle]');
+    if (!toggleBtn) return;
+    if (autoReplyMode) {
+      toggleBtn.textContent = '自动：开';
+      toggleBtn.style.color = '#1a7f37';
+      toggleBtn.style.background = '#f6fef9';
+      toggleBtn.title = '自动回复已开启（选择 Agent 后进入自动对话）';
+    } else {
+      toggleBtn.textContent = '自动：关';
+      toggleBtn.style.color = '#555';
+      toggleBtn.style.background = '#fff';
+      toggleBtn.title = '点击开启自动回复';
+    }
+  }
+
+  var toggleBtn = host.querySelector('[data-auto-reply-toggle]');
+  if (toggleBtn) {
+    toggleBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      autoReplyMode = !autoReplyMode;
+      if (agtalkPeerPickerState) agtalkPeerPickerState.autoReplyMode = autoReplyMode;
+      updateAutoReplyToggleUI();
+    });
+  }
 
   host.querySelectorAll('[data-peer]').forEach(function (btn) {
     btn.addEventListener('click', function () {
       var toAgent = btn.dataset.peer;
       hidePeerPicker();
+      if (autoReplyMode) {
+        setAutoReplyPeer(toAgent, function (err, peer) {
+          if (err) showPeerPickerNotice('自动回复设置失败', err, false, anchor);
+          else console.log('[CS] 自动回复已关联 Agent:', peer);
+        });
+        return;
+      }
       safeSendMessage({
         type: 'AGTALK_SEND', toAgent: toAgent, body: text,
       }, function (resp) {
@@ -637,6 +740,11 @@ async function handleAgtalkIncoming(item) {
   if (!item || !item.content) return;
   const body = item.content.body || item.body || '';
   const from = item.from?.name || item.from_agent || '';
+  // 自动对话模式下，只接收并注入来自 autoReplyPeer 的消息
+  if (currentAutoReplyPeer && from !== currentAutoReplyPeer) {
+    console.log('[CS] 自动对话模式：忽略非目标 Agent 消息:', from);
+    return;
+  }
   const shortId = (item.id || '').slice(0, 8);
   const text = '---\nmsg_id: ' + shortId +
     '\nfrom_agent: ' + from +
@@ -675,6 +783,7 @@ function waitForContainer() {
       initObserverB();
       startActionButtonScan();
       watchUrlChange();
+      refreshAutoReplyState();
       return;
     }
     if (attempts >= 60) {
@@ -723,6 +832,17 @@ try {
       return true;
     }
     handleAgtalkIncoming(message.item).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+  if (message.type === 'PAUSE_AUTO_REPLY') {
+    pauseAutoReply();
+    sendResponse({ ok: true });
+    return true;
+  }
+  if (message.type === 'REFRESH_AUTO_REPLY_STATE') {
+    refreshAutoReplyState(function (peer) {
+      sendResponse({ ok: true, peer: peer });
+    });
     return true;
   }
   });
