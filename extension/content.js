@@ -765,6 +765,23 @@ async function handleAgtalkIncoming(item) {
   }
 }
 
+function initializeLastAiHash() {
+  if (!currentPlatform) return;
+  const items = getMessageItems();
+  if (items.length === 0) return;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const node = items[i];
+    if (currentPlatform.isAiMessage(node)) {
+      const text = currentPlatform.extractText(node, false);
+      if (text) {
+        lastAiHash = djb2(text);
+        console.log('[CS] 已预读最后一条 AI 回复 hash，避免刷新后重复转发');
+      }
+      break;
+    }
+  }
+}
+
 function waitForContainer() {
   let attempts = 0;
   const timer = setInterval(() => {
@@ -779,6 +796,7 @@ function waitForContainer() {
     if (container) {
       clearInterval(timer);
       console.log('[CS] 平台:', currentPlatform.name, '容器已就绪');
+      initializeLastAiHash();
       initObserverA();
       initObserverB();
       startActionButtonScan();
@@ -806,6 +824,7 @@ function watchUrlChange() {
       stopButtonPreviouslyPresent = false;
       lastAiText = '';
       stableCount = 0;
+      lastAiHash = null;
       waitForContainer();
     }
   }, 500);
