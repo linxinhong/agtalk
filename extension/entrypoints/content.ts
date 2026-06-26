@@ -1,4 +1,5 @@
 import { defineContentScript } from 'wxt/sandbox';
+import { MessageType } from '@/shared/messaging/message-types';
 
 export default defineContentScript({
   matches: [
@@ -10,8 +11,12 @@ export default defineContentScript({
   runAt: 'document_idle',
   main() {
     console.log('[WXT CS] agtalk content script injected on', window.location.href);
-    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-      if (message?.type === 'PING') {
+    chrome.runtime.onMessage.addListener((
+      message: { type?: string },
+      _sender: chrome.runtime.MessageSender,
+      sendResponse: (response: unknown) => void
+    ) => {
+      if (message?.type === MessageType.PING) {
         sendResponse({ pong: true, source: 'wxt-content' });
         return true;
       }

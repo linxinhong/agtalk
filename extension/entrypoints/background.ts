@@ -1,28 +1,37 @@
+import { defineBackground } from 'wxt/sandbox';
+import { MessageType } from '@/shared/messaging/message-types';
+import { createBackgroundRouter } from '@/shared/messaging/handlers';
+import { getHealth, getStatus } from '@/shared/api/client';
+
 export default defineBackground(() => {
   console.log('[WXT BG] agtalk service worker started');
 
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    switch (message?.type) {
-      case 'PING_BACKGROUND': {
-        sendResponse({ ok: true, pong: true, source: 'wxt-background' });
-        return true;
+  const router = createBackgroundRouter({
+    [MessageType.PING_BACKGROUND]: async () => ({
+      ok: true,
+      pong: true,
+      source: 'wxt-background',
+    }),
+
+    [MessageType.OPEN_APP_PAGE]: async () => {
+      try {
+        await chrome.tabs.create({ url: chrome.runtime.getURL('/app.html') });
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : '打开页面失败' };
       }
-      case 'OPEN_APP_PAGE': {
-        try {
-          chrome.tabs.create({ url: chrome.runtime.getURL('/app.html') }, () => {
-            if (chrome.runtime.lastError) {
-              sendResponse({ ok: false, error: chrome.runtime.lastError.message });
-            } else {
-              sendResponse({ ok: true });
-            }
-          });
-        } catch (err: any) {
-          sendResponse({ ok: false, error: err?.message || '打开页面失败' });
-        }
-        return true;
-      }
-      default:
-        return false;
-    }
+    },
+
+    [MessageType.API_HEALTH_CHECK]: async () => {
+      const result = await getHealth();
+      return result;
+    },
+
+    [MessageType.API_GET_STATUS]: async () => {
+      const result = await getStatus();
+      return result;
+    },
   });
+
+  chrome.runtime.onMessage.addListener(router);
 });

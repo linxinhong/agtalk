@@ -1,18 +1,19 @@
 import { defineConfig } from 'wxt';
 import react from '@vitejs/plugin-react';
 import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
 export default defineConfig({
-  srcDir: '.',
-  entrypointsDir: 'entrypoints',
-  publicDir: 'public',
+  srcDir: 'src',
+  entrypointsDir: '../entrypoints',
+  publicDir: '../public',
+  alias: {
+    '@': path.resolve(__dirname, './src'),
+  },
   vite: () => ({
     plugins: [react()],
-    resolve: {
-      alias: {
-        '@': path.resolve(__dirname, './src'),
-      },
-    },
   }),
   manifest: {
     name: 'agtalk Web Bridge',
