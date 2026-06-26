@@ -186,6 +186,10 @@ function addAgtalkActionButtons() {
     addSiderAgtalkButtons();
   } else if (currentPlatform.id === 'chatglm') {
     addChatglmAgtalkButtons();
+  } else if (currentPlatform.id === 'chatgpt') {
+    addChatgptAgtalkButtons();
+  } else if (currentPlatform.id === 'claude') {
+    addClaudeAgtalkButtons();
   }
 }
 
@@ -275,6 +279,93 @@ function addChatglmAgtalkButtons() {
     added++;
   });
   if (added > 0) console.log('[CS] ChatGLM 已添加', added, '个 agtalk 按钮');
+}
+
+function addChatgptAgtalkButtons() {
+  // ChatGPT 每条 AI 回复下方都有操作栏；中英双语兼容
+  const actionBars = document.querySelectorAll('[aria-label="回复操作"], [aria-label="Reply actions"]');
+  let added = 0;
+  actionBars.forEach((bar) => {
+    if (bar.dataset.agtalkButtonAdded) return;
+
+    const turnContainer = bar.closest('.agent-turn');
+    const turn = turnContainer
+      ? turnContainer.querySelector('[data-message-author-role="assistant"]')
+      : bar.parentElement?.previousElementSibling?.matches?.('[data-message-author-role="assistant"]')
+        ? bar.parentElement.previousElementSibling
+        : null;
+    if (!turn) return;
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'text-token-text-secondary hover:bg-token-surface-hover rounded-lg agtalk-send-btn';
+    btn.setAttribute('aria-label', '发送到 agtalk');
+    btn.title = '发送到 agtalk';
+    btn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;pointer-events:auto;';
+    btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 14 14" fill="none" style="display:block;">
+      <path d="M1.5 7L12.5 1.5L7 12.5V7H1.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" fill="none"/>
+    </svg>`;
+
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const text = currentPlatform.extractText(turn, false);
+      sendToAgtalk(text);
+    });
+
+    bar.appendChild(btn);
+    bar.dataset.agtalkButtonAdded = 'true';
+    added++;
+  });
+  if (added > 0) console.log('[CS] ChatGPT 已添加', added, '个 agtalk 按钮');
+}
+
+function addClaudeAgtalkButtons() {
+  // Claude 操作栏：role="group" aria-label="Message actions"（中英兼容）
+  const actionBars = document.querySelectorAll('[role="group"][aria-label="Message actions"], [role="group"][aria-label="消息操作"], [data-testid="message-actions"], [aria-label*="actions"], [aria-label*="操作"]');
+  let added = 0;
+  actionBars.forEach((bar) => {
+    if (bar.dataset.agtalkButtonAdded) return;
+
+    const turn = bar.closest('[data-test-render-count], [data-testid="assistant-message"], [data-is-streaming], article, .group, main');
+    if (!turn) return;
+
+    const assistantNode = turn.matches?.('[data-testid="assistant-message"]')
+      ? turn
+      : turn.querySelector('[data-testid="assistant-message"], [data-is-streaming]');
+    const fallbackTextNode = turn.querySelector('.font-claude-message, .font-claude-response, .standard-markdown');
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'agtalk-send-btn';
+    btn.setAttribute('aria-label', '发送到 agtalk');
+    btn.title = '发送到 agtalk';
+    btn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;pointer-events:auto;margin-left:4px;border-radius:6px;color:inherit;background:transparent;border:none;cursor:pointer;';
+    btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 14 14" fill="none" style="display:block;">
+      <path d="M1.5 7L12.5 1.5L7 12.5V7H1.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" fill="none"/>
+    </svg>`;
+
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      let text = '';
+      if (assistantNode && currentPlatform) {
+        text = currentPlatform.extractText(assistantNode, false);
+      }
+      if (!text && fallbackTextNode) {
+        text = fallbackTextNode.innerText.trim();
+      }
+      sendToAgtalk(text);
+    });
+
+    bar.appendChild(btn);
+    bar.dataset.agtalkButtonAdded = 'true';
+    added++;
+  });
+  if (added > 0) console.log('[CS] Claude 已添加', added, '个 agtalk 按钮');
+}
+
+function getClickAnchor(event) {
+  if (!event) return null;
+  return { x: event.clientX, y: event.clientY };
 }
 
 function sendToAgtalk(text) {
