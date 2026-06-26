@@ -14,11 +14,14 @@ const AGTALK_CONFIG = {
 
   // 目标 peer：agtalk 消息默认转发给谁
   targetAgent: '',
+  activePeer: '',
+  connectedPeers: [],
 
   // 行为开关
   enabled: false,
-  autoForward: true,
+  autoForward: false,
   autoReceive: true,
+  autoInject: false,
 
   // inbox 轮询间隔（毫秒）
   pollInterval: 5000,

@@ -1,4 +1,28 @@
 // 通用 content script：根据当前 URL 匹配平台配置，采集对话并注入 agtalk 消息
+let extensionAlive = true;
+function isExtensionDead() {
+  if (!extensionAlive) return true;
+  try {
+    if (!chrome || !chrome.runtime || !chrome.runtime.id) { extensionAlive = false; return true; }
+    return false;
+  } catch (e) { extensionAlive = false; return true; }
+}
+function safeSendMessage(msg, cb) {
+  if (isExtensionDead()) { if (cb) cb({ ok: false, error: 'context_invalidated' }); return; }
+  try {
+    chrome.runtime.sendMessage(msg, function (resp) {
+      if (chrome.runtime.lastError) {
+        if ((chrome.runtime.lastError.message || '').includes('context invalidated')) extensionAlive = false;
+        if (cb) cb({ ok: false, error: chrome.runtime.lastError.message });
+        return;
+      }
+      if (cb) cb(resp);
+    });
+  } catch (e) {
+    if ((e.message || '').includes('context invalidated')) extensionAlive = false;
+    if (cb) cb({ ok: false, error: e.message });
+  }
+}
 
 (function () {
   if (window.__agtalkBridgeInjected) {
@@ -59,6 +83,7 @@ function matchPlatform() {
 }
 
 function loadRuntimeConfig() {
+  if (isExtensionDead()) return;
   chrome.storage.local.get(['agtalk_config'], (result) => {
     if (result.agtalk_config) {
       runtimeConfig = { ...DEFAULT_CONFIG, ...result.agtalk_config };
@@ -153,13 +178,7 @@ function captureAndSend() {
     if (parsed.toAgent) payload.toAgent = parsed.toAgent;
 
     console.log('[CS] 准备发送:', payload.turn.user.slice(0, 30), '→', payload.turn.assistant.slice(0, 30));
-    chrome.runtime.sendMessage({ type: 'CHAT_TURN', payload }, (response) => {
-      if (chrome.runtime.lastError) {
-        if (!chrome.runtime.lastError.message.includes('context invalidated')) {
-          console.error('[CS] sendMessage 失败:', chrome.runtime.lastError.message);
-        }
-        return;
-      }
+    safeSendMessage({ type: 'CHAT_TURN', payload }, function (response) {
       console.log('[CS] 消息已送达 background:', response);
     });
 
@@ -235,7 +254,7 @@ function addSiderAgtalkButtons() {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const text = extractSiderMessageText(msgInner);
-      sendToAgtalk(text);
+      sendToAgtalk(text, getClickAnchor(e));
     });
 
     actionsRow.appendChild(btn);
@@ -271,7 +290,7 @@ function addChatglmAgtalkButtons() {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const text = currentPlatform.extractText(answer, false);
-      sendToAgtalk(text);
+      sendToAgtalk(text, getClickAnchor(e));
     });
 
     leftPart.appendChild(btn);
@@ -309,7 +328,7 @@ function addChatgptAgtalkButtons() {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const text = currentPlatform.extractText(turn, false);
-      sendToAgtalk(text);
+      sendToAgtalk(text, getClickAnchor(e));
     });
 
     bar.appendChild(btn);
@@ -353,7 +372,7 @@ function addClaudeAgtalkButtons() {
       if (!text && fallbackTextNode) {
         text = fallbackTextNode.innerText.trim();
       }
-      sendToAgtalk(text);
+      sendToAgtalk(text, getClickAnchor(e));
     });
 
     bar.appendChild(btn);
@@ -368,30 +387,202 @@ function getClickAnchor(event) {
   return { x: event.clientX, y: event.clientY };
 }
 
-function sendToAgtalk(text) {
+function escapeHtml(str) {
+  return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function sendToAgtalk(text, anchor = null) {
   if (!text) {
-    alert('没有可发送的内容');
+    showPeerPickerNotice('没有可发送的内容', '', false, anchor);
     return;
   }
-  if (!runtimeConfig.targetAgent) {
-    alert('未设置目标 agtalk Agent，请在扩展 popup 设置中选择目标 Peer');
-    return;
-  }
-  chrome.runtime.sendMessage({
-    type: 'AGTALK_SEND',
-    toAgent: runtimeConfig.targetAgent,
-    body: text,
-  }, (response) => {
-    if (chrome.runtime.lastError) {
-      console.error('[CS] 发送到 agtalk 失败:', chrome.runtime.lastError.message);
+  safeSendMessage({ type: 'GET_TAB_ASSOCIATION' }, function (response) {
+    if (!response || !response.ok) { openPeerPicker(text, anchor); return; }
+    if (response.peer) {
+      safeSendMessage({
+        type: 'AGTALK_SEND', toAgent: response.peer, body: text,
+      }, function (sendResponse) {
+        if (sendResponse && sendResponse.ok) {
+          console.log('[CS] 已发送到关联 peer:', response.peer);
+        } else if (sendResponse && sendResponse.error) {
+          showPeerPickerNotice('发送失败', sendResponse.error, false, anchor);
+        }
+      });
       return;
     }
-    if (response?.ok) {
-      console.log('[CS] 已发送到 agtalk:', response.msg_id);
-    } else {
-      console.error('[CS] 发送到 agtalk 失败:', response?.error);
-    }
+    openPeerPicker(text, anchor);
   });
+}
+
+/* ─── Peer Picker 弹出层 ─── */
+var agtalkPeerPickerState = null;
+
+function openPeerPicker(text, anchor) {
+  safeSendMessage({ type: 'GET_CONNECTED_PEERS' }, function (response) {
+    if (response && response.ok === false) {
+      showPeerPickerNotice('无法获取已连接 Peer', response.error || '请重新加载', false, anchor);
+      return;
+    }
+    var linkedPeer = (response && response.recommendedPeer) ? response.recommendedPeer : '';
+    var all = Array.isArray(response && response.peers) ? response.peers : [];
+    var peers = all.filter(function (p) {
+      return p.connected && p.name && p.name !== runtimeConfig.agentName;
+    }).map(function (p) {
+      p.linked = p.name === linkedPeer;
+      return p;
+    });
+    if (peers.length === 0) {
+      showPeerPickerNotice('没有已连接的 Peer', '请先在扩展中连接 Agent', true, anchor);
+      return;
+    }
+    peers.sort(function (a, b) { return (b.linked ? 1 : 0) - (a.linked ? 1 : 0) || a.name.localeCompare(b.name); });
+    showPeerPicker(text, peers, anchor, linkedPeer);
+  });
+}
+
+function peerPickerShell(title, bodyHtml, anchor) {
+  hidePeerPicker();
+  var host = document.createElement('div');
+  host.id = 'agtalk-peer-picker';
+  host.style.cssText = 'position:fixed;z-index:2147483647;' +
+    (anchor ? 'left:0;top:0;' : 'right:16px;bottom:16px;') +
+    'width:320px;max-width:calc(100vw - 32px);' +
+    'background:#fff;color:#111;border:1px solid rgba(0,0,0,.15);border-radius:8px;' +
+    'box-shadow:0 10px 24px rgba(0,0,0,.16);' +
+    'font:12px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;';
+  host.innerHTML = '<div style="padding:8px 10px;border-bottom:1px solid rgba(0,0,0,.08);display:flex;justify-content:space-between;align-items:center;">' +
+    '<strong style="font-size:12px;">' + escapeHtml(title) + '</strong>' +
+    '<button type="button" data-close style="width:22px;height:22px;border:none;background:transparent;font-size:14px;cursor:pointer;">x</button>' +
+    '</div>' + bodyHtml;
+  document.body.appendChild(host);
+  if (anchor) positionPeerPicker(host, anchor);
+  agtalkPeerPickerState = { host: host };
+  host.querySelector('[data-close]').addEventListener('click', hidePeerPicker);
+  document.addEventListener('keydown', onPeerPickerKeyDown, true);
+  document.addEventListener('click', onPeerPickerOutsideClick, true);
+  return host;
+}
+
+function positionPeerPicker(host, anchor) {
+  var margin = 12, gap = 8;
+  var rect = host.getBoundingClientRect();
+  var w = rect.width || 320, h = rect.height || 120;
+  var left = anchor.x + gap, top = anchor.y + gap;
+  if (left + w + margin > window.innerWidth) left = anchor.x - w - gap;
+  if (top + h + margin > window.innerHeight) top = anchor.y - h - gap;
+  left = Math.max(margin, Math.min(left, window.innerWidth - w - margin));
+  top = Math.max(margin, Math.min(top, window.innerHeight - h - margin));
+  host.style.left = left + 'px';
+  host.style.top = top + 'px';
+}
+
+function showPeerPickerNotice(title, detail, includeOpenInbox, anchor) {
+  var body = '<div style="padding:12px;display:grid;gap:10px;">' +
+    (detail ? '<div style="color:#555;">' + escapeHtml(detail) + '</div>' : '') +
+    (includeOpenInbox ? '<button type="button" data-open-inbox style="border:1px solid rgba(0,0,0,.12);background:#0b57d0;color:#fff;border-radius:8px;padding:8px 10px;cursor:pointer;">打开收件箱</button>' : '') +
+    '</div>';
+  var host = peerPickerShell(title, body, anchor);
+  var btn = host.querySelector('[data-open-inbox]');
+  if (btn) btn.addEventListener('click', function () {
+    safeSendMessage({ type: 'OPEN_INBOX' }, function () { hidePeerPicker(); });
+  });
+}
+
+function showPeerPicker(text, peers, anchor, linkedPeer) {
+  var html = '<div style="padding:6px 10px;border-bottom:1px solid rgba(0,0,0,.08);color:#555;font-size:10px;display:flex;justify-content:space-between;">' +
+    '<span>已连接 ' + peers.length + ' 个 Agent</span>' +
+    (linkedPeer ? '<span data-header-linked style="color:#1a7f37;font-size:9px;">已关联 ' + escapeHtml(linkedPeer) + '</span>' : '') +
+    '</div>' +
+    '<div style="max-height:220px;overflow:auto;padding:6px;display:grid;gap:4px;">';
+
+  peers.forEach(function (peer) {
+    var isLinked = peer.name === linkedPeer;
+    var linkIcon = isLinked ? '🔗' : '🔌';
+    var linkColor = isLinked ? '#1a7f37' : '#888';
+    var linkTitle = isLinked ? '已关联当前页面（点击取消）' : '关联当前页面';
+    html += '<div data-peer-row="' + escapeHtml(peer.name) + '" style="display:flex;align-items:stretch;gap:4px;">' +
+      '<button type="button" data-peer="' + escapeHtml(peer.name) + '" style="flex:1;text-align:left;border:1px solid rgba(0,0,0,.12);background:#f8f9fb;border-radius:6px;padding:6px 8px;cursor:pointer;">' +
+      '<div style="display:flex;align-items:center;gap:6px;">' +
+      (peer.active ? '<span style="padding:1px 5px;border-radius:999px;background:#e8f0fe;color:#174ea6;font-size:9px;">当前</span>' : '') +
+      '<div style="font-weight:700;font-size:11px;">' + escapeHtml(peer.name) + '</div>' +
+      '</div><div style="color:#666;font-size:10px;margin-top:1px;">' + escapeHtml(formatPeerInfo(peer)) + '</div>' +
+      '</button>' +
+      '<button type="button" data-link-peer="' + escapeHtml(peer.name) + '" title="' + linkTitle + '" style="flex:0 0 32px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(0,0,0,.12);background:#fff;border-radius:6px;cursor:pointer;font-size:14px;color:' + linkColor + ';">' + linkIcon + '</button>' +
+      '</div>';
+  });
+  html += '</div>';
+
+  var host = peerPickerShell('发送到 Agent', html, anchor);
+  agtalkPeerPickerState = { text: text, host: host, linkedPeer: linkedPeer };
+
+  host.querySelectorAll('[data-peer]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var toAgent = btn.dataset.peer;
+      hidePeerPicker();
+      safeSendMessage({
+        type: 'AGTALK_SEND', toAgent: toAgent, body: text,
+      }, function (resp) {
+        if (resp && resp.ok) console.log('[CS] 已发送到 agtalk:', toAgent);
+        else if (resp && resp.error) showPeerPickerNotice('发送失败', resp.error, false, anchor);
+      });
+    });
+  });
+
+  host.querySelectorAll('[data-link-peer]').forEach(function (btn) {
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var peer = btn.dataset.linkPeer;
+      var newPeer = (peer === linkedPeer) ? '' : peer;
+      safeSendMessage({ type: 'ASSOCIATE_TAB_PEER', peer: newPeer }, function (resp) {
+        if (resp && resp.ok) {
+          refreshPeerPickerLinkState(host, newPeer, peers.map(function (p) { return p.name; }));
+        }
+      });
+    });
+  });
+}
+
+function refreshPeerPickerLinkState(host, linkedPeer, peerNames) {
+  if (!host) return;
+  peerNames.forEach(function (name) {
+    var btn = host.querySelector('[data-link-peer="' + CSS.escape(name) + '"]');
+    if (!btn) return;
+    var isLinked = name === linkedPeer;
+    btn.title = isLinked ? '已关联当前页面（点击取消）' : '关联当前页面';
+    btn.textContent = isLinked ? '🔗' : '🔌';
+    btn.style.color = isLinked ? '#1a7f37' : '#888';
+    var row = host.querySelector('[data-peer-row="' + CSS.escape(name) + '"]');
+    if (row) row.style.background = isLinked ? '#f6fef9' : '';
+  });
+  var headerLinked = host.querySelector('[data-header-linked]');
+  if (headerLinked) {
+    headerLinked.textContent = linkedPeer ? '已关联 ' + linkedPeer : '';
+    headerLinked.style.display = linkedPeer ? 'inline' : 'none';
+  }
+  if (agtalkPeerPickerState) agtalkPeerPickerState.linkedPeer = linkedPeer;
+}
+
+function formatPeerInfo(peer) {
+  var parts = [peer.type, peer.role, peer.status, peer.transport].filter(Boolean);
+  return parts.length ? parts.join(' / ') : 'peer';
+}
+
+function hidePeerPicker() {
+  if (agtalkPeerPickerState && agtalkPeerPickerState.host && agtalkPeerPickerState.host.parentNode) {
+    agtalkPeerPickerState.host.parentNode.removeChild(agtalkPeerPickerState.host);
+  }
+  agtalkPeerPickerState = null;
+  document.removeEventListener('keydown', onPeerPickerKeyDown, true);
+  document.removeEventListener('click', onPeerPickerOutsideClick, true);
+}
+
+function onPeerPickerKeyDown(e) {
+  if (e.key === 'Escape') hidePeerPicker();
+}
+
+function onPeerPickerOutsideClick(e) {
+  if (!agtalkPeerPickerState || !agtalkPeerPickerState.host) return;
+  if (!agtalkPeerPickerState.host.contains(e.target)) hidePeerPicker();
 }
 
 function initObserverB() {
@@ -460,8 +651,7 @@ async function handleAgtalkIncoming(item) {
 
   // 注入成功后标记已读（后台 autoInject 已尝试标记，这里是二次确认）
   if (result?.success || result?.ok) {
-    chrome.runtime.sendMessage({ type: 'AGTALK_MARK_READ', msgId: item.id }, () => {
-      if (chrome.runtime.lastError) return;
+    safeSendMessage({ type: 'AGTALK_MARK_READ', msgId: item.id }, function () {
       console.log('[CS] 已标记消息已读:', item.id);
     });
   }
@@ -513,7 +703,8 @@ function watchUrlChange() {
   window._urlWatchInterval = timer;
 }
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+try {
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'PING') {
     sendResponse({ pong: true, platform: currentPlatform?.id || null });
     return true;
@@ -534,13 +725,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     handleAgtalkIncoming(message.item).then(() => sendResponse({ ok: true }));
     return true;
   }
-});
+  });
+} catch (e) { extensionAlive = false; }
 
 loadRuntimeConfig();
 console.log('[CS] agtalk Web Bridge content script 已加载');
 waitForContainer();
-chrome.runtime.sendMessage({ type: 'REGISTER_AGENT' }, (res) => {
-  if (chrome.runtime.lastError) return;
+safeSendMessage({ type: 'REGISTER_AGENT' }, function (res) {
   console.log('[CS] 自动注册结果:', res?.ok ? '成功' : (res?.error || '失败'));
 });
 })();

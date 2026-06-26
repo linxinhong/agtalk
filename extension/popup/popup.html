@@ -10,6 +10,8 @@
   <header>
     <h1>agtalk</h1>
     <div class="header-actions">
+      <button id="auto-inject-btn" class="icon-btn disconnected" title="点击开启自动注入" aria-label="自动注入">🔗</button>
+      <button id="manage-peers-btn" class="icon-btn" title="Agent 管理" aria-label="Agent 管理">🤖</button>
       <button id="settings-btn" class="icon-btn" title="设置">⚙️</button>
       <span id="status-dot" class="dot offline" title="daemon 连接状态"></span>
     </div>
@@ -22,6 +24,7 @@
   </section>
   <div id="connection-detail" class="connection-detail hidden">-</div>
 
+  <section id="main-view" class="view active">
   <section id="target-section">
     <label>目标 Peer</label>
     <div class="target-row">
@@ -40,10 +43,29 @@
     <ul id="inbox-list"><li class="empty">加载中...</li></ul>
   </section>
 
+  </section>
+
+  <section id="agents-view" class="view hidden">
+    <div class="agents-header">
+      <button id="back-main-btn" class="icon-btn" title="返回">‹</button>
+      <div class="agents-title">
+        <strong>选择连接 Agent</strong>
+        <span id="agents-active-label">无 active peer</span>
+      </div>
+      <button id="refresh-peers-btn" class="icon-btn" title="刷新">↻</button>
+    </div>
+    <div class="agents-group">
+      <div class="agents-group-title">已连接</div>
+      <div id="connected-peer-list" class="peer-list"><div class="empty-inline">加载中...</div></div>
+    </div>
+    <div class="agents-group">
+      <div class="agents-group-title">可连接</div>
+      <div id="available-peer-list" class="peer-list"><div class="empty-inline">加载中...</div></div>
+    </div>
+  </section>
+
   <footer>
-    <button id="open-inbox-btn" class="secondary">打开收件箱</button>
     <button id="reconnect-btn" class="secondary hidden">重连</button>
-    <button id="register-btn">Join</button>
   </footer>
 
   <script src="popup.js"></script>
