@@ -108,15 +108,39 @@ export async function getStatus(): Promise<ApiResult<StatusResponse>> {
   }
 
   const [config, session] = await Promise.all([storage.getConfig(), storage.getSession()]);
+  const participantName = session?.participant || config.agentName || '';
 
   let inboxUnread = 0;
   let inboxTotal = 0;
   let peersOnline = 0;
+  let authError: string | undefined;
+  let inboxError: string | undefined;
+  let peersError: string | undefined;
 
-  if (session?.participant) {
+  if (!session) {
+    authError = '未找到本地 session';
+  } else if (!participantName) {
+    authError = 'session 中未包含 participant，且 config.agentName 为空';
+  }
+
+  // list_participants 在 daemon 端免认证，在线时即可查询
+  const peersRes = await apiRequest<unknown[]>({
+    type: 'list_participants',
+    payload: { participant_type: null, include_deleted: false, active_only: true },
+    needsAuth: false,
+  });
+  if (peersRes.ok) {
+    const list = Array.isArray(peersRes.data) ? peersRes.data : [];
+    peersOnline = list.filter((p: any) => p?.status === 'online').length;
+  } else {
+    peersError = peersRes.error.message;
+  }
+
+  // inbox 需要有效 session + participantName
+  if (session && participantName) {
     const inboxRes = await apiRequest<unknown[]>({
       type: 'inbox',
-      payload: { participant: session.participant, status: 'all', limit: 1000, peek: true },
+      payload: { participant: participantName, status: 'all', limit: 1000, peek: true },
     });
     if (inboxRes.ok) {
       const items = Array.isArray(inboxRes.data) ? inboxRes.data : [];
@@ -125,27 +149,23 @@ export async function getStatus(): Promise<ApiResult<StatusResponse>> {
         const delivery = i?.delivery || (i?.recipients?.[0] ? { status: i.recipients[0].status, read_at: i.recipients[0].read_at } : {});
         return !delivery.read_at && (delivery.status === 'pending' || delivery.status === 'unread');
       }).length;
-    }
-
-    const peersRes = await apiRequest<unknown[]>({
-      type: 'list_participants',
-      payload: { participant_type: null, include_deleted: false, active_only: true },
-    });
-    if (peersRes.ok) {
-      const list = Array.isArray(peersRes.data) ? peersRes.data : [];
-      peersOnline = list.filter((p: any) => p?.status === 'online').length;
+    } else {
+      inboxError = inboxRes.error.message;
     }
   }
 
   return ok({
     connected: true,
     url: config.daemonUrl || BASE_URL,
-    agentName: session?.participant || config.agentName || '',
+    agentName: participantName,
     sessionPresent: !!session,
     configPresent: !!config,
     inboxUnread,
     inboxTotal,
     peersOnline,
+    authError,
+    inboxError,
+    peersError,
   });
 }
 

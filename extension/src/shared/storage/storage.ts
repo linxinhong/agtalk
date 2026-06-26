@@ -34,6 +34,44 @@ export interface AgtalkSession {
   workspace_id?: string;
 }
 
+// 兼容旧插件/变体 session 形状，仅在读取时归一化，不修改 storage key
+interface LegacySessionShape {
+  session?: { id?: string; token?: string };
+  name?: string;
+  session_id?: string;
+  token?: string;
+  participant?: string | { name?: string };
+  workspace_id?: string;
+}
+
+function normalizeParticipant(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object' && 'name' in value && typeof (value as { name?: string }).name === 'string') {
+    return (value as { name: string }).name;
+  }
+  return undefined;
+}
+
+export function normalizeSession(raw: LegacySessionShape | null): AgtalkSession | null {
+  if (!raw || typeof raw !== 'object') return null;
+
+  const session_id =
+    (typeof raw.session_id === 'string' ? raw.session_id : undefined) ||
+    (raw.session && typeof raw.session.id === 'string' ? raw.session.id : undefined);
+  const token =
+    (typeof raw.token === 'string' ? raw.token : undefined) ||
+    (raw.session && typeof raw.session.token === 'string' ? raw.session.token : undefined);
+
+  if (!session_id || !token) return null;
+
+  return {
+    session_id,
+    token,
+    participant: normalizeParticipant(raw.participant) || normalizeParticipant(raw.name),
+    workspace_id: typeof raw.workspace_id === 'string' ? raw.workspace_id : undefined,
+  };
+}
+
 const DEFAULT_CONFIG: AgtalkConfig = {
   daemonUrl: 'http://127.0.0.1:19527',
   agtalkUrl: 'http://127.0.0.1:19527',
@@ -86,7 +124,8 @@ export const storage = {
   },
 
   async getSession(): Promise<AgtalkSession | null> {
-    return this.get<AgtalkSession>(StorageKeys.SESSION);
+    const raw = await this.get<LegacySessionShape>(StorageKeys.SESSION);
+    return normalizeSession(raw);
   },
 
   async saveSession(value: AgtalkSession): Promise<void> {

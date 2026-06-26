@@ -81,6 +81,9 @@ function App() {
               <p>agent: {status.data.agentName || '-'}</p>
               <p>inbox: {status.data.inboxUnread ?? 0}/{status.data.inboxTotal ?? 0}</p>
               <p>peers online: {status.data.peersOnline ?? 0}</p>
+              {status.data.authError && <p className="text-orange-600">auth: {status.data.authError}</p>}
+              {status.data.inboxError && <p className="text-orange-600">inbox: {status.data.inboxError}</p>}
+              {status.data.peersError && <p className="text-orange-600">peers: {status.data.peersError}</p>}
             </div>
           ) : (
             <p className="text-red-600">{status.error.code}: {status.error.message}</p>

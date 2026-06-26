@@ -84,6 +84,9 @@ export interface StatusResponse {
   inboxUnread?: number;
   inboxTotal?: number;
   peersOnline?: number;
+  authError?: string;
+  inboxError?: string;
+  peersError?: string;
   error?: string;
 }
 
