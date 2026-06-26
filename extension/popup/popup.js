@@ -10,8 +10,8 @@ const DEFAULT_CONFIG = {
   agentBio: 'Web AI bridge participant',
   agentCapabilities: '',
   targetAgent: '',
-  activePeer: '',
   connectedPeers: [],
+  autoInjectPeers: [],
   enabled: true,
   autoForward: false,
   autoReceive: true,
@@ -276,10 +276,6 @@ async function loadPeers() {
     if (p.name && p.connected && p.name !== currentConfig.agentName) connected.add(p.name);
   });
   currentConfig.connectedPeers = Array.from(connected);
-  if (!currentConfig.activePeer && currentConfig.connectedPeers.length > 0) {
-    currentConfig.activePeer = currentConfig.connectedPeers[0];
-    currentConfig.targetAgent = currentConfig.activePeer;
-  }
   await saveConfig();
   peers = result.peers.filter((p) => p.name !== currentConfig.agentName);
 
@@ -309,7 +305,6 @@ function onPeerSelectChange() {
     if (!currentConfig.connectedPeers.includes(select.value)) {
       currentConfig.connectedPeers.push(select.value);
     }
-    currentConfig.activePeer = select.value;
     saveConfig();
     renderPeerSummary();
   }
@@ -324,8 +319,7 @@ function renderPeerSummary() {
   const manageBtn = $('manage-peers-btn');
   if (manageBtn) {
     const count = (currentConfig.connectedPeers || []).length;
-    const active = currentConfig.activePeer || '无';
-    manageBtn.title = count > 0 ? ('Agent 管理: ' + active + ' · 已连接 ' + count) : 'Agent 管理';
+    manageBtn.title = count > 0 ? ('Agent 管理: 已连接 ' + count) : 'Agent 管理';
   }
 }
 
@@ -360,31 +354,32 @@ async function loadAgentLists() {
   renderConnectedPeers(connected);
   renderAvailablePeers(available);
   const count = currentConfig.connectedPeers ? currentConfig.connectedPeers.length : 0;
-  $('agents-active-label').textContent = count > 0
-    ? ('当前: ' + (currentConfig.activePeer || '无') + ' · 已连接 ' + count)
-    : '无 active peer';
+  $('agents-active-label').textContent = count > 0 ? ('已连接 ' + count) : '无已连接 Agent';
 }
 
 function renderConnectedPeers(connected) {
   const container = $('connected-peer-list');
+  const globalEnabled = !!currentConfig.autoInject;
   if (!connected || connected.length === 0) {
     container.innerHTML = '<div class="empty-inline">尚未连接 Agent</div>';
     return;
   }
   container.innerHTML = connected.map(function (p) {
-    var active = p.name === currentConfig.activePeer;
-    return '<div class="peer-row' + (active ? ' active' : '') + '" data-name="' + escapeHtml(p.name) + '">' +
+    var autoInject = currentConfig.autoInjectPeers.includes(p.name);
+    var btnClass = 'peer-btn auto-inject' + (autoInject ? ' on' : '') + (globalEnabled ? '' : ' disabled');
+    var btnText = globalEnabled ? (autoInject ? '自动注入：开' : '自动注入：关') : '自动注入：关';
+    return '<div class="peer-row" data-name="' + escapeHtml(p.name) + '">' +
       '<div class="peer-main">' +
       '<span class="peer-name">' + escapeHtml(p.name) + '</span>' +
       '<span class="peer-role">' + escapeHtml(peerDescription(p)) + '</span>' +
       '</div>' +
       '<div class="peer-actions">' +
-      '<button class="peer-btn set-active" data-name="' + escapeHtml(p.name) + '">' + (active ? '当前' : '设为当前') + '</button>' +
-      '<button class="peer-btn disconnect" data-name="' + escapeHtml(p.name) + '">移除</button>' +
+      '<button class="' + btnClass + '" data-name="' + escapeHtml(p.name) + '"' + (globalEnabled ? '' : ' disabled') + '>' + btnText + '</button>' +
+      '<button class="peer-btn disconnect" data-name="' + escapeHtml(p.name) + '">断开</button>' +
       '</div></div>';
   }).join('');
-  container.querySelectorAll('.set-active').forEach(function (btn) {
-    btn.addEventListener('click', function () { setActivePeer(btn.dataset.name); });
+  container.querySelectorAll('.auto-inject').forEach(function (btn) {
+    btn.addEventListener('click', function () { toggleAutoInjectPeer(btn.dataset.name); });
   });
   container.querySelectorAll('.disconnect').forEach(function (btn) {
     btn.addEventListener('click', function () { disconnectPeer(btn.dataset.name); });
@@ -417,10 +412,6 @@ function connectPeer(name) {
   if (!currentConfig.connectedPeers.includes(name)) {
     currentConfig.connectedPeers.push(name);
   }
-  if (!currentConfig.activePeer) {
-    currentConfig.activePeer = name;
-    currentConfig.targetAgent = name;
-  }
   saveConfig().then(function () {
     loadAgentLists();
     renderPeerSummary();
@@ -428,24 +419,22 @@ function connectPeer(name) {
   });
 }
 
-async function setActivePeer(name) {
-  if (!name || !currentConfig.connectedPeers.includes(name)) return;
-  currentConfig.activePeer = name;
-  currentConfig.targetAgent = name;
+async function toggleAutoInjectPeer(name) {
+  if (!name || !currentConfig.autoInject) return;
+  const idx = currentConfig.autoInjectPeers.indexOf(name);
+  if (idx >= 0) {
+    currentConfig.autoInjectPeers.splice(idx, 1);
+  } else {
+    currentConfig.autoInjectPeers.push(name);
+  }
   await saveConfig();
   loadAgentLists();
-  renderPeerSummary();
-  loadPeers();
-  showMainView();
 }
 
 async function disconnectPeer(name) {
   if (!name) return;
   currentConfig.connectedPeers = currentConfig.connectedPeers.filter(function (p) { return p !== name; });
-  if (currentConfig.activePeer === name) {
-    currentConfig.activePeer = currentConfig.connectedPeers[0] || '';
-    currentConfig.targetAgent = currentConfig.activePeer;
-  }
+  currentConfig.autoInjectPeers = currentConfig.autoInjectPeers.filter(function (p) { return p !== name; });
   await saveConfig();
   loadAgentLists();
   renderPeerSummary();
@@ -498,13 +487,9 @@ function normalizeConfig(cfg) {
     connectedPeers.unshift(merged.targetAgent);
   }
   merged.connectedPeers = Array.from(new Set(connectedPeers));
-  if (merged.activePeer && merged.connectedPeers.indexOf(merged.activePeer) < 0) {
-    merged.activePeer = '';
-  }
-  if (!merged.activePeer && merged.connectedPeers.length > 0) {
-    merged.activePeer = merged.connectedPeers[0];
-    merged.targetAgent = merged.activePeer;
-  }
+  merged.autoInjectPeers = Array.isArray(merged.autoInjectPeers)
+    ? merged.autoInjectPeers.map(function (p) { return String(p).trim(); }).filter(Boolean)
+    : [];
   return merged;
 }
 
@@ -522,6 +507,12 @@ function renderAutoInjectButton() {
 
 async function toggleAutoInject() {
   currentConfig.autoInject = !currentConfig.autoInject;
+  // 全局关闭时：清空 peer 级自动注入列表，并通知所有 tab 停止自动回复
+  if (!currentConfig.autoInject) {
+    currentConfig.autoInjectPeers = [];
+    await chrome.runtime.sendMessage({ type: 'PAUSE_ALL_AUTO_REPLY' });
+  }
   await saveConfig();
   renderAutoInjectButton();
+  loadAgentLists();
 }

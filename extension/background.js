@@ -24,6 +24,8 @@ const DEFAULT_CONFIG = {
   autoForward: false,
   autoReceive: true,
   autoInject: false,
+  connectedPeers: [],
+  autoInjectPeers: [],
   enableChatgpt: true,
   enableClaude: true,
   enableSider: true,
@@ -32,9 +34,7 @@ const DEFAULT_CONFIG = {
   pollInterval: 5000,
   workspaceRoot: '/virtual/web-bridge',
   workspaceName: 'web-bridge',
- captureDelay: 300,
-  activePeer: '',
-  connectedPeers: [],
+  captureDelay: 300,
 };
 let runtimeConfig = { ...DEFAULT_CONFIG };
 let agtalkClient = null;
@@ -389,7 +389,9 @@ async function pollInbox() {
       MessageStore.save(item).catch((err) => console.error('[BG] 保存消息失败:', err.message));
       const fromPeer = item.from?.name || item.from_agent || '';
       const isAutoReply = isAutoReplyMessage(fromPeer);
-      if (runtimeConfig.autoInject || isAutoReply) {
+      const autoInjectPeers = Array.isArray(runtimeConfig.autoInjectPeers) ? runtimeConfig.autoInjectPeers : [];
+      const shouldAutoInject = runtimeConfig.autoInject && autoInjectPeers.includes(fromPeer);
+      if (shouldAutoInject || isAutoReply) {
         await dispatchIncomingToWebTabs(item);
         MessageStore.markInjected(item.id).catch(() => {});
         // 自动注入后只标记已读，不标记完成，这样消息仍保留在 inbox 中
@@ -944,6 +946,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         await setAutoReplyPeer(tabId, '', url);
       }
       finish({ ok: true, peer: '', tabId });
+      return true;
+    }
+    case 'PAUSE_ALL_AUTO_REPLY': {
+      try {
+        // 清除所有 tab 的 autoReplyPeer
+        const keys = Object.keys(tabPeerHints);
+        for (const tabIdStr of keys) {
+          const hint = tabPeerHints[tabIdStr];
+          if (hint?.autoReplyPeer) {
+            await setAutoReplyPeer(Number(tabIdStr), '');
+          }
+        }
+        // 通知所有匹配标签页停止自动回复
+        const patterns = ['https://chatgpt.com/*', 'https://claude.ai/*', 'https://sider.ai/*', 'https://chatglm.cn/*'];
+        const allTabs = await new Promise((resolve) => chrome.tabs.query({ url: patterns }, resolve));
+        if (Array.isArray(allTabs)) {
+          for (const tab of allTabs) {
+            chrome.tabs.sendMessage(tab.id, { type: 'PAUSE_AUTO_REPLY' }, () => {
+              chrome.runtime.lastError;
+            });
+          }
+        }
+        finish({ ok: true });
+      } catch (err) {
+        finish({ ok: false, error: err.message });
+      }
       return true;
     }
     case 'GET_CONNECTED_PEERS':

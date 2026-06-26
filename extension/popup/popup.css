@@ -154,6 +154,15 @@ header h1 { margin: 0; font-size: 16px; }
   cursor: pointer;
 }
 .peer-btn:hover { background: var(--border); }
+.peer-btn.auto-inject.on {
+  background: rgba(26, 127, 55, 0.12);
+  color: #1a7f37;
+  border-color: rgba(26, 127, 55, 0.3);
+}
+.peer-btn.auto-inject.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 .connect-peer {
   background: var(--primary) !important;
   color: #fff !important;
