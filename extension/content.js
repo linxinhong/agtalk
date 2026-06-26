@@ -167,13 +167,6 @@ function captureAndSend() {
       }
     }
 
-    // 如果上一条 user 消息是 agtalk 自动注入的 Agent 回复，说明这是 Agent 回复后页面 AI 的回应，不再转发，避免循环
-    if (isAgtalkInjected(userText)) {
-      console.log('[CS] 跳过由 agtalk 注入消息触发的 AI 回复转发');
-      resetState();
-      return;
-    }
-
     const parsed = parseDirectives(userText);
     const payload = {
       source: runtimeConfig.agentName || `${currentPlatform.id}_web`,
