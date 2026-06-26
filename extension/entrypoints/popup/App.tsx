@@ -1,15 +1,16 @@
 import { useState } from 'react';
+import { Activity, ExternalLink } from 'lucide-react';
 
 function App() {
   const [pong, setPong] = useState<boolean | null>(null);
 
   const pingBackground = async () => {
-    const res = await chrome.runtime.sendMessage({ type: 'WXT_PING' });
+    const res = await chrome.runtime.sendMessage({ type: 'PING_BACKGROUND' });
     setPong(res?.pong ?? false);
   };
 
-  const openApp = () => {
-    chrome.tabs.create({ url: chrome.runtime.getURL('/app.html') });
+  const openApp = async () => {
+    await chrome.runtime.sendMessage({ type: 'OPEN_APP_PAGE' });
   };
 
   return (
@@ -19,14 +20,16 @@ function App() {
       <div className="flex gap-2">
         <button
           onClick={pingBackground}
-          className="flex-1 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
+          className="flex items-center justify-center gap-1.5 flex-1 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
         >
+          <Activity size={14} />
           Ping BG
         </button>
         <button
           onClick={openApp}
-          className="flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+          className="flex items-center justify-center gap-1.5 flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
         >
+          <ExternalLink size={14} />
           Open App
         </button>
       </div>
