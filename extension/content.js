@@ -439,6 +439,12 @@ function setAutoReplyPeer(peer, cb) {
   });
 }
 
+function pauseAutoReply() {
+  setAutoReplyPeer('', function (err) {
+    if (err) console.error('[CS] 取消自动回复失败:', err);
+  });
+}
+
 let currentAutoReplyPeer = '';
 
 function refreshAutoReplyState(cb) {
