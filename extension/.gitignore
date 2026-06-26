@@ -1,0 +1,12 @@
+# Dependencies
+node_modules/
+
+# WXT build outputs
+.output/
+.output-*/
+
+# Local state
+.wxt/
+
+# OS files
+.DS_Store
