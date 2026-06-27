@@ -4,9 +4,10 @@ interface HeaderProps {
   title: string;
   showBack?: boolean;
   onBack?: () => void;
+  rightActions?: React.ReactNode;
 }
 
-export function Header({ title, showBack, onBack }: HeaderProps) {
+export function Header({ title, showBack, onBack, rightActions }: HeaderProps) {
   return (
     <header className="flex items-center justify-between px-3 py-2.5 bg-white border-b border-gray-200">
       <div className="flex items-center gap-2">
@@ -16,20 +17,23 @@ export function Header({ title, showBack, onBack }: HeaderProps) {
             className="p-1 rounded hover:bg-gray-100 text-gray-600"
             aria-label="返回"
           >
-            <ArrowLeft size={16} />
+            <ArrowLeft size={18} />
           </button>
         ) : (
           <span className="w-6" />
         )}
         <h1 className="text-base font-semibold text-gray-900">{title}</h1>
       </div>
-      <button
-        onClick={() => window.close()}
-        className="p-1 rounded hover:bg-gray-100 text-gray-500"
-        aria-label="关闭"
-      >
-        <X size={16} />
-      </button>
+      <div className="flex items-center gap-1">
+        {rightActions}
+        <button
+          onClick={() => window.close()}
+          className="p-1 rounded hover:bg-gray-100 text-gray-500"
+          aria-label="关闭"
+        >
+          <X size={18} />
+        </button>
+      </div>
     </header>
   );
 }

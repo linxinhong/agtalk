@@ -1,10 +1,10 @@
+import { useState } from 'react';
 import { Activity, HeartPulse, Gauge, RefreshCw, ChevronRight } from 'lucide-react';
 import { Header } from '../components/Header';
 import { ErrorBox } from '../components/ErrorBox';
 import { usePopupStore } from '../store';
 import { MessageType } from '@/shared/messaging/message-types';
 import { sendMessage } from '@/shared/messaging/send-message';
-import { useState } from 'react';
 
 export function DebugPage() {
   const store = usePopupStore();
@@ -15,41 +15,35 @@ export function DebugPage() {
     setPong(res?.pong ?? false);
   };
 
-  const ActionButton = ({
-    icon: Icon,
-    label,
-    onClick,
-  }: {
-    icon: React.ElementType;
-    label: string;
-    onClick: () => void;
-  }) => (
-    <button
-      onClick={onClick}
-      disabled={store.loading}
-      className="flex items-center justify-center gap-1.5 rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
-    >
-      <Icon size={14} />
-      {label}
-    </button>
-  );
-
   return (
-    <div className="flex flex-col h-full bg-gray-50">
-      <Header title="调试" showBack onBack={() => store.back()} />
+    <div className="flex flex-col h-full bg-gray-100">
+      <Header
+        title="调试"
+        showBack
+        onBack={() => store.back()}
+        rightActions={
+          <button
+            onClick={() => store.loadAll()}
+            disabled={store.loading}
+            className="p-1.5 rounded-md hover:bg-gray-100 text-gray-500 disabled:opacity-50"
+            title="重载"
+          >
+            <RefreshCw size={16} className={store.loading ? 'animate-spin' : ''} />
+          </button>
+        }
+      />
       <ErrorBox error={store.lastError} onClose={() => store.setLastError(null)} />
 
       <div className="flex-1 overflow-y-auto p-3 space-y-3">
-        <div className="grid grid-cols-2 gap-2">
-          <ActionButton icon={Activity} label="Ping BG" onClick={pingBackground} />
-          <ActionButton icon={HeartPulse} label="Health" onClick={() => store.loadHealth()} />
-          <ActionButton icon={Gauge} label="Status" onClick={() => store.loadStatus()} />
-          <ActionButton icon={RefreshCw} label="Reload" onClick={() => store.loadAll()} />
+        <div className="grid grid-cols-3 gap-2">
+          <ActionButton icon={Activity} label="Ping" onClick={pingBackground} disabled={store.loading} />
+          <ActionButton icon={HeartPulse} label="Health" onClick={() => store.loadHealth()} disabled={store.loading} />
+          <ActionButton icon={Gauge} label="Status" onClick={() => store.loadStatus()} disabled={store.loading} />
         </div>
 
         {pong !== null && (
           <div className="bg-white rounded-lg border border-gray-200 p-2 text-sm">
-            Ping background: <span className={pong ? 'text-green-600' : 'text-red-600'}>{pong ? 'pong' : 'no response'}</span>
+            Ping background: <span className={pong ? 'text-green-600' : 'text-red-500'}>{pong ? 'pong' : 'no response'}</span>
           </div>
         )}
 
@@ -82,6 +76,29 @@ export function DebugPage() {
         )}
       </div>
     </div>
+  );
+}
+
+function ActionButton({
+  icon: Icon,
+  label,
+  onClick,
+  disabled,
+}: {
+  icon: React.ElementType;
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className="flex flex-col items-center justify-center gap-1 rounded-lg border border-gray-200 bg-white py-2.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:bg-gray-100"
+    >
+      <Icon size={16} />
+      {label}
+    </button>
   );
 }
 

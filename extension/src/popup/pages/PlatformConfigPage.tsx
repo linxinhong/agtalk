@@ -36,13 +36,27 @@ export function PlatformConfigPage() {
   };
 
   return (
-    <div className="flex flex-col h-full bg-gray-50">
-      <Header title="平台开关" showBack onBack={() => store.back()} />
+    <div className="flex flex-col h-full bg-gray-100">
+      <Header
+        title="平台开关"
+        showBack
+        onBack={() => store.back()}
+        rightActions={
+          <button
+            onClick={save}
+            disabled={store.loading}
+            className="p-1.5 rounded-md hover:bg-gray-100 text-blue-600 disabled:opacity-50"
+            title="保存"
+          >
+            <Save size={18} />
+          </button>
+        }
+      />
       <ErrorBox error={store.lastError} onClose={() => store.setLastError(null)} />
 
       <div className="flex-1 overflow-y-auto p-3 space-y-3">
-        <div className="bg-white rounded-lg border border-gray-200 p-3">
-          <div className="flex items-center gap-2 mb-2">
+        <section className="bg-white rounded-lg border border-gray-200 p-3">
+          <div className="flex items-center gap-2 mb-3">
             <Monitor size={16} className="text-gray-500" />
             <span className="text-sm font-medium text-gray-700">注入目标平台</span>
           </div>
@@ -53,16 +67,7 @@ export function PlatformConfigPage() {
             <Toggle label="ChatGLM" checked={chatglm} onChange={setChatglm} />
             <Toggle label="自定义" checked={custom} onChange={setCustom} />
           </div>
-        </div>
-
-        <button
-          onClick={save}
-          disabled={store.loading}
-          className="w-full inline-flex items-center justify-center gap-1.5 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-        >
-          <Save size={14} />
-          保存平台配置
-        </button>
+        </section>
       </div>
     </div>
   );

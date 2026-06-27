@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Save, Globe } from 'lucide-react';
+import { Save, Globe, RefreshCw, Bug } from 'lucide-react';
 import { Header } from '../components/Header';
 import { ErrorBox } from '../components/ErrorBox';
 import { usePopupStore } from '../store';
@@ -14,19 +14,43 @@ export function LocalServicePage() {
   }, [config?.daemonUrl]);
 
   const save = async () => {
-    const saved = await store.saveConfig({ daemonUrl: url.trim(), agtalkUrl: url.trim() });
+    const trimmed = url.trim();
+    const saved = await store.saveConfig({ daemonUrl: trimmed, agtalkUrl: trimmed });
     if (saved) {
-      await store.loadStatus();
+      await Promise.all([store.loadHealth(), store.loadStatus()]);
     }
   };
 
   return (
-    <div className="flex flex-col h-full bg-gray-50">
-      <Header title="本地服务" showBack onBack={() => store.back()} />
+    <div className="flex flex-col h-full bg-gray-100">
+      <Header
+        title="本地服务"
+        showBack
+        onBack={() => store.back()}
+        rightActions={
+          <>
+            <button
+              onClick={() => store.loadStatus()}
+              disabled={store.loading}
+              className="p-1.5 rounded-md hover:bg-gray-100 text-gray-500 disabled:opacity-50"
+              title="刷新"
+            >
+              <RefreshCw size={16} className={store.loading ? 'animate-spin' : ''} />
+            </button>
+            <button
+              onClick={() => store.navigate('debug')}
+              className="p-1.5 rounded-md hover:bg-gray-100 text-gray-500"
+              title="调试"
+            >
+              <Bug size={16} />
+            </button>
+          </>
+        }
+      />
       <ErrorBox error={store.lastError} onClose={() => store.setLastError(null)} />
 
       <div className="flex-1 overflow-y-auto p-3 space-y-3">
-        <div className="bg-white rounded-lg border border-gray-200 p-3 space-y-3">
+        <section className="bg-white rounded-lg border border-gray-200 p-3 space-y-3">
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Daemon URL</label>
             <div className="flex items-center gap-2">
@@ -40,11 +64,13 @@ export function LocalServicePage() {
             </div>
           </div>
 
-          <div className="text-xs text-gray-500 bg-gray-50 rounded p-2">
-            <p>当前状态: {store.status?.ok ? '在线' : store.status?.error.code || '未连接'}</p>
-            {store.status?.ok && <p className="mt-1">{store.status.data.url}</p>}
+          <div className="text-xs bg-gray-50 rounded p-2 space-y-1">
+            <p className="text-gray-500">
+              状态: <span className={store.status?.ok ? 'text-green-600' : 'text-red-500'}>{store.status?.ok ? '在线' : store.status?.error.code || '未连接'}</span>
+            </p>
+            {store.status?.ok && <p className="text-gray-500">{store.status.data.url}</p>}
           </div>
-        </div>
+        </section>
 
         <button
           onClick={save}

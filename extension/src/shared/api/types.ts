@@ -177,6 +177,22 @@ export interface LogItem {
   message: string;
 }
 
+export interface InboxItem {
+  id: string;
+  from_name: string;
+  subject?: string | null;
+  body: string;
+  created_at: string;
+  status?: string;
+  read_at?: string | null;
+  delivery?: { status?: string; read_at?: string | null };
+}
+
+export interface InboxStats {
+  unread: number;
+  total: number;
+}
+
 export interface Peer {
   id: string;
   name: string;

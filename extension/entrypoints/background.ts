@@ -1,7 +1,7 @@
 import { defineBackground } from 'wxt/sandbox';
 import { MessageType } from '@/shared/messaging/message-types';
 import { createBackgroundRouter } from '@/shared/messaging/handlers';
-import { getHealth, getStatus, join, listParticipants } from '@/shared/api/client';
+import { getHealth, getStatus, getInbox, join, listParticipants } from '@/shared/api/client';
 import { storage } from '@/shared/storage/storage';
 
 export default defineBackground(() => {
@@ -37,7 +37,7 @@ export default defineBackground(() => {
 
     [MessageType.SAVE_CONFIG]: async (message) => {
       try {
-        const patch = (message.payload || {}) as Record<string, unknown>;
+        const patch = ((message.payload || (message as any).config || {}) as Record<string, unknown>) || {};
         const config = await storage.saveConfig(patch);
         return { ok: true, data: config };
       } catch (err) {
@@ -91,6 +91,35 @@ export default defineBackground(() => {
       const res = await join(config.agentName, config);
       if (!res.ok) return res;
       return { ok: true, data: { session_id: res.data.session_id, participant: config.agentName } };
+    },
+
+    [MessageType.GET_RECENT_MESSAGES]: async () => {
+      // 本地 IndexedDB 消息缓存未迁移，返回结构化错误，避免 UI 使用假数据
+      return { ok: false, error: { code: 'not_migrated', message: '本地消息缓存未迁移' } };
+    },
+
+    [MessageType.AGTALK_INBOX]: async (message) => {
+      const limit = (message.payload as { limit?: number })?.limit ?? 5;
+      return getInbox(limit, 'all');
+    },
+
+    [MessageType.AGTALK_INBOX_STATS]: async () => {
+      const status = await getStatus();
+      if (!status.ok) return status;
+      return {
+        ok: true,
+        data: {
+          unread: status.data.inboxUnread ?? 0,
+          total: status.data.inboxTotal ?? 0,
+          authError: status.data.authError,
+          inboxError: status.data.inboxError,
+        },
+      };
+    },
+
+    [MessageType.PAUSE_ALL_AUTO_REPLY]: async () => {
+      // content script 自动回复逻辑未迁移；这里只消费消息，不执行复杂业务
+      return { ok: true, data: { paused: true } };
     },
   });
 

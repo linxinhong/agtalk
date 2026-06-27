@@ -7,6 +7,7 @@ import type {
   ConfigResponse,
   Conversation,
   HealthResponse,
+  InboxItem,
   Message,
   Peer,
   SendReplyResponse,
@@ -244,12 +245,24 @@ export async function getLogs(): Promise<ApiResult<LogItem[]>> {
   return fail('not_implemented', 'daemon 暂未暴露日志查询接口');
 }
 
+export async function getInbox(limit = 5, statusFilter = 'all'): Promise<ApiResult<InboxItem[]>> {
+  const session = await storage.getSession();
+  const participant = session?.participant || (await storage.getConfig()).agentName || '';
+  return apiRequest<InboxItem[]>({
+    type: 'inbox',
+    payload: { participant: participant || null, status: statusFilter, limit, peek: false },
+  });
+}
+
 export async function listParticipants(): Promise<ApiResult<Peer[]>> {
-  return apiRequest<Peer[]>({
+  const res = await apiRequest<Peer[] | { participants?: Peer[] }>({
     type: 'list_participants',
     payload: { participant_type: null, include_deleted: false, active_only: true },
     needsAuth: false,
   });
+  if (!res.ok) return res as ApiResult<Peer[]>;
+  const list = Array.isArray(res.data) ? res.data : res.data.participants ?? [];
+  return ok(list);
 }
 
 export interface JoinResult {
