@@ -1,7 +1,19 @@
 import { defineBackground } from 'wxt/sandbox';
 import { MessageType } from '@/shared/messaging/message-types';
 import { createBackgroundRouter } from '@/shared/messaging/handlers';
-import { getHealth, getStatus, getInbox, join, listParticipants } from '@/shared/api/client';
+import {
+  getHealth,
+  getStatus,
+  getInbox,
+  getConfig,
+  saveConfig,
+  getConversations,
+  getConversationMessages,
+  sendReply,
+  getLogs,
+  join,
+  listParticipants,
+} from '@/shared/api/client';
 import { storage } from '@/shared/storage/storage';
 
 export default defineBackground(() => {
@@ -25,6 +37,33 @@ export default defineBackground(() => {
 
     [MessageType.API_HEALTH_CHECK]: async () => getHealth(),
     [MessageType.API_GET_STATUS]: async () => getStatus(),
+
+    [MessageType.API_GET_CONFIG]: async () => getConfig(),
+
+    [MessageType.API_SAVE_CONFIG]: async (message) => {
+      const patch = ((message.payload || (message as any).config || {}) as Record<string, unknown>) || {};
+      return saveConfig(patch);
+    },
+
+    [MessageType.API_GET_CONVERSATIONS]: async () => getConversations(),
+
+    [MessageType.API_GET_CONVERSATION_MESSAGES]: async (message) => {
+      const payload = (message.payload || {}) as { id?: string; conversationId?: string };
+      const id = payload.id || payload.conversationId || '';
+      if (!id) return { ok: false, error: { code: 'missing_id', message: '缺少 conversation id' } };
+      return getConversationMessages(id);
+    },
+
+    [MessageType.API_SEND_REPLY]: async (message) => {
+      const payload = (message.payload || {}) as { id?: string; replyToMsgId?: string; text?: string };
+      const replyToMsgId = payload.id || payload.replyToMsgId || '';
+      const text = payload.text || '';
+      if (!replyToMsgId) return { ok: false, error: { code: 'missing_id', message: '缺少回复消息 id' } };
+      if (!text) return { ok: false, error: { code: 'missing_text', message: '回复内容为空' } };
+      return sendReply(replyToMsgId, text);
+    },
+
+    [MessageType.API_GET_LOGS]: async () => getLogs(),
 
     [MessageType.GET_CONFIG]: async () => {
       try {

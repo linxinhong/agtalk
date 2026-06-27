@@ -201,19 +201,23 @@ export async function saveConfig(patch: Partial<ConfigResponse>): Promise<ApiRes
 export async function getConversations(): Promise<ApiResult<Conversation[]>> {
   const session = await storage.getSession();
   const participant = session?.participant || (await storage.getConfig()).agentName || '';
-  return apiRequest<Conversation[]>({
+  const res = await apiRequest<Conversation[] | { conversations?: Conversation[]; items?: Conversation[] }>({
     type: 'list_conversations',
     payload: { participant: participant || null },
   });
+  if (!res.ok) return res as ApiResult<Conversation[]>;
+  return ok(normalizeListResponse(res.data));
 }
 
 export async function getConversationMessages(id: string): Promise<ApiResult<Message[]>> {
   const session = await storage.getSession();
   const participant = session?.participant || (await storage.getConfig()).agentName || '';
-  return apiRequest<Message[]>({
+  const res = await apiRequest<Message[] | { messages?: Message[]; items?: Message[] }>({
     type: 'get_messages',
     payload: { conversation_id: id, participant: participant || null, limit: 50, before: null },
   });
+  if (!res.ok) return res as ApiResult<Message[]>;
+  return ok(normalizeListResponse(res.data));
 }
 
 export async function sendReply(replyToMsgId: string, text: string): Promise<ApiResult<SendReplyResponse>> {
