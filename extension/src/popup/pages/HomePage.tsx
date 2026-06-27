@@ -188,8 +188,10 @@ export function HomePage() {
             </div>
           </div>
 
-          {inbox?.migrationPending ? (
-            <p className="text-xs text-orange-600 bg-orange-50 rounded px-2 py-2">Inbox 迁移中</p>
+          {inbox?.migrationPending || inbox?.error ? (
+            <p className="text-xs text-orange-600 bg-orange-50 rounded px-2 py-2">
+              {inbox.error ? `Inbox 加载失败: ${inbox.error}` : 'Inbox 迁移中'}
+            </p>
           ) : inbox && inbox.items.length > 0 ? (
             <div className="space-y-2">
               {inbox.items.slice(0, 5).map((item) => {

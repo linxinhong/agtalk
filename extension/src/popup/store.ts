@@ -25,6 +25,7 @@ interface InboxSummary {
   unread: number;
   total: number;
   migrationPending?: boolean;
+  error?: string;
 }
 
 export interface PopupState {
@@ -105,66 +106,95 @@ export const usePopupStore = create<PopupState & PopupActions>((set, get) => ({
   },
 
   loadConfig: async () => {
-    const res = await sendMessage<unknown, { ok: true; data: AgtalkConfig } | { ok: false; error: unknown }>({
-      type: MessageType.GET_CONFIG,
-    });
-    if (res?.ok) {
-      set({ config: res.data });
-    } else {
-      set({ lastError: parseError(res) });
+    try {
+      const res = await sendMessage<unknown, { ok: true; data: AgtalkConfig } | { ok: false; error: unknown }>({
+        type: MessageType.GET_CONFIG,
+      });
+      if (res?.ok) {
+        set({ config: res.data });
+      } else {
+        set({ lastError: parseError(res) });
+      }
+    } catch (err) {
+      set({ lastError: parseError(err) });
     }
   },
 
   loadHealth: async () => {
-    const res = await sendMessage<unknown, ApiResult<HealthResponse>>({
-      type: MessageType.API_HEALTH_CHECK,
-    });
-    set({ health: res ?? null });
+    try {
+      const res = await sendMessage<unknown, ApiResult<HealthResponse>>({
+        type: MessageType.API_HEALTH_CHECK,
+      });
+      set({ health: res ?? null });
+    } catch (err) {
+      set({ health: { ok: false, error: { code: 'send_error', message: parseError(err) } } });
+    }
   },
 
   loadStatus: async () => {
-    const res = await sendMessage<unknown, ApiResult<StatusResponse>>({
-      type: MessageType.API_GET_STATUS,
-    });
-    set({ status: res ?? null });
+    try {
+      const res = await sendMessage<unknown, ApiResult<StatusResponse>>({
+        type: MessageType.API_GET_STATUS,
+      });
+      set({ status: res ?? null });
+    } catch (err) {
+      set({ status: { ok: false, error: { code: 'send_error', message: parseError(err) } } });
+    }
   },
 
   loadPeers: async () => {
-    const res = await sendMessage<unknown, { ok: true; data: PeerListData } | { ok: false; error: unknown }>({
-      type: MessageType.GET_CONNECTED_PEERS,
-    });
-    if (res?.ok) {
-      set({ peers: res.data });
-    } else {
-      set({ lastError: parseError(res) });
+    try {
+      const res = await sendMessage<unknown, { ok: true; data: PeerListData } | { ok: false; error: unknown }>({
+        type: MessageType.GET_CONNECTED_PEERS,
+      });
+      if (res?.ok) {
+        set({ peers: res.data });
+      } else {
+        set({ lastError: parseError(res) });
+      }
+    } catch (err) {
+      set({ lastError: parseError(err) });
     }
   },
 
   loadInbox: async () => {
-    // 优先尝试 daemon inbox 摘要；GET_RECENT_MESSAGES 本地缓存未迁移
-    const inboxRes = await sendMessage<{ limit?: number }, ApiResult<InboxItem[]>>({
-      type: MessageType.AGTALK_INBOX,
-      payload: { limit: 5 },
-    });
-    if (inboxRes?.ok) {
-      const items = Array.isArray(inboxRes.data) ? inboxRes.data : [];
-      const unread = items.filter((i) => {
-        const delivery = i.delivery || (i as any).recipients?.[0];
-        return !i.read_at && !delivery?.read_at && (i.status === 'pending' || i.status === 'unread');
-      }).length;
-      set({ inbox: { items: items.slice(0, 5), unread, total: items.length } });
-      return;
-    }
+    try {
+      const inboxRes = await sendMessage<{ limit?: number }, ApiResult<InboxItem[]>>({
+        type: MessageType.AGTALK_INBOX,
+        payload: { limit: 5 },
+      });
+      if (inboxRes?.ok) {
+        const raw = inboxRes.data;
+        const items = Array.isArray(raw)
+          ? raw
+          : (raw as unknown as { items?: InboxItem[]; messages?: InboxItem[] }).items ??
+            (raw as unknown as { items?: InboxItem[]; messages?: InboxItem[] }).messages ??
+            [];
+        const normalized = items.slice(0, 5).map((i) => ({
+          ...i,
+          from_name: i.from_name || (i as any).from?.name || (i as any).sender_name || '未知',
+          body: i.body || (i as any).content?.body || '',
+        }));
+        const unread = normalized.filter((i) => {
+          const delivery = i.delivery || (i as any).recipients?.[0];
+          return !i.read_at && !delivery?.read_at && (i.status === 'pending' || i.status === 'unread');
+        }).length;
+        set({ inbox: { items: normalized, unread, total: normalized.length } });
+        return;
+      }
 
-    const statsRes = await sendMessage<unknown, { ok: true; data: { unread: number; total: number } } | { ok: false; error: unknown }>({
-      type: MessageType.AGTALK_INBOX_STATS,
-    });
-    if (statsRes?.ok) {
-      set({ inbox: { items: [], unread: statsRes.data.unread, total: statsRes.data.total } });
-      return;
-    }
+      const statsRes = await sendMessage<unknown, { ok: true; data: { unread: number; total: number } } | { ok: false; error: unknown }>({
+        type: MessageType.AGTALK_INBOX_STATS,
+      });
+      if (statsRes?.ok) {
+        set({ inbox: { items: [], unread: statsRes.data.unread, total: statsRes.data.total } });
+        return;
+      }
 
-    set({ inbox: { items: [], unread: 0, total: 0, migrationPending: true } });
+      set({ inbox: { items: [], unread: 0, total: 0, migrationPending: true, error: parseError(inboxRes) } });
+    } catch (err) {
+      set({ inbox: { items: [], unread: 0, total: 0, migrationPending: true, error: parseError(err) } });
+    }
   },
 
   loadAll: async () => {
@@ -223,8 +253,9 @@ export const usePopupStore = create<PopupState & PopupActions>((set, get) => ({
     const config = get().config;
     const connected = (config?.connectedPeers || []).filter((p) => p !== name);
     const autoInject = (config?.autoInjectPeers || []).filter((p) => p !== name);
-    const activePeer = config?.activePeer === name ? '' : config?.activePeer || '';
-    const targetAgent = config?.targetAgent === name ? '' : config?.targetAgent || '';
+    const fallback = connected[0] || '';
+    const activePeer = config?.activePeer === name ? fallback : config?.activePeer || '';
+    const targetAgent = config?.targetAgent === name ? fallback : config?.targetAgent || '';
     const saved = await get().saveConfig({
       connectedPeers: connected,
       autoInjectPeers: autoInject,

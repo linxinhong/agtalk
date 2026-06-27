@@ -248,10 +248,15 @@ export async function getLogs(): Promise<ApiResult<LogItem[]>> {
 export async function getInbox(limit = 5, statusFilter = 'all'): Promise<ApiResult<InboxItem[]>> {
   const session = await storage.getSession();
   const participant = session?.participant || (await storage.getConfig()).agentName || '';
-  return apiRequest<InboxItem[]>({
+  const res = await apiRequest<InboxItem[] | { items?: InboxItem[]; messages?: InboxItem[] }>({
     type: 'inbox',
     payload: { participant: participant || null, status: statusFilter, limit, peek: false },
   });
+  if (!res.ok) return res as ApiResult<InboxItem[]>;
+  const list = Array.isArray(res.data)
+    ? res.data
+    : res.data.items ?? res.data.messages ?? [];
+  return ok(list);
 }
 
 export async function listParticipants(): Promise<ApiResult<Peer[]>> {
