@@ -33,6 +33,22 @@ function fail<T>(code: string, message: string, status?: number): ApiResult<T> {
   return { ok: false, error: { code, message, status } };
 }
 
+// Daemon 列表类响应可能是数组，也可能是 { items: [...] } / { messages: [...] } / { participants: [...] }
+function normalizeListResponse<T>(
+  data: T[] | { items?: T[]; messages?: T[]; participants?: T[] }
+): T[] {
+  if (Array.isArray(data)) return data;
+  if (data && typeof data === 'object') {
+    return (
+      (data as { items?: T[] }).items ??
+      (data as { messages?: T[] }).messages ??
+      (data as { participants?: T[] }).participants ??
+      []
+    );
+  }
+  return [];
+}
+
 async function loadAuthHeaders(): Promise<
   { sessionId: string; token: string; participant?: string } | null
 > {
@@ -127,26 +143,18 @@ export async function getStatus(): Promise<ApiResult<StatusResponse>> {
   }
 
   // list_participants 在 daemon 端免认证，在线时即可查询
-  const peersRes = await apiRequest<unknown[]>({
-    type: 'list_participants',
-    payload: { participant_type: null, include_deleted: false, active_only: true },
-    needsAuth: false,
-  });
+  const peersRes = await listParticipants();
   if (peersRes.ok) {
-    const list = Array.isArray(peersRes.data) ? peersRes.data : [];
-    peersOnline = list.filter((p: any) => p?.status === 'online').length;
+    peersOnline = peersRes.data.filter((p) => p?.status === 'online').length;
   } else {
     peersError = peersRes.error.message;
   }
 
   // inbox 需要有效 session + participantName
   if (session && participantName) {
-    const inboxRes = await apiRequest<unknown[]>({
-      type: 'inbox',
-      payload: { participant: participantName, status: 'all', limit: 1000, peek: true },
-    });
+    const inboxRes = await getInbox(1000, 'all');
     if (inboxRes.ok) {
-      const items = Array.isArray(inboxRes.data) ? inboxRes.data : [];
+      const items = inboxRes.data;
       inboxTotal = items.length;
       inboxUnread = items.filter((i: any) => {
         const delivery = i?.delivery || (i?.recipients?.[0] ? { status: i.recipients[0].status, read_at: i.recipients[0].read_at } : {});
@@ -253,10 +261,7 @@ export async function getInbox(limit = 5, statusFilter = 'all'): Promise<ApiResu
     payload: { participant: participant || null, status: statusFilter, limit, peek: false },
   });
   if (!res.ok) return res as ApiResult<InboxItem[]>;
-  const list = Array.isArray(res.data)
-    ? res.data
-    : res.data.items ?? res.data.messages ?? [];
-  return ok(list);
+  return ok(normalizeListResponse(res.data));
 }
 
 export async function listParticipants(): Promise<ApiResult<Peer[]>> {
@@ -266,8 +271,7 @@ export async function listParticipants(): Promise<ApiResult<Peer[]>> {
     needsAuth: false,
   });
   if (!res.ok) return res as ApiResult<Peer[]>;
-  const list = Array.isArray(res.data) ? res.data : res.data.participants ?? [];
-  return ok(list);
+  return ok(normalizeListResponse(res.data));
 }
 
 export interface JoinResult {
