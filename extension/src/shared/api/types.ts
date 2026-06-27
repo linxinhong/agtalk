@@ -51,12 +51,36 @@ export interface SendClientMsg extends ClientMsgBase {
   notify?: boolean;
 }
 
+export interface JoinClientMsg extends ClientMsgBase {
+  type: 'join';
+  workspace_root?: string | null;
+  workspace_name?: string | null;
+  name: string;
+  participant_type?: string | null;
+  role?: string | null;
+  intro?: string | null;
+  capabilities?: string | null;
+  transport?: string | null;
+  takeover?: boolean;
+  notify?: boolean;
+  timeout_ms?: number | null;
+}
+
+export interface ListParticipantsClientMsg extends ClientMsgBase {
+  type: 'list_participants';
+  participant_type?: string | null;
+  include_deleted?: boolean;
+  active_only?: boolean;
+}
+
 export type ClientMsg =
   | PingClientMsg
   | ListConversationsClientMsg
   | GetMessagesClientMsg
   | GetMessageClientMsg
-  | SendClientMsg;
+  | SendClientMsg
+  | JoinClientMsg
+  | ListParticipantsClientMsg;
 
 export interface ServerOk<T = unknown> {
   type: 'ok';
@@ -151,4 +175,15 @@ export interface LogItem {
   timestamp: string;
   level: string;
   message: string;
+}
+
+export interface Peer {
+  id: string;
+  name: string;
+  participant_type?: string;
+  role?: string;
+  status?: string;
+  transport?: string;
+  intro?: string;
+  capabilities?: string;
 }

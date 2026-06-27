@@ -1,5 +1,5 @@
 import { storage } from '../storage/storage';
-import { createError, errorToString } from '../utils/errors';
+import { errorToString } from '../utils/errors';
 import { createTimeoutSignal } from '../utils/timeout';
 import type {
   ApiResult,
@@ -8,11 +8,13 @@ import type {
   Conversation,
   HealthResponse,
   Message,
+  Peer,
   SendReplyResponse,
   ServerMsg,
   StatusResponse,
   LogItem,
 } from './types';
+import type { AgtalkConfig } from '../storage/storage';
 import { BASE_URL, DEFAULT_TIMEOUT_MS, getApiUrl, type ApiRequestOptions } from './endpoints';
 
 function sanitizeForLog(message: string): string {
@@ -240,4 +242,49 @@ export async function sendReply(replyToMsgId: string, text: string): Promise<Api
 export async function getLogs(): Promise<ApiResult<LogItem[]>> {
   // daemon 目前没有日志端点，返回结构化 not_implemented，不伪造成功
   return fail('not_implemented', 'daemon 暂未暴露日志查询接口');
+}
+
+export async function listParticipants(): Promise<ApiResult<Peer[]>> {
+  return apiRequest<Peer[]>({
+    type: 'list_participants',
+    payload: { participant_type: null, include_deleted: false, active_only: true },
+    needsAuth: false,
+  });
+}
+
+export interface JoinResult {
+  workspace_id: string;
+  participant_id: string;
+  session_id: string;
+  token: string;
+}
+
+export async function join(name: string, config?: Partial<AgtalkConfig>): Promise<ApiResult<JoinResult>> {
+  const cfg = config || (await storage.getConfig());
+  const res = await apiRequest<JoinResult>({
+    type: 'join',
+    payload: {
+      workspace_root: cfg.workspaceRoot || '/virtual/web-bridge',
+      workspace_name: cfg.workspaceName || 'web-bridge',
+      name,
+      participant_type: 'web',
+      role: cfg.agentRole || 'web',
+      intro: cfg.agentBio || 'Web AI bridge participant',
+      capabilities: cfg.agentCapabilities || '',
+      transport: 'http',
+      takeover: true,
+      notify: false,
+      timeout_ms: null,
+    },
+    needsAuth: false,
+  });
+  if (!res.ok) return res;
+
+  await storage.saveSession({
+    session_id: res.data.session_id,
+    token: res.data.token,
+    participant: name,
+    workspace_id: res.data.workspace_id,
+  });
+  return res;
 }
