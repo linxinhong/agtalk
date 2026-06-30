@@ -135,20 +135,26 @@ human 不再是硬编码的特殊行，browser 不再是 type='web' 的特殊参
 
 ## 4. 推送机制（SSE，唯一形态）
 
-### 4.1 设计原则：只有 SSE
+### 4.1 设计原则：推送用 SSE，但 agent 接收消息有两条路径
 
-SSE（Server-Sent Events）是 daemon → agent 推送的**唯一机制**。没有长轮询、没有短轮询。一套机制贯彻到底，避免机制冗余。
+daemon → agent 的推送底层是 **SSE（Server-Sent Events）**，没有长轮询、没有短轮询。但 agent **接收消息**有两条路径，agtalk 都支持，agent 按自身能力自选：
 
-SSE 有**两种消费方式**，但底层是同一个 daemon 推送通道：
-- **`GET /events` HTTP 端点**（原始 SSE 流）：给**常驻进程**用（GUI、浏览器扩展 background）。它们直接 fetch 这个端点持续订阅。
-- **`agtalk wait <msg-id>` CLI 命令**（会返回的 SSE 封装）：给 **agent CLI 调用**用。底层连 SSE 通道，但等到目标消息或超时就 exit，必定返回——避免 agent 执行框架把永不返回的 `events` 当卡死而 kill/忽略。
+**路径 1：CLI pull（所有 CLI agent 通用）**
+- agent 反复调 `agtalk inbox` / `agtalk detail -`，每次秒级返回，agent 自己控制查询节奏。
+- 零依赖——任何能执行 shell 命令的 agent（Kimi、codex CLI 等）都能用，契合"接收→调工具→返回"的核心循环。
+- 这是 agtalk-office 实战验证的方式（`detail -` 取最新一条消息，agent 循环调）。
 
-**CLI 层不暴露 `agtalk events` 长驻命令**。agent 等消息用 `wait`，看快照用 `inbox`。
+**路径 2：HTTP SSE（常驻进程 + 有 HTTP 工具能力的 agent）**
+- daemon 暴露 `GET /events`（127.0.0.1）SSE 端点，按自己的 UUID 过滤推送。
+- **常驻进程**（GUI、浏览器扩展 background）直接 fetch 持续订阅。
+- **有 HTTP 工具能力的 agent**（如 codex 通过 Node/Python/curl 跑 SSE 客户端）可消费：fetch → 解析 SSE 流 → 命中目标后 abort。支持 `Last-Event-ID` 断线续传。
+
+> **为什么 CLI 层不提供 `wait` / `events` 长阻塞命令**：CLI agent 的核心循环是"调工具→返回"，单次工具调用挂太久会被 agent 执行框架超时/忽略。长阻塞等待应由 agent 自己实现（pull 循环或自己 fetch SSE），不由 agtalk CLI 代劳。参考实现见 `docs/sse-demo/`（验证 SSE 推送可行；生产需补持久化 + Last-Event-ID + UUID 过滤 + 认证）。
 
 ### 4.2 SSE 订阅模型（按 UUID）
 
 ```
-常驻进程（GUI / 扩展 background）：
+常驻进程（GUI / 扩展 background）或有 HTTP 能力的 agent：
   ① 身份解析：PID → agents.json → name → session.json → address(UUID)
   ② GET /events + 凭证 → daemon 注册为"订阅 address=<UUID>"
   ③ 任何 send(to=<该 UUID>) 的消息 → 推给这条 SSE 连接

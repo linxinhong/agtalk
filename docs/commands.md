@@ -11,10 +11,23 @@
 - **路由只认 UUID**：`send` 的 `<address>` 是 UUID。name 永远不进路由路径。
 - **消歧在调用方**：用 name 找人时，`lookup` 返回带 intro/workspace 的候选列表，由调用方（agent/人）选定 UUID，再用 UUID 发消息。
 - **身份载体 = 文件系统**：身份存在 `.agtalk/<name>/session.json`，认证链 `PID → agents.json → session.json → UUID`（详见 design §2）。
-- **SSE 是唯一推送机制**：`wait` 命令和 daemon 的 `GET /events` HTTP 端点底层都是 SSE。
-  - **agent / 人**通过 CLI 命令（`wait` 阻塞等一条、`inbox` 读快照）消费，不直接接触 SSE。
-  - **常驻进程**（GUI、浏览器扩展 background）直接调 daemon 的 `GET /events` HTTP 端点持续订阅，不经过 CLI。
-  - CLI 层**不暴露** `events` 长驻命令——agent 等 message 用 `wait`（带 timeout 必返回，避免被 agent 执行框架当作卡死而忽略）。
+
+### 接收消息的两条路径（agent 按自身能力自选，agtalk 不强制）
+
+agtalk 提供两种接收消息的方式，适配不同形态的 agent。**两种都一等公民，agent 用自己擅长的方式。**
+
+**路径 1：CLI pull（所有 CLI agent 通用）**
+- agent 反复调 `agtalk inbox` / `agtalk detail -`，每次秒级返回，agent 自己控制查询节奏。
+- 零依赖——任何能执行 shell 命令的 agent（Kimi、codex CLI 等）都能用，契合"接收消息→调工具→返回"的核心循环。
+- 不需要 agent 维持长连接，不需要原生 SSE 能力。
+
+**路径 2：HTTP SSE（有 HTTP 工具能力的 agent + 常驻进程）**
+- daemon 暴露 `GET /events`（127.0.0.1）SSE 端点，按自己的 UUID 过滤推送。
+- **常驻进程**（GUI、浏览器扩展 background）直接 fetch 持续订阅。
+- **有 HTTP 工具能力的 agent**（如 codex 通过 Node/Python/curl 跑 SSE 客户端）可直接消费：fetch → 解析 SSE 流 → 命中目标消息后 abort。支持 `Last-Event-ID` 断线续传。
+- daemon 推送前先持久化（at-least-once），断线不丢消息。
+
+> **为什么 CLI 层不提供 `agtalk wait` / `agtalk events` 长阻塞命令**：CLI agent（如 Kimi）的核心循环是"调工具→返回"，单次工具调用挂太久会被 agent 执行框架超时/忽略。长阻塞等待应由 agent 自己用上述两条路径实现（要么 pull 循环，要么自己 fetch SSE），而不是由 agtalk CLI 命令代劳。SSE 是 daemon 的推送能力，不是 CLI 命令。
 
 ---
 
@@ -125,30 +138,29 @@ agtalk inbox [--all]
 - 默认：**只列未完成消息**（status != done），类似待办中心
 - `--all`：列全部消息（含已完成）
 - 定位：**读当前状态**。人/agent 想看一眼"现在有什么没处理"就用它，看完就走。
-- 对比：`wait` 是"等未来某条"，`inbox` 是"看现在有什么"——两者正交，常驻进程可启动时 inbox 拉历史、再走 HTTP SSE 听新消息。
+- 这是 CLI agent 接收消息的**路径 1（pull）**——agent 可反复调它轮询新消息。
 
-### detail（单条详情）
+### detail（单条详情 / 取最新一条）
 
 ```
 agtalk detail <msg-id>
+agtalk detail -                # 特殊用法：取最新一条消息（agtalk-office 实战验证）
 ```
-查看单条消息详情（正文、附件、投递状态、回复链）。
+查看单条消息详情（正文、附件、投递状态、回复链），自动标记已读。
 
----
+**`detail -` 的语义**（参考 agtalk-office 的 `resolve_detail_dash`）：
+- 先返回最新一条**未读**消息
+- 没有未读则返回最新一条（任意状态）
+- 都没有则报错"当前 inbox 没有可查看的消息"
 
-## 阻塞等待（agent 等一条消息）
-
+**这是 CLI agent 等/收消息最轻量的方式**：
 ```
-agtalk wait <msg-id> [--timeout <秒>]
+agent 循环（agtalk 不参与，agent 自己控制）：
+  反复调 agtalk detail -   # 每次秒级返回最新一条
+  → 没新消息就 sleep 再调
+  → 有新消息就处理
 ```
-阻塞等待某条消息的回复/结果，**必定返回**（等到目标消息或超时）。
-- 典型场景：agent 发了审批（`human --choices`），用它阻塞等人类的 choice 回复。
-- 底层是 SSE（连 daemon 的推送通道，按自己的 UUID 过滤），但 CLI 封装成"会返回的命令"——收到目标消息（reply_to 指向 msg-id）就 exit 0，超时则 exit 非 0。
-- **为什么不是 `events`**：`events` 是永不返回的长驻订阅，agent 执行框架可能把它当卡死而 kill/忽略。`wait` 有明确返回码，agent 一定处理（成功或超时）。
-- 超时默认值与上限：实现阶段定（参考 agtalk-office 的 default_timeout=300s）。
-- compact 后：重新执行身份认证链 + 重连 wait 即恢复，无需记忆任何凭据。
-
-> **常驻进程**（GUI、浏览器扩展 background）不使用 `wait`，而是直接调 daemon 的 `GET /events` HTTP SSE 端点持续订阅。该端点是 daemon 内部的，不作为 CLI 命令暴露。
+契合 CLI agent "接收→调工具→返回"的核心循环，零连接、零依赖、绝不被执行框架超时。agtalk-office 中 Kimi/codex 实战使用此模式。
 
 ---
 
