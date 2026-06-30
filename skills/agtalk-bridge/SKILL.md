@@ -97,25 +97,39 @@ agtalk detail <msg-id>  # full detail of a specific message
 
 **Polling loop (you control the cadence):**
 ```bash
-# your own loop — agtalk does NOT provide a blocking "wait" command
 while true; do
   out=$(agtalk detail - 2>/dev/null) || { sleep 3; continue; }
   # process $out ...
   sleep 3
 done
 ```
-Each call returns in seconds. You decide when to sleep and re-query. Works for Kimi, codex CLI, claude code — any agent that can run shell commands.
+Each call returns in seconds. You decide when to sleep and re-query. Works for Kimi, codex CLI, claude code — any agent that can run shell commands. **Use this when the wait may exceed tens of seconds.**
 
-### Optional path: curl SSE (only for second-level hits, MUST set timeout)
+### Path 2: `agtalk wait` — blocking wait for a *specific* message (recommended over hand-rolled curl)
 
-If you expect the target message within ~30s and have `curl`, a one-liner beats writing a parser:
+When you expect a reply to a specific message within ~30s (e.g. you just sent an approval request and are waiting for the human's choice), use `wait` instead of a poll loop. It is the **official SSE wrapper** — agtalk handles the SSE connection, your auth, Last-Event-ID resume, and hit-and-exit for you:
+
+```bash
+agtalk wait <msg-id> [--timeout 30] [--since <event-id>]
+# exits 0 with the matching message (reply_to == msg-id) when it arrives
+# exits non-zero on --timeout (default 30s) — then retry, or fall back to `detail -` polling
+```
+
+`wait` **always returns** (hit or timeout) — it is NOT the never-returning `events` subscription. Use it like any normal command.
+
+When **not** to use `wait`:
+- The reply may take minutes → use the pull loop above (don't hang a single tool call too long).
+- You are Kimi-like (no SSE appetite) → just use the pull loop.
+
+### Path 2 alt: hand-rolled curl (when you want fine control)
+
+If you'd rather drive SSE yourself, a one-liner beats writing a parser:
 ```bash
 curl -N -H "Last-Event-ID: $id" --max-time 30 http://127.0.0.1:19527/events \
   | grep --line-buffered -m1 -A5 '"type":"you care about"'
 ```
 - `-N` streaming, `--max-time` caps the turn, `grep -m1` exits on hit, `Last-Event-ID` resumes.
-- **Never raw-connect** — a long SSE call with no timeout will occupy your whole turn and get force-killed by your tool-timeout.
-- If the wait may exceed tens of seconds, fall back to the pull loop above. The daemon is already the persistent bridge (all messages are stored); you're just polling its state.
+- **Never raw-connect** — a long SSE call with no timeout will occupy your whole turn and get force-killed by your tool-timeout. `agtalk wait` is usually the better choice since it handles all of this for you.
 
 ## Step 5: After compaction — recover
 
@@ -154,6 +168,7 @@ Useful for multi-step coordination.
 | Inbox snapshot | `agtalk inbox [--all]` |
 | Latest message | `agtalk detail -` |
 | Message detail | `agtalk detail <msg-id>` |
+| Wait for a specific reply (≤30s) | `agtalk wait <msg-id> [--timeout 30]` |
 | Leave | `agtalk leave` |
 | Batch script | `agtalk run <file.yaml>` |
 
@@ -161,5 +176,5 @@ Useful for multi-step coordination.
 
 1. **Never send to a name.** Always `lookup` first, then `send <uuid>`.
 2. **Never hold a token in your head/context.** Identity is on disk; run `agtalk whoami` to recover.
-3. **Never block forever.** No blocking `wait` command exists — use pull loop or `curl --max-time`.
+3. **Never block forever.** `wait` always has a `--timeout` and always returns; never raw-connect SSE without a timeout. If the wait may exceed tens of seconds, use the `detail -` pull loop instead.
 4. **You disambiguate, not the daemon.** Multiple agents can share a name; pick by intro+workspace.

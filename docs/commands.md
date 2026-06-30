@@ -22,20 +22,23 @@ agtalk 提供两种接收消息的方式，适配不同形态的 agent。**两�
 - 不需要 agent 维持长连接，不需要原生 SSE 能力。
 - **本质：daemon 就是那个常驻 bridge**——它持久化所有消息到 DB，agent 只是秒级短轮询查状态。"长连接生命周期"和"agent 单次 turn"彻底解耦，agent 永不被占住。**等待可能超过几十秒时，用这条路径。**
 
-**路径 2：HTTP SSE（有 HTTP 工具能力的 agent + 常驻进程）**
+**路径 2：HTTP SSE（常驻进程 + 有 HTTP 工具能力的 agent）**
 - daemon 暴露 `GET /events`（127.0.0.1）SSE 端点，按自己的 UUID 过滤推送。
 - **常驻进程**（GUI、浏览器扩展 background）直接 fetch 持续订阅。
-- **有 HTTP 工具能力的 agent**（如 codex / claude code 通过 curl 或 fetch）可在**目标消息预期秒级到达**时直连：命中即关。
-- **必须设超时**：直连 SSE 时务必带 `--max-time`（curl）或 `AbortController`（fetch），超时体面返回（带最后看到的 id），下一 turn 用 `Last-Event-ID` 重连。**不能裸连**——否则 agent 这个 turn 被完全占住，多半撞上 agent/工具超时被强杀。
+- **有 HTTP 工具能力的 agent**（如 codex / claude code）有两种消费方式：
+  - **官方封装 `agtalk wait`**（推荐）：agtalk 帮你封装 SSE 连接 + 身份认证 + Last-Event-ID 续传 + 命中目标即退 + 超时返回。你只调一个会返回的命令，不用自己拼 curl、不用自己记 id、不用自己处理认证。见下方"阻塞等待"节。
+  - **自己 curl**（想精细控制时）：见下方示例。
 - daemon 推送前先持久化（at-least-once），断线不丢消息。
 
-> **coding agent 用 curl 最顺**（claude code 建议）：与其写 node/python 解析 SSE，不如一行 curl——`-N` 流式、`--max-time` 兜底超时、`grep -m1` 命中即退、`Last-Event-ID` 续传全有：
+> **`agtalk wait` 是路径 2 的官方封装**：与其让每个 agent 自己拼 curl + 记 Last-Event-ID + 带认证 + 解析输出，agtalk 把这些重复劳动收进一条会返回的命令。agent 调 `wait`（带 `--timeout`）就像调任何普通命令——要么等到目标消息（exit 0），要么超时（exit 非 0），绝不会永不返回占住整个 turn。
+
+> **想精细控制时，agent 也可自己 curl**（claude code 建议，`--max-time` 兜底超时、`grep -m1` 命中即退、`Last-Event-ID` 续传）：
 > ```bash
 > curl -N -H "Last-Event-ID: $id" --max-time 30 http://127.0.0.1:19527/events \
 >   | grep --line-buffered -m1 -A5 '"type":"你关心的"'
 > ```
 
-> **为什么 CLI 层不提供 `agtalk wait` / `agtalk events` 长阻塞命令**：CLI agent 的核心循环是"调工具→返回"，单次工具调用挂太久会被 agent 执行框架超时/忽略（Kimi/claude code/codex 都确认）。长阻塞等待应由 agent 自己用上述两条路径实现（pull 循环，或带超时的 curl SSE），而不是由 agtalk CLI 命令代劳。SSE 是 daemon 的推送能力，不是 CLI 命令。
+> **CLI 层不提供 `agtalk events` 长驻命令**（永不返回的那种）。CLI agent 等"特定消息"用 `agtalk wait`（会返回），看"现在有什么"用 `inbox`，常驻订阅用 `GET /events`（不经 CLI）。
 
 ---
 
@@ -168,7 +171,37 @@ agent 循环（agtalk 不参与，agent 自己控制）：
   → 没新消息就 sleep 再调
   → 有新消息就处理
 ```
-契合 CLI agent "接收→调工具→返回"的核心循环，零连接、零依赖、绝不被执行框架超时。agtalk-office 中 Kimi/codex 实战使用此模式。
+契合 CLI agent "接收→调工具→返回"的核心循环，零连接、零依赖、绝不会被执行框架超时。agtalk-office 中 Kimi/codex 实战使用此模式。
+
+### wait（阻塞等待特定消息，带超时必返回）
+
+```
+agtalk wait <msg-id> [--timeout <秒>] [--since <event-id>]
+```
+**阻塞等待某条消息的回复/结果，必定返回**（等到目标消息 exit 0，或超时 exit 非 0）。
+
+这是**路径 2（SSE）的官方封装**——agtalk 替你做完路径 2 的所有脏活：
+- 用你的身份（PID → session.json → UUID）连 `GET /events`，**不用你自己拼认证**
+- 按 reply_to = `<msg-id>` 过滤，**命中目标消息立即输出并退出**
+- `--timeout` 兜底（默认 30s，上限实现阶段定），**超时体面返回**，绝不永不返回占住整个 turn
+- `--since <event-id>` 续传，**agent 不用自己记 Last-Event-ID**
+
+**典型场景**：agent 发了审批（`human --choices`），用它阻塞等人类的 choice 回复——预期几十秒内有结果。
+
+```
+agent: agtalk human "是否删除 target?" --choices approve,reject
+       → 返回 msg-id
+agent: agtalk wait <msg-id> --timeout 60
+       → 60s 内人类回复 → exit 0 输出 choice
+       → 60s 超时 → exit 非 0，agent 下一 turn 再 wait 或改用 detail - 轮询
+```
+
+**什么时候不用 wait**：
+- 目标消息可能几分钟以上才来 → 用路径 1（`detail -` 循环），别让单次工具调用挂太久。
+- 你是 Kimi 这类不能/不想碰 SSE 的 agent → 直接用路径 1。
+- 你是常驻进程（GUI/扩展）→ 直接 `GET /events`，不用 wait。
+
+> **wait vs events**：`events`（永不返回的长驻订阅）不作为 CLI 命令暴露——它会占住 agent 整个 turn 被强杀。`wait` 是"会返回的 SSE 封装"，带 `--timeout`，是 agent 等"特定消息"的正确姿势。底层都是同一个 daemon SSE 推送通道。
 
 ---
 
