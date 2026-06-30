@@ -16,18 +16,26 @@
 
 agtalk 提供两种接收消息的方式，适配不同形态的 agent。**两种都一等公民，agent 用自己擅长的方式。**
 
-**路径 1：CLI pull（所有 CLI agent 通用）**
+**路径 1：CLI pull（所有 CLI agent 通用，推荐为默认）**
 - agent 反复调 `agtalk inbox` / `agtalk detail -`，每次秒级返回，agent 自己控制查询节奏。
-- 零依赖——任何能执行 shell 命令的 agent（Kimi、codex CLI 等）都能用，契合"接收消息→调工具→返回"的核心循环。
+- 零依赖——任何能执行 shell 命令的 agent（Kimi、codex CLI、claude code 等）都能用，契合"接收消息→调工具→返回"的核心循环。
 - 不需要 agent 维持长连接，不需要原生 SSE 能力。
+- **本质：daemon 就是那个常驻 bridge**——它持久化所有消息到 DB，agent 只是秒级短轮询查状态。"长连接生命周期"和"agent 单次 turn"彻底解耦，agent 永不被占住。**等待可能超过几十秒时，用这条路径。**
 
 **路径 2：HTTP SSE（有 HTTP 工具能力的 agent + 常驻进程）**
 - daemon 暴露 `GET /events`（127.0.0.1）SSE 端点，按自己的 UUID 过滤推送。
 - **常驻进程**（GUI、浏览器扩展 background）直接 fetch 持续订阅。
-- **有 HTTP 工具能力的 agent**（如 codex 通过 Node/Python/curl 跑 SSE 客户端）可直接消费：fetch → 解析 SSE 流 → 命中目标消息后 abort。支持 `Last-Event-ID` 断线续传。
+- **有 HTTP 工具能力的 agent**（如 codex / claude code 通过 curl 或 fetch）可在**目标消息预期秒级到达**时直连：命中即关。
+- **必须设超时**：直连 SSE 时务必带 `--max-time`（curl）或 `AbortController`（fetch），超时体面返回（带最后看到的 id），下一 turn 用 `Last-Event-ID` 重连。**不能裸连**——否则 agent 这个 turn 被完全占住，多半撞上 agent/工具超时被强杀。
 - daemon 推送前先持久化（at-least-once），断线不丢消息。
 
-> **为什么 CLI 层不提供 `agtalk wait` / `agtalk events` 长阻塞命令**：CLI agent（如 Kimi）的核心循环是"调工具→返回"，单次工具调用挂太久会被 agent 执行框架超时/忽略。长阻塞等待应由 agent 自己用上述两条路径实现（要么 pull 循环，要么自己 fetch SSE），而不是由 agtalk CLI 命令代劳。SSE 是 daemon 的推送能力，不是 CLI 命令。
+> **coding agent 用 curl 最顺**（claude code 建议）：与其写 node/python 解析 SSE，不如一行 curl——`-N` 流式、`--max-time` 兜底超时、`grep -m1` 命中即退、`Last-Event-ID` 续传全有：
+> ```bash
+> curl -N -H "Last-Event-ID: $id" --max-time 30 http://127.0.0.1:19527/events \
+>   | grep --line-buffered -m1 -A5 '"type":"你关心的"'
+> ```
+
+> **为什么 CLI 层不提供 `agtalk wait` / `agtalk events` 长阻塞命令**：CLI agent 的核心循环是"调工具→返回"，单次工具调用挂太久会被 agent 执行框架超时/忽略（Kimi/claude code/codex 都确认）。长阻塞等待应由 agent 自己用上述两条路径实现（pull 循环，或带超时的 curl SSE），而不是由 agtalk CLI 命令代劳。SSE 是 daemon 的推送能力，不是 CLI 命令。
 
 ---
 
