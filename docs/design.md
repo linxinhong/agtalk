@@ -139,10 +139,16 @@ human 不再是硬编码的特殊行，browser 不再是 type='web' 的特殊参
 
 SSE（Server-Sent Events）是 daemon → agent 推送的**唯一机制**。没有长轮询、没有短轮询。一套机制贯彻到底，避免机制冗余。
 
+SSE 有**两种消费方式**，但底层是同一个 daemon 推送通道：
+- **`GET /events` HTTP 端点**（原始 SSE 流）：给**常驻进程**用（GUI、浏览器扩展 background）。它们直接 fetch 这个端点持续订阅。
+- **`agtalk wait <msg-id>` CLI 命令**（会返回的 SSE 封装）：给 **agent CLI 调用**用。底层连 SSE 通道，但等到目标消息或超时就 exit，必定返回——避免 agent 执行框架把永不返回的 `events` 当卡死而 kill/忽略。
+
+**CLI 层不暴露 `agtalk events` 长驻命令**。agent 等消息用 `wait`，看快照用 `inbox`。
+
 ### 4.2 SSE 订阅模型（按 UUID）
 
 ```
-agent 启动后：
+常驻进程（GUI / 扩展 background）：
   ① 身份解析：PID → agents.json → name → session.json → address(UUID)
   ② GET /events + 凭证 → daemon 注册为"订阅 address=<UUID>"
   ③ 任何 send(to=<该 UUID>) 的消息 → 推给这条 SSE 连接
@@ -213,7 +219,7 @@ messages
 | CLI 参数 | clap 4 |
 | 序列化 | serde / serde_json / serde_yaml |
 | 前端 | Vue 3 + Vite |
-| 浏览器扩展 | WXT + React + Zustand + Tailwind |
+| 浏览器扩展 | WXT + Vue 3 + Pinia + Tailwind |
 | 错误处理 | thiserror（领域错误） |
 | 日志 | tracing |
 | 单二进制 | 是（agtalk argv 分派 daemon/gui/cli/popup） |
@@ -226,59 +232,53 @@ messages
 
 ```
 agtalk/                             ← 本项目根
-├── Cargo.toml                      ← workspace 根
+├── Cargo.toml                      ← workspace 根（仅含 src-tauri 一个 Rust member）
 ├── AGENTS.md                       ← 开发要求（见该文件）
 ├── Makefile
 ├── README.md
-├── crates/                         ← workspace 多 crate（强制模块边界）
-│   ├── agtalk/                     ← 主二进制（薄入口，argv 分派）
-│   │   ├── Cargo.toml
-│   │   └── src/main.rs             ← 只做 dispatch，< 100 行
-│   └── agtalk-core/                ← lib crate（核心逻辑）
-│       ├── Cargo.toml
-│       └── src/
-│           ├── lib.rs              ← 模块导出，< 50 行
-│           ├── proto.rs            ← ClientMsg/ServerMsg（协议内聚）
-│           ├── identity/           ← 身份：mailbox、agents.json、session、PID
-│           │   ├── mod.rs
-│           │   ├── mailbox.rs
-│           │   ├── session_file.rs
-│           │   ├── agents_map.rs
-│           │   └── tests.rs
-│           ├── routing/            ← 路由：send、lookup
-│           │   ├── mod.rs
-│           │   ├── send.rs
-│           │   ├── lookup.rs
-│           │   └── tests.rs
-│           ├── transport/          ← 推送：SSE、唤醒
-│           │   ├── mod.rs
-│           │   ├── sse.rs          ← SSE 端点 + Last-Event-ID 重放
-│           │   ├── wake.rs         ← handle_send 唤醒订阅者
-│           │   └── tests.rs
-│           ├── server/             ← HTTP/socket 入口
-│           │   ├── mod.rs
-│           │   ├── http.rs         ← axum routes（薄）
-│           │   ├── socket.rs       ← Unix socket（如保留）
-│           │   └── tests.rs
-│           ├── storage/            ← DB 句柄 + 迁移（不塞业务查询）
-│           │   ├── mod.rs
-│           │   ├── migrate.rs
-│           │   └── tests.rs
-│           └── config.rs           ← AgConfig
 ├── src/                            ← Tauri GUI 前端（Vue 3）
 │   ├── App.vue
 │   ├── main.ts
 │   ├── views/
 │   ├── lib/
 │   └── styles/
-├── src-tauri/                      ← Tauri 外壳（薄，调用 agtalk-core）
-│   ├── Cargo.toml                  ← 依赖 agtalk-core
+├── src-tauri/                      ← 唯一 Rust crate：bin + lib + daemon 核心逻辑
+│   ├── Cargo.toml                  ← 定义 bin `agtalk` + lib `agtalk_app`
 │   ├── tauri.conf.json
 │   ├── capabilities/
+│   ├── build.rs
 │   └── src/
-│       ├── lib.rs                  ← run_gui / run_popup
-│       └── commands.rs             ← Tauri 命令（薄桥）
-├── extension/                      ← 浏览器扩展（WXT/React，独立）
+│       ├── main.rs                 ← bin：只做 argv 分派，< 100 行
+│       ├── lib.rs                  ← lib 入口：run_gui / run_popup / run_cli
+│       ├── commands.rs             ← Tauri 命令（薄桥）
+│       ├── proto.rs                ← ClientMsg/ServerMsg（协议内聚）
+│       ├── identity/               ← 身份：mailbox、session.json、agents.json、PID
+│       │   ├── mod.rs
+│       │   ├── mailbox.rs
+│       │   ├── session_file.rs
+│       │   ├── agents_map.rs
+│       │   └── tests.rs
+│       ├── routing/                ← 路由：send、lookup
+│       │   ├── mod.rs
+│       │   ├── send.rs
+│       │   ├── lookup.rs
+│       │   └── tests.rs
+│       ├── transport/              ← 推送：SSE、唤醒
+│       │   ├── mod.rs
+│       │   ├── sse.rs              ← SSE 端点 + Last-Event-ID 重放
+│       │   ├── wake.rs             ← handle_send 唤醒订阅者
+│       │   └── tests.rs
+│       ├── server/                 ← HTTP/socket 入口
+│       │   ├── mod.rs
+│       │   ├── http.rs             ← axum routes（薄）
+│       │   ├── socket.rs           ← Unix socket（如保留）
+│       │   └── tests.rs
+│       ├── storage/                ← DB 句柄 + 迁移（不塞业务查询）
+│       │   ├── mod.rs
+│       │   ├── migrate.rs
+│       │   └── tests.rs
+│       └── config.rs               ← AgConfig
+├── extension/                      ← 浏览器扩展（WXT/Vue 3，独立）
 ├── docs/
 │   ├── design.md                   ← 本文档
 │   └── sse-demo/                   ← SSE 参考实现（见其 README）
@@ -286,8 +286,8 @@ agtalk/                             ← 本项目根
 ```
 
 **关键设计**：
-- workspace 多 crate（`agtalk` bin + `agtalk-core` lib）强制模块边界。
-- core 内按领域分子模块（identity / routing / transport / server / storage），每领域自带 tests.rs。
+- Rust 代码集中在 `src-tauri/` 一个 crate 内，bin + lib + daemon 核心逻辑同 crate（参考 agtalk-office）。
+- 领域内按 identity / routing / transport / server / storage 分子模块，每领域自带 tests.rs。
 - storage 模块只管 DB 句柄和迁移，业务查询分散到各领域模块（避免 god-object）。
 - proto.rs 集中放 enum 定义（协议是跨模块契约，需内聚），但不放 handler。
 - 文件大小目标：每个 .rs 文件 < 500 行，绝不超 800 行。
