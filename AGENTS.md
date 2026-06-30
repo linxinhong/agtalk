@@ -113,6 +113,93 @@ agtalk-core/src/
 
 ---
 
+## 5.5 浏览器扩展开发要求（WXT + React）
+
+浏览器扩展是 agtalk 的"agent ↔ browser"对话域实现，把网页 AI 桥接到总线。技术栈：WXT 0.18 + React 18 + Zustand + TailwindCSS。开发必须遵守：
+
+### 结构与复用
+
+- **app（全屏页）和 popup（工具条弹窗）共享一套 store / API / messaging / platform 逻辑**。**禁止**写两套镜像 store（agtalk-office 的 `app/store.ts` 490 行 + `popup/store.ts` 410 行是反面教材——逻辑重复、行为漂移）。
+- 共享代码放 `src/shared/`（api/、messaging/、platform/、storage/、lib/、components/）。app 和 popup 只做 UI 壳，差异仅在布局。
+- 一个 Zustand store，两个 UI 消费它。
+
+### 消息类型纪律
+
+- 所有 chrome 消息类型常量集中在 `src/shared/messaging/message-types.ts`。
+- **禁止保留"未实现的保留常量"**（agtalk-office 有 `CHAT_TURN/AGTALK_SEND` 等标注"Phase 2 不迁移"的死常量，是噪音）。一个常量要么有 handler 实现，要么删除。
+
+### 平台选择器（selectors）——最脆弱的区域
+
+- content script 注入 ChatGPT/Claude/Sider/ChatGLM 等 AI 站点，依赖各站点的 DOM 选择器。**站点改版即失效**，这是固有脆性，必须用工程手段缓解：
+  - 每个平台的选择器**多候选**（一组选择器按序尝试，不是一个硬编码）。
+  - 选择器配置化（存储在 chrome.storage，可不改代码热更）。
+  - 注入失败必须可观测（记录到 `attachment-failures` 之类的存储，UI 可见）。
+- **禁止**在 content script 里用 Tailwind class（注入第三方页面会被污染）。content script 注入的 UI（发送按钮、Toast）用**独立手写 CSS**，class 前缀 `agtalk-`（参考 agtalk-office `send-buttons.css`）。
+
+### 与 daemon 的通信
+
+- background service worker 是扩展与 daemon 的唯一桥梁，通过 HTTP（`POST 127.0.0.1:19527/api`）+ SSE（`GET /events`）通信。
+- 扩展持有自己的持久 mailbox（address UUID），订阅用 SSE（**禁止短轮询**——agtalk-office 用 5s 短轮询是反面教材，v2 必须用 SSE 长连接）。
+- token/session 存 `chrome.storage.local`，日志必须脱敏（不打印 token/session_id）。
+
+### auto-mode（自动注入/转发）的同意边界
+
+- auto-submit（自动点击网页 AI 发送按钮）、auto-forward（自动捕获 AI 回复转发回 daemon）是**敏感操作**——可能发送用户未授权的内容、抓取敏感回复。
+- 默认关闭。开启时必须有**可见的运行时指示**（如小飞机变红、状态栏提示）。
+- 状态变化（注入成功/失败、转发成功/失败）必须可观测、可回滚。
+
+### 构建与类型
+
+- `cd extension && pnpm build`（wxt build）。Firefox 构建用 `pnpm build:firefox`。
+- `tsc --noEmit` 必须通过（strict）。**必须**有独立 typecheck 脚本（agtalk-office 无独立脚本，typecheck 反馈滞后）。
+- manifest version 与 package.json version **保持一致**（agtalk-office 0.1.0 vs 0.2.1 是 bug）。
+
+---
+
+## 5.6 Tauri 2 开发要求（GUI 外壳）
+
+Tauri 2 是 agtalk 的桌面外壳。**GUI 是薄客户端**，所有逻辑走 daemon（经 Tauri 命令 → daemon IPC）。开发必须遵守：
+
+### 薄外壳原则
+
+- `src-tauri/src/` 只做：① argv 分派入口（`lib.rs::run_gui` / `run_popup`）② Tauri 命令桥（`commands.rs`）。
+- **禁止**在 `src-tauri/` 写业务逻辑。业务逻辑全在 `crates/agtalk-core/`，`src-tauri/` 通过依赖 core 来复用。
+- Tauri 命令（`#[tauri::command]`）只做"接收前端参数 → 调 core → 返回结果"。命令本身不含业务判断。
+
+### 命令桥的活性
+
+- 每个 `#[tauri::command]` 必须真正被前端调用，且必须有测试。
+- **禁止**整文件标 `#[allow(dead_code)]`（agtalk-office 的 `commands.rs` 整文件 dead_code 是反面教材——分不清是预留还是死代码）。不确定要不要的命令，先不写。
+
+### capabilities 最小权限
+
+- `src-tauri/capabilities/default.json` 只开真正需要的权限。
+- agtalk-office 只开 `core:default` + `core:window:allow-close`（审批弹窗提交后自动关窗），这是合理的最小集，沿用。
+- 每加一个 capability 要说明理由。
+
+### custom-protocol 特性（GUI 白屏陷阱）
+
+- 直接 `cargo build`（不经 tauri CLI）**必须**开 `--features custom-protocol`，否则二进制连 devUrl(localhost) 而非内嵌 dist，**GUI 白屏**。
+- `make release` / `make deploy` 必须带此特性。
+- `pnpm tauri dev` 不开此特性（走 dev server 热重载）。
+- 这是 agtalk-office 踩过的坑，注释必须保留在 Cargo.toml。
+
+### 前端（Vue 3）
+
+- 前端代码在 `src/`（根目录），不在 `src-tauri/`。
+- 用 Tauri `invoke` 调命令，包装在 `src/lib/ipc.ts`。
+- **禁止**声明不用的依赖（agtalk-office 声明了 vue-i18n 但 `src/i18n/` 空置、无任何 useI18n 调用，是噪音）。要用就接入，不用就别装。
+- 主题用 CSS 自定义属性（`--bg/--text/--accent` 等），支持 `prefers-color-scheme: dark`。
+
+### 审批弹窗（__popup）
+
+- 审批弹窗是独立 Tauri 窗口进程（daemon 的 PopupTransport spawn `agtalk __popup <msg-id>`）。
+- 弹窗窗口 420×320 不可调（参考 agtalk-office）。
+- 弹窗提交 choice 后自动关窗（用 `core:window:allow-close`）。
+- daemon 通过 ChildMonitor 监控弹窗子进程，关闭且无回复 = dismissed。
+
+---
+
 ## 6. 构建与验证命令
 
 ```bash
@@ -131,7 +218,9 @@ pnpm build                           # 内含 vue-tsc --noEmit
 pnpm dev                             # Vite dev server
 
 # 扩展
-cd extension && pnpm install && pnpm build
+cd extension && pnpm install
+cd extension && pnpm build               # wxt build
+cd extension && pnpm run typecheck       # tsc --noEmit（须有此脚本）
 
 # Tauri dev
 pnpm tauri dev -- gui
@@ -141,7 +230,7 @@ pnpm tauri dev -- gui
 ./target/debug/agtalk daemon status
 ```
 
-**提交前必过**：`cargo check` + `cargo test` + `cargo clippy -- -D warnings` + `pnpm build`。
+**提交前必过**：`cargo check` + `cargo test` + `cargo clippy -- -D warnings` + `pnpm build`（前端）+ `cd extension && pnpm run typecheck`（扩展类型检查）。
 
 ---
 
@@ -152,6 +241,7 @@ pnpm tauri dev -- gui
 - `cargo clippy -- -D warnings`
 - `cargo fmt --check`
 - `pnpm build`（前端类型检查）
+- `cd extension && pnpm run typecheck`（扩展类型检查）
 
 不建 CI、依赖人工跑检查是 agtalk-office 的教训，本项目不重犯。
 
