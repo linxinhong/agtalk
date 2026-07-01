@@ -1,0 +1,7 @@
+{
+  "app": {
+    "title": "agtalk",
+    "description": "本地 Agent 对话总线",
+    "switchLanguage": "切换语言"
+  }
+}

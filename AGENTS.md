@@ -28,20 +28,26 @@ agtalk 是**本地 Agent 对话总线**。daemon 是唯一真相来源，CLI / G
 
 ## 3. 目录与模块结构
 
-### 3.1 workspace 多 crate
+### 3.1 单一 crate
+
+沿用 agtalk-office 的结构，Rust 代码集中在 `src-tauri/` 一个 crate 里：
 
 ```
-crates/
-  agtalk/        ← bin，只做 argv 分派，main.rs < 100 行
-  agtalk-core/   ← lib，核心逻辑
+src-tauri/
+  Cargo.toml     ← 定义 bin `agtalk` + lib `agtalk_app`
+  src/
+    main.rs      ← bin，只做 argv 分派，main.rs < 100 行
+    lib.rs       ← lib 入口，暴露 run_gui / run_popup / run_cli 等入口
 ```
 
-**禁止**在 bin crate 里写业务逻辑。bin 只 dispatch 到 core。
+业务逻辑放在 `src-tauri/src/` 下的领域模块（见 3.2）。
 
-### 3.2 core 按领域分模块
+**禁止**在 `main.rs` 写业务逻辑。`main.rs` 只负责 argv 分派并调用 `lib.rs` 暴露的入口。
+
+### 3.2 按领域分模块
 
 ```
-agtalk-core/src/
+src-tauri/src/
   proto.rs        ← ClientMsg/ServerMsg enum 定义（协议内聚）
   identity/       ← mailbox、session.json、agents.json、PID 解析
   routing/        ← send、lookup
@@ -49,6 +55,7 @@ agtalk-core/src/
   server/         ← HTTP/socket 入口（薄）
   storage/        ← DB 句柄、迁移（不塞业务查询）
   config.rs       ← AgConfig
+  commands.rs     ← Tauri 命令桥（薄，仅转发到各领域模块）
 ```
 
 **禁止**：
@@ -113,15 +120,15 @@ agtalk-core/src/
 
 ---
 
-## 5.5 浏览器扩展开发要求（WXT + React）
+## 5.5 浏览器扩展开发要求（WXT + Vue 3）
 
-浏览器扩展是 agtalk 的"agent ↔ browser"对话域实现，把网页 AI 桥接到总线。技术栈：WXT 0.18 + React 18 + Zustand + TailwindCSS。开发必须遵守：
+浏览器扩展是 agtalk 的"agent ↔ browser"对话域实现，把网页 AI 桥接到总线。技术栈：WXT 0.18 + Vue 3 + Pinia + TailwindCSS。开发必须遵守：
 
 ### 结构与复用
 
 - **app（全屏页）和 popup（工具条弹窗）共享一套 store / API / messaging / platform 逻辑**。**禁止**写两套镜像 store（agtalk-office 的 `app/store.ts` 490 行 + `popup/store.ts` 410 行是反面教材——逻辑重复、行为漂移）。
 - 共享代码放 `src/shared/`（api/、messaging/、platform/、storage/、lib/、components/）。app 和 popup 只做 UI 壳，差异仅在布局。
-- 一个 Zustand store，两个 UI 消费它。
+- 一个 Pinia store，两个 UI 消费它。
 
 ### 消息类型纪律
 
@@ -162,9 +169,9 @@ Tauri 2 是 agtalk 的桌面外壳。**GUI 是薄客户端**，所有逻辑走 d
 
 ### 薄外壳原则
 
-- `src-tauri/src/` 只做：① argv 分派入口（`lib.rs::run_gui` / `run_popup`）② Tauri 命令桥（`commands.rs`）。
-- **禁止**在 `src-tauri/` 写业务逻辑。业务逻辑全在 `crates/agtalk-core/`，`src-tauri/` 通过依赖 core 来复用。
-- Tauri 命令（`#[tauri::command]`）只做"接收前端参数 → 调 core → 返回结果"。命令本身不含业务判断。
+- `src-tauri/src/main.rs` 只做 argv 分派入口；`src-tauri/src/lib.rs` 暴露 `run_gui` / `run_popup` / `run_cli` 等入口。
+- **禁止**在 `main.rs` 和 `commands.rs` 里写业务逻辑。业务逻辑放在 `src-tauri/src/` 下的各领域模块（identity / routing / transport / server / storage），`commands.rs` 只做薄桥。
+- Tauri 命令（`#[tauri::command]`）只做"接收前端参数 → 调对应领域函数 → 返回结果"。命令本身不含业务判断。
 
 ### 命令桥的活性
 
@@ -203,14 +210,14 @@ Tauri 2 是 agtalk 的桌面外壳。**GUI 是薄客户端**，所有逻辑走 d
 ## 6. 构建与验证命令
 
 ```bash
-# Rust
-cargo check                          # 快速编译检查
-cargo build                          # debug 构建
-cargo build --release --features custom-protocol   # release（直接 cargo build 必须
-                                                     # 开 custom-protocol，否则 GUI 白屏）
-cargo test                           # 全部测试（bin + lib）
-cargo clippy -- -D warnings          # lint，零警告
-cargo fmt --check                    # 格式检查
+# Rust（-p agtalk 明确指定 src-tauri crate）
+cargo check -p agtalk                          # 快速编译检查
+cargo build -p agtalk                          # debug 构建
+cargo build -p agtalk --release --features custom-protocol   # release（直接 cargo build 必须
+                                                                # 开 custom-protocol，否则 GUI 白屏）
+cargo test -p agtalk                           # 全部测试（bin + lib）
+cargo clippy -p agtalk -- -D warnings          # lint，零警告
+cargo fmt --check                              # 格式检查
 
 # 前端
 pnpm install

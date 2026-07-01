@@ -1,0 +1,7 @@
+{
+  "app": {
+    "title": "agtalk",
+    "description": "Local Agent Conversation Bus",
+    "switchLanguage": "Switch Language"
+  }
+}

@@ -77,7 +77,9 @@ agent 进程发请求时：
 
 `agents.json` 存 `{pid, name, start_time}`。daemon 校验时比 `pid + 进程启动时间` 双因子。PID 被 OS 复用时 start_time 不一致，识别得出。
 
-### 2.5 lookup 查询接口
+### 2.5 HTTP 接口
+
+查询：
 
 ```
 GET /lookup?name=nora  （或无参列全部）
@@ -85,7 +87,16 @@ GET /lookup?name=nora  （或无参列全部）
    {address: UUID, name: "nora", intro: "后端",       workspace: "projB"}]
 ```
 
-agent 用返回的 intro + workspace 在同名情况下精确消歧，选定 address 后再用 UUID 发消息。
+发送消息：
+
+```
+POST /api/send
+Headers: X-AgTalk-Address, X-AgTalk-Pid, X-AgTalk-Start-Time
+Body: {to: UUID, body: string, content_type?, reply_to_id?, metadata?, more_coming?}
+→ {type: "ok", id: msg_id}
+```
+
+也兼容统一入口 `POST /api` 发送 `ClientMsg::Send`。agent 用返回的 intro + workspace 在同名情况下精确消歧，选定 address 后再用 UUID 发消息。
 
 ---
 
@@ -305,10 +316,13 @@ agtalk/                             ← 本项目根
 
 ---
 
-## 8. 待实现计划阶段确定的细节
+## 8. 已实现阶段确定的关键细节
 
-- SSE 端点鉴权：凭证怎么从 session.json 带到 `GET /events`（header？query？）
-- agents.json 写入时机：daemon spawn agent 时写，还是 agent 首次连接时写
-- GUI 如何订阅多个 mailbox（inbox 视图要看所有消息）
-- HTTP /events 之外是否保留 Unix socket（CLI/同机 agent 是否也走 SSE，还是 socket+SSE 并存）
-- 状态机字段（投递状态、消息 content_type 枚举）的最终取值集
+- **传输**：HTTP-only，所有客户端（CLI / GUI / 扩展）走 `127.0.0.1:<port>`；SSE 是唯一的推送机制。
+- **鉴权**：客户端在 HTTP header 中带上 `X-AgTalk-Address`（来自 `session.json` 的 UUID），可选 `X-AgTalk-Pid` 与 `X-AgTalk-Start-Time` 做 PID 复用防护；daemon 以文件系统（`session.json` + `agents.json`）为信任根。
+- **agents.json 写入时机**：`agtalk join` 时由 daemon 写入，键为进程 pid，值为 `{ name, start_time }`。
+- **状态机**：
+  - `messages.status`: pending / delivered / read / done / dismissed
+  - `messages.content_type`: text / approval_request / approval_response / system
+- **human mailbox**：daemon 启动时自动创建/复用，地址写入 `system_mailboxes(role='human')`。
+- **event_id**：每个 mailbox 独立单调递增，作为 SSE `Last-Event-ID` 断线重放锚点。

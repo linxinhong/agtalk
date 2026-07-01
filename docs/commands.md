@@ -114,11 +114,35 @@ address                                name    intro          workspace
 ### send（agent ↔ agent，UUID 路由）
 
 ```
-agtalk send <address> <body>
+agtalk send <address> <body> [--more]
 ```
 按 UUID 发消息。`<address>` 是收件 agent 的 UUID（通过 `lookup` 取得）。
 - 这是 agent 之间通信的唯一发送方式。
 - **不支持按 name 发**——路由层完全不认识 name。
+- `--more`：表示“后面还有同一条逻辑消息的下一段”。`wait` 会累积到无 `--more` 的消息再退出。
+
+#### HTTP 直接写入
+
+除了 CLI，任何能发 HTTP 的客户端（GUI、浏览器扩展、外部脚本）都可以直接 POST：
+
+```bash
+curl -s -X POST http://127.0.0.1:19527/api/send \
+  -H 'Content-Type: application/json' \
+  -H 'X-AgTalk-Address: <发送方 UUID>' \
+  -H 'X-AgTalk-Pid: <发送方 pid>' \
+  -H 'X-AgTalk-Start-Time: <发送方 start_time>' \
+  -d '{
+    "to": "<收件方 UUID>",
+    "body": "hello",
+    "content_type": "text",
+    "reply_to_id": "...",
+    "metadata": "{}",
+    "more_coming": false
+  }'
+```
+
+- 认证头与 `/api`、`/events` 一致。
+- 响应：`{"type":"ok","id":"<msg-id>"}` 或 `{"type":"error",...}`。
 
 ### human（agent → human）
 
@@ -173,20 +197,22 @@ agent 循环（agtalk 不参与，agent 自己控制）：
 ```
 契合 CLI agent "接收→调工具→返回"的核心循环，零连接、零依赖、绝不会被执行框架超时。agtalk-office 中 Kimi/codex 实战使用此模式。
 
-### wait（阻塞等待特定消息，带超时必返回）
+### wait（阻塞等待消息，带超时必返回）
 
 ```
-agtalk wait <msg-id> [--timeout <秒>] [--since <event-id>]
+agtalk wait [<msg-id>] [--timeout <秒>] [--since <event-id>]
 ```
-**阻塞等待某条消息的回复/结果，必定返回**（等到目标消息 exit 0，或超时 exit 非 0）。
+**阻塞等待消息，必定返回**（等到目标消息 exit 0，或超时 exit 非 0）。
 
 这是**路径 2（SSE）的官方封装**——agtalk 替你做完路径 2 的所有脏活：
 - 用你的身份（PID → session.json → UUID）连 `GET /events`，**不用你自己拼认证**
-- 按 reply_to = `<msg-id>` 过滤，**命中目标消息立即输出并退出**
-- `--timeout` 兜底（默认 30s，上限实现阶段定），**超时体面返回**，绝不永不返回占住整个 turn
+- 无 `<msg-id>`：收到**下一条发给当前 agent 的消息**即退出
+- 有 `<msg-id>`：按 `reply_to = <msg-id>` 过滤，**命中目标消息退出**
+- `--timeout` 兜底（默认 30s），**超时体面返回**，绝不永不返回占住整个 turn
 - `--since <event-id>` 续传，**agent 不用自己记 Last-Event-ID**
+- 若遇到 `send --more` 的连续消息，`wait` 会累积到无 `--more` 的最后一条再输出完整 body
 
-**典型场景**：agent 发了审批（`human --choices`），用它阻塞等人类的 choice 回复——预期几十秒内有结果。
+**典型场景**：
 
 ```
 agent: agtalk human "是否删除 target?" --choices approve,reject
@@ -201,7 +227,7 @@ agent: agtalk wait <msg-id> --timeout 60
 - 你是 Kimi 这类不能/不想碰 SSE 的 agent → 直接用路径 1。
 - 你是常驻进程（GUI/扩展）→ 直接 `GET /events`，不用 wait。
 
-> **wait vs events**：`events`（永不返回的长驻订阅）不作为 CLI 命令暴露——它会占住 agent 整个 turn 被强杀。`wait` 是"会返回的 SSE 封装"，带 `--timeout`，是 agent 等"特定消息"的正确姿势。底层都是同一个 daemon SSE 推送通道。
+> **wait vs events**：`events`（永不返回的长驻订阅）不作为 CLI 命令暴露——它会占住 agent 整个 turn 被强杀。`wait` 是"会返回的 SSE 封装"，带 `--timeout`，是 agent 等消息的正确姿势。底层都是同一个 daemon SSE 推送通道。
 
 ---
 
