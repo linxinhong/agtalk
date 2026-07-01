@@ -86,6 +86,31 @@ agtalk reply <msg-id> --choice approve              # reply to an approval
 
 ## Step 4: Receive messages
 
+### Mandatory: check inbox after every task turn
+
+**Before replying to the user at the end of each task turn, you MUST run:**
+
+```bash
+agtalk detail -
+```
+
+- If there's a new message: handle it first (continue the conversation / run its instruction / tell the user there's a pending item), then reply.
+- If no new message (error "inbox empty" or similar): don't block — continue and reply to the user.
+
+This is a non-negotiable part of your work loop, not an optional courtesy. It costs one second per turn and ensures agtalk messages never sit unread. Notify signals (if configured) are a reminder to do this — they don't replace this check.
+
+```
+your loop:
+  1. receive user/upstream message
+  2. do the task (may include agtalk send / human)
+  3. 【MUST】agtalk detail -        ← check agtalk inbox
+        new message → handle it (may start a new turn)
+        none        → continue
+  4. reply to user
+```
+
+Caveat: not real-time — if you're mid-way through a long task, a message arriving now won't be seen until the task finishes. That's unavoidable; you can't interrupt your own turn.
+
 ### Default path: pull (recommended, works for every CLI agent)
 
 ```bash
