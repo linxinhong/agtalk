@@ -143,11 +143,26 @@ src-tauri/src/
   - 注入失败必须可观测（记录到 `attachment-failures` 之类的存储，UI 可见）。
 - **禁止**在 content script 里用 Tailwind class（注入第三方页面会被污染）。content script 注入的 UI（发送按钮、Toast）用**独立手写 CSS**，class 前缀 `agtalk-`（参考 agtalk-office `send-buttons.css`）。
 
+### 身份模型：1 浏览器 = 1 mailbox + 标签绑定表（详见 design §3.5）
+
+- 整个浏览器插件 = **1 个持久 mailbox**（name 如 `"browser"`，address 为 UUID）。agtalk 侧零特殊化，浏览器就是一个普通 agent。
+- 多 AI 标签同开由**插件内部绑定表**解决，不污染 agtalk 协议。
+- **绑定表**（存 `chrome.storage.local`）：`AI 标签页(tabId) ↔ 绑定的 agent address(UUID)`，严格 **1:1**（一个标签绑一个 agent，一个 agent 同时只绑一个标签——避免回复路由歧义）。
+- 绑定由 **popup 手动配**：用户在 popup 里选"哪个 agent 绑定哪个 AI 标签"。绑定的 value 是 agent 的 address(UUID)，与 agent 类型无关（kimi code / claude code / codex / zcode 等任意 agtalk agent 都行）。
+
+### 路由（复用 UUID，无新概念）
+
+- **入站**（agtalk → 浏览器）：daemon 推送消息给插件 SSE（带 `from_address` = 发送 agent 的 UUID）→ 插件查绑定表：`from_address → tabId` → content script 注入该 AI 标签。
+- **出站**（浏览器 → agtalk）：AI 标签回复被 content script 捕获 → 插件查绑定表：`tabId → 绑定的 agent address` → `send(该 address, 回复)`。
+- **路由键 = `from_address ↔ tabId`**。禁止引入"AI 类型/标签名"作为 agtalk 协议层路由键——那是插件内部的事。
+- **未绑定 agent 发消息来**：插件忽略注入，并通过 agtalk 回复该 agent 一条错误提示"你尚未绑定到任何 AI 标签，请在插件 popup 配置"。不要静默丢弃。
+
 ### 与 daemon 的通信
 
 - background service worker 是扩展与 daemon 的唯一桥梁，通过 HTTP（`POST 127.0.0.1:19527/api`）+ SSE（`GET /events`）通信。
-- 扩展持有自己的持久 mailbox（address UUID），订阅用 SSE（**禁止短轮询**——agtalk-office 用 5s 短轮询是反面教材，v2 必须用 SSE 长连接）。
-- token/session 存 `chrome.storage.local`，日志必须脱敏（不打印 token/session_id）。
+- 扩展首次连接 daemon 时创建持久 mailbox（如 `agtalk join browser --intro "浏览器桥接"`），address 存 chrome.storage 跨会话复用。
+- 订阅用 SSE（**禁止短轮询**——agtalk-office 用 5s 短轮询是反面教材，v2 必须用 SSE 长连接）。
+- 扩展自身身份认证走 agtalk 标准机制（PID + session.json）。session 信息存 `chrome.storage.local`，日志必须脱敏。
 
 ### auto-mode（自动注入/转发）的同意边界
 

@@ -136,11 +136,56 @@ daemon 收到 UUID → 查 mailbox 表 → 往收件箱追加消息。**路由�
 ```
 agent ↔ agent：  A lookup(B) → send(uuidB) → B SSE 收
 agent ↔ human：  human 是持久 mailbox（daemon 启动建），GUI 订阅 human
-agent ↔ browser：扩展持有持久 mailbox，content script 把 UUID 注入网页 AI 上下文，
-                  AI 回复经扩展投递，扩展 SSE 收 daemon 推送再注入输入框
+agent ↔ browser：见 §3.5（浏览器 = 1 持久 mailbox，插件内部按"标签↔agent"绑定表路由）
 ```
 
 human 不再是硬编码的特殊行，browser 不再是 type='web' 的特殊参与者——都是不同生命周期的 mailbox。
+
+### 3.5 浏览器扩展架构（1 浏览器 = 1 mailbox + 标签绑定表）
+
+**核心模型**：整个浏览器插件 = **1 个持久 mailbox**（如 `name="browser"`，address 是 UUID）。agtalk 侧把浏览器当作一个普通 agent，零特殊化。多 AI 标签同开的需求由**插件内部的绑定表**解决，不污染 agtalk 协议。
+
+**典型场景**：agent（kimi code / claude code / codex / zcode 等任意 agtalk agent）与浏览器里某个网页 AI（ChatGPT / Claude / ...）双向对话。
+
+**绑定表**（插件维护，存 `chrome.storage.local`）：
+
+```
+AI 标签页 (tabId + 站点类型)  ↔  绑定的 agent address(UUID)
+─────────────────────────────────────────────────────────
+chatgpt 标签 (tabId=42)        ↔  agent-A 的 UUID
+claude 标签  (tabId=87)        ↔  agent-B 的 UUID
+```
+
+- 绑定关系**严格 1:1**：一个 AI 标签绑一个 agent address（避免回复路由歧义）；一个 agent address 同时只绑一个 AI 标签。
+- 绑定由**插件 popup 手动配**：用户在 popup 里选"哪个 agent 绑定哪个 AI 标签"。
+- 绑定的 value 是 agent 的 **address(UUID)**，与具体是哪种 agent 无关（kimi/claude/codex/zcode 都行）。
+
+**路由（复用 agtalk UUID 机制，无新概念）**：
+
+```
+入站（agtalk → 浏览器）：
+  agent 发 send(browser-address, body)
+  → daemon 推送给插件的 SSE 连接（带 from_address = agent 的 UUID）
+  → 插件查绑定表：from_address → tabId
+  → content script 注入该 AI 标签的输入框
+
+出站（浏览器 → agtalk）：
+  AI 标签产生回复 → content script 捕获
+  → 插件查绑定表：tabId → 绑定的 agent address
+  → send(该 agent address, 回复正文)
+```
+
+**路由键 = from_address（发送方 UUID）↔ tabId**。完美复用 agtalk 已有的 UUID 机制，不引入新概念。
+
+**浏览器 mailbox 生命周期**：
+- 插件首次连接 daemon 时创建（如 `agtalk join browser --intro "浏览器桥接"`），address 存 chrome.storage，跨会话复用。
+- 插件卸载/重装时，旧 mailbox 由 daemon 惰性清理（与普通 agent 一致）。
+
+**未绑定 agent 发消息来的处理**：
+- 插件收到消息，查绑定表发现 from_address 没绑任何标签 → **忽略注入**，并通过 agtalk 回复一条错误提示给该 agent："你尚未绑定到任何 AI 标签，请在浏览器插件 popup 里配置绑定。"
+- 这样 agent 知道要提示用户去配绑定。
+
+**一个 AI 标签绑多个 agent？** 不允许。绑定严格 1:1，因为一个标签的回复只能路由回一个 agent，多了就歧义。如果用户想让两个 agent 都和同一个 chatgpt 对话，应开两个 chatgpt 标签分别绑定。
 
 ---
 
