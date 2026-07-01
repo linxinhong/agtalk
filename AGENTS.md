@@ -19,6 +19,7 @@ agtalk 是**本地 Agent 对话总线**。daemon 是唯一真相来源，CLI / G
 1. **路由只认 UUID**。`send(to=address)`，address 是 UUID。任何按 name 路由的代码都是错的。
 2. **name 不唯一，纯展示**。name 永远不进路由查询。消歧在调用方，用 lookup 返回的 intro+workspace。
 3. **身份载体 = 文件系统**（`.agtalk/<name>/session.json` + `agents.json`）。**禁止**让 agent 持有/记忆高熵 token 作为认证锚（compact 会丢）。认证链：PID → agents.json → name → session.json → UUID。
+   - **浏览器扩展域例外**：扩展无法访问本地 `.agtalk/` 文件系统，因此由 daemon 通过 `POST /api/join` 颁发高熵 token，扩展仅存于 `chrome.storage.local`；daemon 在 `browser_sessions` 表校验该 token。该例外**仅限浏览器域**，不得扩展到 CLI/GUI/agent-agent 域。
 4. **SSE 是唯一推送机制**。**禁止**引入长轮询/短轮询/双机制并存。
 5. **消息推送前必须先持久化**（at-least-once）。event_id 单调，支持 Last-Event-ID 重放。
 6. **三域统一**：human/browser 不是特例，都是不同生命周期的 mailbox。
@@ -122,59 +123,59 @@ src-tauri/src/
 
 ## 5.5 浏览器扩展开发要求（WXT + Vue 3）
 
-浏览器扩展是 agtalk 的"agent ↔ browser"对话域实现，把网页 AI 桥接到总线。技术栈：WXT 0.18 + Vue 3 + Pinia + TailwindCSS。开发必须遵守：
+浏览器扩展是 agtalk 的"agent ↔ browser"对话域实现，把网页 AI 桥接到总线。技术栈：WXT 0.19 + Vue 3 + TypeScript。开发必须遵守：
 
 ### 结构与复用
 
-- **app（全屏页）和 popup（工具条弹窗）共享一套 store / API / messaging / platform 逻辑**。**禁止**写两套镜像 store（agtalk-office 的 `app/store.ts` 490 行 + `popup/store.ts` 410 行是反面教材——逻辑重复、行为漂移）。
-- 共享代码放 `src/shared/`（api/、messaging/、platform/、storage/、lib/、components/）。app 和 popup 只做 UI 壳，差异仅在布局。
-- 一个 Pinia store，两个 UI 消费它。
+- **background / popup / content script 共享 `src/shared/` 下的 api、类型与消息常量**。禁止把同一逻辑复制到多个 entrypoint。
+- 共享代码集中放在：
+  - `src/shared/api.ts`：HTTP 封装（`join` / `leave` / `lookup` / `send` / SSE 订阅）。
+  - `src/shared/types.ts`：扩展内部类型。
+  - `src/shared/messaging/message-types.ts`：所有 chrome runtime 消息常量。
+  - `src/shared/platform/`：content script 平台选择器与注入逻辑（预留，当前为下一阶段做准备）。
+- popup 只做 UI 壳，业务状态走 `chrome.storage.local` + background 消息。
 
 ### 消息类型纪律
 
 - 所有 chrome 消息类型常量集中在 `src/shared/messaging/message-types.ts`。
-- **禁止保留"未实现的保留常量"**（agtalk-office 有 `CHAT_TURN/AGTALK_SEND` 等标注"Phase 2 不迁移"的死常量，是噪音）。一个常量要么有 handler 实现，要么删除。
+- **禁止保留"未实现的保留常量"**。一个常量要么有 handler 实现，要么删除。
 
-### 平台选择器（selectors）——最脆弱的区域
+### 身份模型：1 浏览器 = 1 mailbox（当前实现）
 
-- content script 注入 ChatGPT/Claude/Sider/ChatGLM 等 AI 站点，依赖各站点的 DOM 选择器。**站点改版即失效**，这是固有脆性，必须用工程手段缓解：
-  - 每个平台的选择器**多候选**（一组选择器按序尝试，不是一个硬编码）。
-  - 选择器配置化（存储在 chrome.storage，可不改代码热更）。
-  - 注入失败必须可观测（记录到 `attachment-failures` 之类的存储，UI 可见）。
-- **禁止**在 content script 里用 Tailwind class（注入第三方页面会被污染）。content script 注入的 UI（发送按钮、Toast）用**独立手写 CSS**，class 前缀 `agtalk-`（参考 agtalk-office `send-buttons.css`）。
-
-### 身份模型：1 浏览器 = 1 mailbox + 标签绑定表（详见 design §3.5）
-
-- 整个浏览器插件 = **1 个持久 mailbox**（name 如 `"browser"`，address 为 UUID）。agtalk 侧零特殊化，浏览器就是一个普通 agent。
-- 多 AI 标签同开由**插件内部绑定表**解决，不污染 agtalk 协议。
-- **绑定表**（存 `chrome.storage.local`）：`AI 标签页(tabId) ↔ 绑定的 agent address(UUID)`，严格 **1:1**（一个标签绑一个 agent，一个 agent 同时只绑一个标签——避免回复路由歧义）。
-- 绑定由 **popup 手动配**：用户在 popup 里选"哪个 agent 绑定哪个 AI 标签"。绑定的 value 是 agent 的 address(UUID)，与 agent 类型无关（kimi code / claude code / codex / zcode 等任意 agtalk agent 都行）。
-
-### 路由（复用 UUID，无新概念）
-
-- **入站**（agtalk → 浏览器）：daemon 推送消息给插件 SSE（带 `from_address` = 发送 agent 的 UUID）→ 插件查绑定表：`from_address → tabId` → content script 注入该 AI 标签。
-- **出站**（浏览器 → agtalk）：AI 标签回复被 content script 捕获 → 插件查绑定表：`tabId → 绑定的 agent address` → `send(该 address, 回复)`。
-- **路由键 = `from_address ↔ tabId`**。禁止引入"AI 类型/标签名"作为 agtalk 协议层路由键——那是插件内部的事。
-- **未绑定 agent 发消息来**：插件忽略注入，并通过 agtalk 回复该 agent 一条错误提示"你尚未绑定到任何 AI 标签，请在插件 popup 配置"。不要静默丢弃。
+- 整个浏览器插件 = **1 个持久 mailbox**（name 默认 `"browser-<short>"`，address 为 UUID）。agtalk 侧零特殊化，浏览器就是一个普通 agent。
+- 扩展首次连接 daemon 时调用 `POST /api/join` 创建 mailbox，daemon 返回 `{address, name, token}`；扩展将 `address` + `token` 写入 `chrome.storage.local` 跨会话复用。
+- 浏览器域认证使用 daemon 颁发的 token（见 §2 架构红线第 3 条例外），通过 header `X-AgTalk-Browser-Token` + `X-AgTalk-Address` 发送请求；`SSE /events` 同样使用该 token。
 
 ### 与 daemon 的通信
 
-- background service worker 是扩展与 daemon 的唯一桥梁，通过 HTTP（`POST 127.0.0.1:19527/api`）+ SSE（`GET /events`）通信。
-- 扩展首次连接 daemon 时创建持久 mailbox（如 `agtalk join browser --intro "浏览器桥接"`），address 存 chrome.storage 跨会话复用。
-- 订阅用 SSE（**禁止短轮询**——agtalk-office 用 5s 短轮询是反面教材，v2 必须用 SSE 长连接）。
-- 扩展自身身份认证走 agtalk 标准机制（PID + session.json）。session 信息存 `chrome.storage.local`，日志必须脱敏。
+- background service worker 是扩展与 daemon 的唯一桥梁：
+  - `POST /api/join` 创建身份。
+  - `GET /events` 订阅 SSE 推送（**禁止短轮询**）。
+  - `POST /api/send` 发消息，`GET /api/lookup` 做地址消歧，`POST /api/leave` 注销。
+- SSE 订阅使用 `fetch` + `ReadableStream` 手动解析，因为 `EventSource` 无法自定义认证 header。
+- session 信息（address / token）存 `chrome.storage.local`，日志必须脱敏。
+
+### 平台选择器（selectors）与标签绑定表（预留架构，详见 design §3.5）
+
+- content script 注入 ChatGPT/Claude 等 AI 站点，依赖各站点的 DOM 选择器。**站点改版即失效**，这是固有脆性，必须用工程手段缓解：
+  - 每个平台的选择器**多候选**（一组选择器按序尝试，不是一个硬编码）。
+  - 选择器配置化（存储在 chrome.storage，可不改代码热更）。
+  - 注入失败必须可观测（记录到 `attachment-failures` 存储，UI 可见）。
+- **禁止**在 content script 里用 Tailwind class（注入第三方页面会被污染）。content script 注入的 UI 用**独立手写 CSS**，class 前缀 `agtalk-`。
+- 标签绑定表设计：`AI 标签页 (tabId) ↔ 绑定的 agent address(UUID)`，严格 **1:1**。该功能当前处于接口预留阶段，实现时复用已有 UUID 路由，禁止引入"AI 类型/标签名"作为 agtalk 协议层路由键。
+- **未绑定 agent 发消息来**：插件忽略注入，并通过 agtalk 回复该 agent 一条错误提示"你尚未绑定到任何 AI 标签，请在插件 popup 配置"。不要静默丢弃。
 
 ### auto-mode（自动注入/转发）的同意边界
 
 - auto-submit（自动点击网页 AI 发送按钮）、auto-forward（自动捕获 AI 回复转发回 daemon）是**敏感操作**——可能发送用户未授权的内容、抓取敏感回复。
-- 默认关闭。开启时必须有**可见的运行时指示**（如小飞机变红、状态栏提示）。
+- 默认关闭。开启时必须有**可见的运行时指示**。
 - 状态变化（注入成功/失败、转发成功/失败）必须可观测、可回滚。
 
 ### 构建与类型
 
-- `cd extension && pnpm build`（wxt build）。Firefox 构建用 `pnpm build:firefox`。
-- `tsc --noEmit` 必须通过（strict）。**必须**有独立 typecheck 脚本（agtalk-office 无独立脚本，typecheck 反馈滞后）。
-- manifest version 与 package.json version **保持一致**（agtalk-office 0.1.0 vs 0.2.1 是 bug）。
+- `cd extension && pnpm build`（wxt build）。
+- `cd extension && pnpm run typecheck`（`vue-tsc --noEmit`）必须通过（strict）。
+- manifest version 与 package.json version **保持一致**。
 
 ---
 
@@ -222,6 +223,36 @@ Tauri 2 是 agtalk 的桌面外壳。**GUI 是薄客户端**，所有逻辑走 d
 
 ---
 
+## 5.7 打扰层（notify）开发要求
+
+notify 是 agtalk 解决"agent 会偷懒"的机制：daemon 有新消息时**主动**把"有消息"信号推到 agent 的执行环境。详见 design §5。开发必须遵守：
+
+### 红线
+
+1. **notify 只推"有消息"信号，绝不推正文**（防 shell 注入）。注入文本只含信号 + 取信命令模板（如 `[agtalk] 新消息，运行 agtalk detail -`）。
+2. **notify 是 pull 的互补，不是替代**。notify 失败时退化为纯 pull，消息仍在 DB 不丢。禁止把 notify 设计成"唯一投递路径"。
+3. **agent 可关闭 notify**（`join --notify none`）。禁止强制打扰。
+
+### 多通道实现
+
+agent 跑在不同环境，notify 必须多通道，按 agent `join` 时声明的 `--notify <channel>` 选择：
+- `zellij` / `tmux`：write-chars / send-keys 注入（参考 agtalk-office notify.rs，已验证）。
+- `gui`：系统通知 + Tauri 弹窗（给人类或带 GUI 的 agent）。
+- `webhook:<url>`：POST 回调（给有 HTTP 端点的后台 agent）。
+- `none`：不打扰，纯 pull。
+
+### 诚实标注局限
+
+- **"普通终端（无多路复用器）"无标准注入方式**——不假装能解决。文档明确：该环境下 notify 不生效，agent 需自查（detail -）或建议用户在 zellij/tmux 里跑 agent。agtalk-office 对此也无解。
+- 注入命令模板末尾（如 `agtalk detail -`）会读 stdin——若 agent pane 当前在交互提示中（sudo 密码/REPL），文本会被当输入。属固有风险，须在用户文档说明。
+
+### 扩展性
+
+- notify 通道用 trait（`NotifyChannel`）抽象，每个通道一个实现。新增通道不改 daemon 核心。
+- 外部 notify 命令插件路径必须绝对，参数数组执行（不经 shell）。
+
+---
+
 ## 6. 构建与验证命令
 
 ```bash
@@ -240,9 +271,12 @@ pnpm build                           # 内含 vue-tsc --noEmit
 pnpm dev                             # Vite dev server
 
 # 扩展
-cd extension && pnpm install
-cd extension && pnpm build               # wxt build
-cd extension && pnpm run typecheck       # tsc --noEmit（须有此脚本）
+pnpm install                           # 根前端依赖
+pnpm typecheck:extension               # cd extension && pnpm run typecheck
+pnpm build:extension                   # cd extension && pnpm run build
+
+# 端到端（浏览器扩展身份生命周期）
+./scripts/e2e-browser.sh               # 需要 cargo build 生成 debug 二进制
 
 # Tauri dev
 pnpm tauri dev -- gui
@@ -252,7 +286,7 @@ pnpm tauri dev -- gui
 ./target/debug/agtalk daemon status
 ```
 
-**提交前必过**：`cargo check` + `cargo test` + `cargo clippy -- -D warnings` + `pnpm build`（前端）+ `cd extension && pnpm run typecheck`（扩展类型检查）。
+**提交前必过**：`cargo check` + `cargo test` + `cargo clippy -- -D warnings` + `pnpm build`（前端）+ `pnpm typecheck:extension`（扩展类型检查）+ `pnpm build:extension`（扩展构建）。
 
 ---
 
@@ -264,6 +298,7 @@ pnpm tauri dev -- gui
 - `cargo fmt --check`
 - `pnpm build`（前端类型检查）
 - `cd extension && pnpm run typecheck`（扩展类型检查）
+- `cd extension && pnpm run build`（扩展构建）
 
 不建 CI、依赖人工跑检查是 agtalk-office 的教训，本项目不重犯。
 

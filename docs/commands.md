@@ -58,13 +58,18 @@ agtalk daemon restart     # 重启
 身份由工作目录的 `.agtalk/` 承载（design §2.2）。创建/注销身份即建/删文件夹。
 
 ```
-agtalk join [name] [--intro <text>] [--workspace <text>]
+agtalk join [name] [--intro <text>] [--workspace <text>] [--notify <channel>]
 ```
 创建身份：
 - 写 `.agtalk/<name>/session.json`（含 address UUID / name / workspace / intro）
 - 注册 `.agtalk/agents.json`（pid + start_time → name 映射）
 - 同步到 daemon 的 lookup 表
 - `name` 省略时由 daemon 自动生成（一次性身份）
+- `--notify <channel>`：声明有新消息时 daemon 主动打扰的通道（详见 design §5）：
+  - `zellij` / `tmux`：终端 pane 注入一行提示（适合在多路复用器里跑的 agent）
+  - `gui`：系统通知 / Tauri 弹窗（适合 GUI/IDE agent）
+  - `webhook:<url>`：POST 回调（适合有 HTTP 端点的后台 agent）
+  - `none`（默认）：不打扰，纯 pull（agent 自查 inbox/detail -）
 
 ```
 agtalk leave [name]

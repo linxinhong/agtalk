@@ -73,6 +73,8 @@ agent 进程发请求时：
 
 **全链基于 PID + 文件系统，agent 大脑里不需要存任何高熵字符串。** compact 之后重新执行 ①→④ 即恢复身份。身份载体放在 agent 丢不掉的地方（进程属性 + 磁盘文件），而不是 agent 最容易丢的地方（对话噪声里的高熵 token）。
 
+> **浏览器扩展例外**：浏览器扩展无法读取本地 `.agtalk/` 文件系统，因此采用 daemon 颁发的 token 认证（见 §2.6）。该例外仅限浏览器域，其它域仍必须走 PID + 文件系统。
+
 ### 2.4 PID 复用防护
 
 `agents.json` 存 `{pid, name, start_time}`。daemon 校验时比 `pid + 进程启动时间` 双因子。PID 被 OS 复用时 start_time 不一致，识别得出。
@@ -82,9 +84,8 @@ agent 进程发请求时：
 查询：
 
 ```
-GET /lookup?name=nora  （或无参列全部）
-→ [{address: UUID, name: "nora", intro: "前端 review", workspace: "projA"},
-   {address: UUID, name: "nora", intro: "后端",       workspace: "projB"}]
+GET /api/lookup?name=nora  （或无参列全部）
+→ {type: "lookup_result", mailboxes: [{address: UUID, name: "nora", intro: "前端 review", workspace: "projA"}, ...]}
 ```
 
 发送消息：
@@ -96,7 +97,41 @@ Body: {to: UUID, body: string, content_type?, reply_to_id?, metadata?, more_comi
 → {type: "ok", id: msg_id}
 ```
 
+浏览器扩展专用：
+
+```
+POST /api/join
+Body: {name?, intro?, workspace?}
+→ {type: "browser_join_result", address: UUID, name: string, token: string}
+
+POST /api/leave
+Headers: X-AgTalk-Browser-Token
+→ {type: "pong"}
+
+GET /events
+Headers: X-AgTalk-Address, X-AgTalk-Browser-Token
+→ SSE stream
+```
+
 也兼容统一入口 `POST /api` 发送 `ClientMsg::Send`。agent 用返回的 intro + workspace 在同名情况下精确消歧，选定 address 后再用 UUID 发消息。
+
+### 2.6 浏览器扩展认证
+
+浏览器扩展无法访问 `.agtalk/` 文件系统，因此由 daemon 在首次连接时颁发 token：
+
+```
+扩展 → POST /api/join
+       ← {address, name, token}
+
+后续请求：
+  Headers: X-AgTalk-Address: <address>
+           X-AgTalk-Browser-Token: <token>
+```
+
+- token 为高熵 UUID，存储在 `chrome.storage.local`。
+- daemon 在 `browser_sessions` 表中校验 token，并确认对应 mailbox 未 leave。
+- token 与 mailbox 生命周期绑定：`/api/leave` 删除 token 并 mark_left mailbox。
+- 该认证方式**仅限浏览器域**，不得用于 CLI/GUI/agent-agent 域。
 
 ---
 
@@ -143,7 +178,9 @@ human 不再是硬编码的特殊行，browser 不再是 type='web' 的特殊参
 
 ### 3.5 浏览器扩展架构（1 浏览器 = 1 mailbox + 标签绑定表）
 
-**核心模型**：整个浏览器插件 = **1 个持久 mailbox**（如 `name="browser"`，address 是 UUID）。agtalk 侧把浏览器当作一个普通 agent，零特殊化。多 AI 标签同开的需求由**插件内部的绑定表**解决，不污染 agtalk 协议。
+**核心模型**：整个浏览器插件 = **1 个持久 mailbox**（如 `name="browser-<short>"`，address 是 UUID）。agtalk 侧把浏览器当作一个普通 agent，零特殊化。多 AI 标签同开的需求由**插件内部的绑定表**解决，不污染 agtalk 协议。
+
+**当前实现阶段**：已完成浏览器 mailbox 的创建（`/api/join`）、token 认证（`X-AgTalk-Browser-Token`）、SSE 订阅（`/events`）和基础 popup/background；标签绑定表、content script 注入、AI 回复捕获为下一阶段，接口已预留。
 
 **典型场景**：agent（kimi code / claude code / codex / zcode 等任意 agtalk agent）与浏览器里某个网页 AI（ChatGPT / Claude / ...）双向对话。
 
@@ -216,8 +253,11 @@ daemon → agent 的推送底层是 **SSE（Server-Sent Events）**，没有长�
 
 ```
 常驻进程（GUI / 扩展 background）或有 HTTP 能力的 agent：
-  ① 身份解析：PID → agents.json → name → session.json → address(UUID)
+  ① 身份解析：
+     - CLI/GUI：PID → agents.json → name → session.json → address(UUID)
+     - 浏览器扩展：chrome.storage.local → {address, token}
   ② GET /events + 凭证 → daemon 注册为"订阅 address=<UUID>"
+     - 浏览器扩展带 Headers: X-AgTalk-Address, X-AgTalk-Browser-Token
   ③ 任何 send(to=<该 UUID>) 的消息 → 推给这条 SSE 连接
 ```
 
@@ -246,7 +286,66 @@ daemon → 从 DB 重放该 UUID 下 event_id > 50 的消息 → 继续正常订
 
 ---
 
-## 5. 数据模型
+## 5. 打扰层（notify）：解决"agent 会偷懒"
+
+### 5.1 问题：pull 模型的根本局限
+
+第 4 节的 SSE/inbox 都是 **pull 模型**——agent 必须主动连 SSE 或调 `detail -` 才能收到消息。但 agent 的核心循环是"接收用户消息 → 调工具 → 返回"，**主动查收件箱"不产生即时价值"**，agent 不会自发地在循环里加这一步（即使用 skill/AGENTS.md 要求它，它也常跳过）。
+
+结果：消息躺在 daemon 里，agent 不来取，对话中断。这是 pull 模型的根本局限，**不能靠协议解决，只能靠"打扰"**。
+
+### 5.2 设计：daemon 主动打扰 agent 的执行环境
+
+agtalk 在 pull 层（SSE/inbox）之外，增加**打扰层（notify）**：daemon 有新消息时，**主动**把"有消息"这个信号推到 agent 的执行环境，让 agent 在它的核心循环里"撞见"，不得不注意。
+
+**关键原则（轻量信号）**：notify **只推"有新消息"的信号，不推正文**。agent 看到信号后自己调 `agtalk inbox` / `agtalk detail -` 取正文。理由：
+- 注入量小、风险低（正文里有 shell 元字符也不会被执行）。
+- agent 仍有自主权（看到信号后决定何时处理）。
+- 务实目标：**最大化让 agent 注意到、降低处理门槛**，而不是幻想"push 了 agent 就一定处理"——后者是 agent 行为问题，非通信协议能完全解决。
+
+信号形式（推荐）：注入一行既提示又带取信指令的文本（参考 agtalk-office）：
+```
+[agtalk] 新消息来自 <from_name>，运行 `agtalk detail -` 查看
+```
+agent 在终端里撞见这行 → 它的核心循环把它当输入 → 自然去执行 detail - → 拿到正文。这是 agtalk-office 已验证有效的模式。
+
+### 5.3 多通道：四种环境各自的触达方式
+
+agent 可能跑在任何环境（终端+zellij/tmux、普通终端、GUI/IDE、后台进程），**没有任何单一通道能触达所有环境**。notify 必须多通道，按 agent 注册时声明的环境选择：
+
+| agent 环境 | notify 通道 | 机制 | 局限 |
+|---|---|---|---|
+| 终端 + zellij | zellij write-chars | `zellij action write-chars` 注入到目标 pane | 依赖 ZELLIJ_SESSION_NAME/ZELLIJ_PANE_ID；agtalk-office 已实现 |
+| 终端 + tmux | tmux send-keys | `tmux send-keys -t <target>` 注入 | 依赖 TMUX_PANE；agtalk-office 已实现 |
+| 普通终端（无多路复用器） | **无标准方式** | — | **难点**：没有 API 往另一个终端进程的 stdin 写字。agtalk-office 对此无解（跳过）。v2 也不假装能解决，仅依赖 agent 自查（detail -）或建议用户在 zellij/tmux 里跑 agent |
+| GUI / IDE | 系统通知 + Tauri 弹窗 | OS 通知中心 / Tauri window 通知 | 需要前端展示组件；适合人类 agent 或带 GUI 的 agent |
+| 后台进程 | watch 文件 / HTTP 回调 | daemon 写 `<workdir>/.agtalk/notify.flag`，或 POST agent 注册的 webhook | agent 需主动监听文件/webhook |
+
+**注册时声明环境**：agent `join` 时通过 `--notify <channel>` 声明自己希望被打扰的通道（如 `zellij` / `tmux` / `gui` / `webhook:<url>` / `none`）。daemon 按此选择通道。未声明 = `none`（不打扰，纯 pull）。
+
+### 5.4 notify 与 pull 的关系（互补，非替代）
+
+```
+打扰层（notify）：daemon 主动 → 信号推到 agent 环境 → agent 注意到
+                                         ↓
+                                    agent 主动调
+                                         ↓
+拉取层（pull）：   agent 主动 → inbox / detail - / SSE → 取到正文
+```
+
+- notify 是"敲门"，pull 是"开门取信"。两者都需要。
+- notify 失败（agent 不在 zellij/tmux、或进程不在了）→ 退化为纯 pull，消息仍在 DB 不丢。
+- notify 不是必须的：agent 若自觉调 detail -，可以 `join --notify none` 完全关掉打扰。
+
+### 5.5 安全约束（沿用 agtalk-office 的好设计）
+
+- notify 注入终端的文本**只含信号 + 命令模板，绝不含消息正文**（防 shell 注入）。
+- 外部 notify 命令插件（CommandPlugin）路径必须绝对，参数数组执行（不经 shell）。
+- 注入的命令模板末尾 `agtalk detail -` 会读 stdin 等待正文——这是预期行为，但若 agent 当前 pane 在交互提示中（如 sudo 密码），该文本会被当输入。属功能固有风险，文档需说明。
+
+---
+
+## 6. 数据模型
 
 ```
 mailbox
@@ -274,7 +373,7 @@ messages
 
 ---
 
-## 6. 技术栈
+## 7. 技术栈
 
 | 层 | 选型 |
 |---|---|
@@ -295,7 +394,7 @@ messages
 
 ---
 
-## 7. 目录结构
+## 8. 目录结构
 
 ```
 agtalk/                             ← 本项目根
@@ -361,10 +460,12 @@ agtalk/                             ← 本项目根
 
 ---
 
-## 8. 已实现阶段确定的关键细节
+## 9. 已实现阶段确定的关键细节
 
 - **传输**：HTTP-only，所有客户端（CLI / GUI / 扩展）走 `127.0.0.1:<port>`；SSE 是唯一的推送机制。
-- **鉴权**：客户端在 HTTP header 中带上 `X-AgTalk-Address`（来自 `session.json` 的 UUID），可选 `X-AgTalk-Pid` 与 `X-AgTalk-Start-Time` 做 PID 复用防护；daemon 以文件系统（`session.json` + `agents.json`）为信任根。
+- **鉴权**：
+  - CLI/GUI：HTTP header 中带上 `X-AgTalk-Address`（来自 `session.json` 的 UUID），可选 `X-AgTalk-Pid` 与 `X-AgTalk-Start-Time` 做 PID 复用防护；daemon 以文件系统（`session.json` + `agents.json`）为信任根。
+  - 浏览器扩展：使用 `X-AgTalk-Address` + `X-AgTalk-Browser-Token`，token 由 `/api/join` 颁发并存储在 `chrome.storage.local`。
 - **agents.json 写入时机**：`agtalk join` 时由 daemon 写入，键为进程 pid，值为 `{ name, start_time }`。
 - **状态机**：
   - `messages.status`: pending / delivered / read / done / dismissed
