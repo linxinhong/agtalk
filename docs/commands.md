@@ -521,8 +521,26 @@ agtalk --json run [file.yaml]
 - 只执行 agtalk 内部白名单动作。
 - 不执行任意 shell。
 - 任一步失败默认停止。
-- `--json` 输出步骤结果数组。
 - 第一阶段没有变量替换：每个 step 的字段按字面量传给对应内部动作，不支持 `${}`、`{{ }}` 或任何模板语法。
+- `--json` 输出稳定结构：
+
+  ```json
+  {
+    "type": "run_result",
+    "status": "ok",
+    "file": ".agtalk/runs/nora.yaml",
+    "stopped_at": null,
+    "steps": [
+      {
+        "index": 1,
+        "action": "msg.send",
+        "status": "ok",
+        "output": { "type": "ok", "id": "..." },
+        "error": null
+      }
+    ]
+  }
+  ```
 
 允许的 action：
 
@@ -551,7 +569,7 @@ id.join
 config.set
 id.leave
 shell
-
+```
 
 示例：
 

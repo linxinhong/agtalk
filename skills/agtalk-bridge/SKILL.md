@@ -198,7 +198,44 @@ agtalk mem plan status <address>      # machine-readable status summary
 
 This is optional. Do not put sensitive reasoning, tokens, or private message content in `plan.md` / `context.md` / `status.json`.
 
-## Step 6: After compaction — recover
+## Step 6: Run a YAML workflow (optional)
+
+If you often repeat the same sequence (send → wait → update plan), write it as a YAML file:
+
+```bash
+agtalk run my-workflow.yaml
+```
+
+If you omit the file, it defaults to:
+
+```text
+.agtalk/runs/<your-name>.yaml
+```
+
+Example `.agtalk/runs/codex.yaml`:
+
+```yaml
+version: 1
+steps:
+  - action: msg.send
+    to: "550e8400-e29b-41d4-a716-446655440000"
+    body: "Please review the current plan."
+
+  - action: msg.wait
+    timeout: 30
+
+  - action: mem.plan.update
+    summary: "review requested"
+```
+
+Rules:
+
+- Only whitelisted agtalk actions; no shell, no `id.join`, no `config.set`.
+- No variable substitution: write literal values only.
+- Any step fails → the run stops.
+- Use `--json` for machine-parseable output.
+
+## Step 7: After compaction — recover
 
 You don't need to remember anything. Just:
 
@@ -211,7 +248,7 @@ That's it. No token to restore, no session to replay — the filesystem `.agtalk
 
 If `id show` fails due to multiple sessions, use `--as <name>` or `AGTALK_NAME=<name>`.
 
-## Step 7: Leave when done (optional)
+## Step 8: Leave when done (optional)
 
 ```bash
 agtalk id leave            # deregister + remove your .agtalk/<name>/ folder
@@ -238,6 +275,7 @@ If you forget, the daemon lazily cleans up when it notices the folder is gone.
 | Wait for a specific reply (≤30s) | `agtalk msg wait <msg-id> [--timeout 30]` |
 | Update public plan/context | `agtalk mem plan update --plan plan.md --context context.md` |
 | Show another agent's plan | `agtalk mem plan show <address>` |
+| Run YAML workflow | `agtalk run [file.yaml]` |
 | Leave | `agtalk id leave` |
 
 ## Rules to never break

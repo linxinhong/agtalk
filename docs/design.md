@@ -260,7 +260,7 @@ SQLite 中的 mem 索引可随时从文件系统重建；agent 的长期记忆�
 
 ### 2.9 run：YAML 编排入口
 
-`run` 是多步 agtalk 动作的轻量编排器，供 agent 和人类脚本使用。
+`run` 是多步 agtalk 动作的轻量编排器，**CLI 本进程执行**，不经过 REST API，也不进入 daemon 核心协议。
 
 ```bash
 agtalk run [file.yaml]
@@ -270,7 +270,7 @@ agtalk run [file.yaml]
 
 约束：
 
-- 只执行 agtalk 内部白名单动作（如 `id.join`、`msg.send`、`msg.read`、`mem.plan.update` 等）。
+- 只执行 agtalk 内部白名单动作（如 `msg.send`、`msg.read`、`mem.plan.update`、`tool.doctor` 等），`id.join`、`config.set`、`id.leave`、任意 shell 均不允许。
 - 不执行任意 shell。
 - 第一阶段没有变量替换：每个 step 的字段按字面量传给对应内部动作。
 - 任一步失败默认停止。
@@ -289,7 +289,7 @@ steps:
   - action: msg.read
 ```
 
-`run` 不是核心通信协议，而是 CLI 便利层；GUI / 浏览器扩展等薄客户端可直接调用对应 REST API，不必经过 `run`。
+`run` 不是核心通信协议，而是 CLI 便利层；GUI / 浏览器扩展等薄客户端直接调用对应 REST API 或 daemon 命令，不必经过 `run`。
 
 ---
 
@@ -593,11 +593,15 @@ agtalk/                             ← 本项目根
 │       │   ├── plan.rs
 │       │   ├── index.rs
 │       │   └── tests.rs
-│       ├── run/                    ← YAML 编排入口
+│       ├── cli/                    ← CLI 子命令、客户端与本地 YAML runner
 │       │   ├── mod.rs
-│       │   ├── parser.rs
 │       │   ├── runner.rs
-│       │   └── tests.rs
+│       │   ├── context.rs
+│       │   ├── output.rs
+│       │   └── client/
+│       ├── tool/                   ← doctor、version、path 等工具
+│       │   ├── mod.rs
+│       │   └── doctor.rs
 │       ├── transport/              ← 推送：SSE、唤醒、可选 BLE
 │       │   ├── mod.rs
 │       │   ├── sse.rs              ← SSE 端点 + Last-Event-ID 重放
@@ -625,7 +629,7 @@ agtalk/                             ← 本项目根
 
 **关键设计**：
 - Rust 代码集中在 `src-tauri/` 一个 crate 内，bin + lib + daemon 核心逻辑同 crate（参考 agtalk-office）。
-- 领域内按 identity / routing / mem / transport / server / storage 分子模块，每领域自带 tests.rs；run 作为 YAML 编排入口独立成模块。
+- 领域内按 identity / routing / mem / transport / server / storage / tool 分子模块，每领域自带 tests.rs；`run` 作为 CLI-local YAML runner 放在 `cli/` 下，不进入 REST API。
 - storage 模块只管 DB 句柄和迁移，业务查询分散到各领域模块（避免 god-object）。
 - proto.rs 集中放 enum 定义（协议是跨模块契约，需内聚），但不放 handler。
 - 文件大小目标：每个 .rs 文件 < 500 行，绝不超 800 行。

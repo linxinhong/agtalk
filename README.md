@@ -30,7 +30,11 @@ agtalk msg send <address-uuid> "<message>"
 agtalk msg read                      # 取未读消息
 agtalk msg wait <msg-id> --timeout 30  # 短期等特定回复
 
-# 5. agent 每轮任务结束前必查收件箱
+# 5. 多步编排（可选）：把常用流程写成 YAML
+#    默认读取 .agtalk/runs/<name>.yaml
+agtalk run
+
+# 6. agent 每轮任务结束前必查收件箱
 ```
 
 `id join` 是幂等的：session 已存在时复用原 address，只更新当前进程锚点。context compaction 后，agent 只需重新 `id join` 或 `id show` 即可恢复身份——身份在文件系统，不在 agent 脑子里。
@@ -58,6 +62,9 @@ cargo build -p agtalk
 
 # 查看未读消息
 ./target/debug/agtalk msg read
+
+# 运行 YAML 编排（默认 .agtalk/runs/nora.yaml）
+./target/debug/agtalk run
 ```
 
 ## 项目结构
@@ -69,11 +76,11 @@ agtalk/
 │   ├── src/
 │   │   ├── main.rs         # argv 分派入口
 │   │   ├── lib.rs          # lib 入口
-│   │   ├── cli/            # CLI 子命令与客户端
+│   │   ├── cli/            # CLI 子命令、客户端与本地 YAML runner
 │   │   ├── identity/       # session、agents.json、mailbox、认证
 │   │   ├── routing/        # send、lookup、inbox、reply
 │   │   ├── mem/            # 计划、上下文、长期记忆
-│   │   ├── run/            # YAML 编排入口
+│   │   ├── tool/           # doctor、version、path 等工具
 │   │   ├── transport/      # SSE、订阅者唤醒
 │   │   ├── server/         # HTTP API、daemon 生命周期
 │   │   ├── storage/        # SQLite 句柄与迁移
