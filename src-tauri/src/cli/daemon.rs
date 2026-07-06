@@ -4,6 +4,7 @@ use crate::cli::output::{print_server_msg, CliError};
 use crate::proto::ServerMsg;
 use crate::server::daemon::{self, DaemonStatusFile};
 use std::env;
+use std::fs::OpenOptions;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -21,13 +22,20 @@ pub fn start(json: bool) -> Result<(), String> {
     }
 
     let exe = env::current_exe().map_err(|e| e.to_string())?;
+    let log_path = daemon_log_path()?;
+    let log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| format!("无法打开 daemon 日志文件 {}: {}", log_path.display(), e))?;
+
     let child = Command::new(exe)
         .arg("daemon")
         .arg("start")
         .env(DAEMON_CHILD_ENV, "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
+        .stderr(log_file)
         .spawn()
         .map_err(|e| e.to_string())?;
 
@@ -36,7 +44,11 @@ pub fn start(json: bool) -> Result<(), String> {
     // 轮询等待 daemon 写好状态文件并响应 HTTP
     let started = wait_for(|_| daemon::is_running(), START_TIMEOUT);
     if !started {
-        return Err(format!("daemon 未能及时启动 (pid {})，请检查日志", pid));
+        return Err(format!(
+            "daemon 未能及时启动 (pid {})，请检查日志 {}",
+            pid,
+            log_path.display()
+        ));
     }
 
     let msg = status_info().map_err(|e| e.message)?;
@@ -169,4 +181,9 @@ fn file_to_status(file: DaemonStatusFile, uptime_seconds: u64) -> ServerMsg {
         config_path: file.config_path,
         db_path: file.db_path,
     }
+}
+
+fn daemon_log_path() -> Result<std::path::PathBuf, String> {
+    let dir = crate::paths::ensure_config_dir().map_err(|e| e.to_string())?;
+    Ok(dir.join("daemon.log"))
 }
