@@ -1,6 +1,6 @@
 //! CLI `mem` 命名空间客户端。
 
-use crate::cli::client::{get, patch, post};
+use crate::cli::client::{encode_query, get, patch, post};
 use crate::cli::context::Context;
 use crate::cli::output::{print_server_msg, CliError};
 use crate::cli::MemCmd;
@@ -9,12 +9,8 @@ pub fn dispatch(ctx: Context, cmd: MemCmd, json: bool) -> Result<(), CliError> {
     let resp = match cmd {
         MemCmd::Plan { cmd } => match cmd {
             crate::cli::MemPlanCmd::Show { target } => {
-                let endpoint = if let Some(t) = target {
-                    format!("/api/v1/mem/plan?target={}", t)
-                } else {
-                    "/api/v1/mem/plan".into()
-                };
-                get(&ctx, &endpoint)?
+                let params = target.map(|t| vec![("target", t)]).unwrap_or_default();
+                get(&ctx, &encode_query("/api/v1/mem/plan", params))?
             }
             crate::cli::MemPlanCmd::Update {
                 plan,
@@ -32,12 +28,8 @@ pub fn dispatch(ctx: Context, cmd: MemCmd, json: bool) -> Result<(), CliError> {
                 }),
             )?,
             crate::cli::MemPlanCmd::Status { target } => {
-                let endpoint = if let Some(t) = target {
-                    format!("/api/v1/mem/plan/status?target={}", t)
-                } else {
-                    "/api/v1/mem/plan/status".into()
-                };
-                get(&ctx, &endpoint)?
+                let params = target.map(|t| vec![("target", t)]).unwrap_or_default();
+                get(&ctx, &encode_query("/api/v1/mem/plan/status", params))?
             }
         },
         MemCmd::Add {
@@ -62,34 +54,34 @@ pub fn dispatch(ctx: Context, cmd: MemCmd, json: bool) -> Result<(), CliError> {
             topic,
             limit,
         } => {
-            let mut endpoint = format!("/api/v1/mem/search?query={}", query);
+            let mut params = vec![("query", query)];
             if let Some(t) = topic {
-                endpoint.push_str(&format!("&topic={}", t));
+                params.push(("topic", t));
             }
             if let Some(l) = limit {
-                endpoint.push_str(&format!("&limit={}", l));
+                params.push(("limit", l.to_string()));
             }
-            get(&ctx, &endpoint)?
+            get(&ctx, &encode_query("/api/v1/mem/search", params))?
         }
         MemCmd::Show { id } => get(&ctx, &format!("/api/v1/mem/show/{}", id))?,
         MemCmd::List { topic } => {
-            let mut endpoint = "/api/v1/mem/list".to_string();
-            if let Some(t) = topic {
-                endpoint.push_str(&format!("?topic={}", t));
-            }
-            get(&ctx, &endpoint)?
+            let params = topic.map(|t| vec![("topic", t)]).unwrap_or_default();
+            get(&ctx, &encode_query("/api/v1/mem/list", params))?
         }
-        MemCmd::Pack { topic, limit } => {
-            let mut endpoint = "/api/v1/mem/pack".to_string();
-            let mut first = true;
+        MemCmd::Pack {
+            topic_pos,
+            topic,
+            limit,
+        } => {
+            let topic = topic.or(topic_pos);
+            let mut params = Vec::new();
             if let Some(t) = topic {
-                endpoint.push_str(&format!("{}topic={}", if first { "?" } else { "&" }, t));
-                first = false;
+                params.push(("topic", t));
             }
             if let Some(l) = limit {
-                endpoint.push_str(&format!("{}limit={}", if first { "?" } else { "&" }, l));
+                params.push(("limit", l.to_string()));
             }
-            get(&ctx, &endpoint)?
+            get(&ctx, &encode_query("/api/v1/mem/pack", params))?
         }
     };
     print_server_msg(json, &resp);

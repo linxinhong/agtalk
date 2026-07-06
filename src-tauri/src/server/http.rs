@@ -877,15 +877,20 @@ mod tests {
         let resp1 = app.clone().oneshot(join1).await.unwrap();
         assert_eq!(resp1.status(), StatusCode::OK);
 
-        let addr1 = match serde_json::from_slice::<ServerMsg>(
+        let (addr1, workspace1, intro1) = match serde_json::from_slice::<ServerMsg>(
             &axum::body::to_bytes(resp1.into_body(), usize::MAX)
                 .await
                 .unwrap(),
         )
         .unwrap()
         {
-            ServerMsg::Ok { id } => id,
-            other => panic!("expected Ok, got {:?}", other),
+            ServerMsg::Identity {
+                address,
+                workspace,
+                intro,
+                ..
+            } => (address, workspace, intro),
+            other => panic!("expected Identity, got {:?}", other),
         };
 
         let body2 = serde_json::to_string(&serde_json::json!({
@@ -904,19 +909,28 @@ mod tests {
             .body(Body::from(body2))
             .unwrap();
         let resp2 = app.clone().oneshot(join2).await.unwrap();
-        let addr2 = match serde_json::from_slice::<ServerMsg>(
+        let (addr2, workspace2, intro2) = match serde_json::from_slice::<ServerMsg>(
             &axum::body::to_bytes(resp2.into_body(), usize::MAX)
                 .await
                 .unwrap(),
         )
         .unwrap()
         {
-            ServerMsg::Ok { id } => id,
-            other => panic!("expected Ok, got {:?}", other),
+            ServerMsg::Identity {
+                address,
+                workspace,
+                intro,
+                ..
+            } => (address, workspace, intro),
+            other => panic!("expected Identity, got {:?}", other),
         };
 
         assert_eq!(addr1, addr2);
         assert_eq!(addr1, nora);
+        assert_eq!(workspace1, "projA");
+        assert_eq!(intro1, "前端");
+        assert_eq!(workspace2, "projB");
+        assert_eq!(intro2, "后端");
 
         let mb = mailbox_db::get_by_address(&state.storage, &addr1)
             .unwrap()
@@ -1045,5 +1059,88 @@ mod tests {
         let row = crate::mem::index::lookup_by_address(&state.storage, &nora).unwrap();
         assert_eq!(row.status_summary, "running: 50%");
         assert!(row.plan_updated_at > 0.0);
+    }
+
+    #[tokio::test]
+    async fn v1_mem_pack_agent_guide_returns_built_in_guide() {
+        let (state, nora, _quinn, _tmp) = test_state();
+        let app = routes(state.clone());
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/v1/mem/pack?topic=agtalk/agent-guide")
+            .header("X-AgTalk-Address", nora.clone())
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let pack: ServerMsg = serde_json::from_slice(&bytes).unwrap();
+        match pack {
+            ServerMsg::MemPack { topic, markdown } => {
+                assert_eq!(topic, "agtalk/agent-guide");
+                assert!(!markdown.is_empty());
+                assert!(markdown.contains("agtalk mem pack agtalk/agent-guide"));
+                assert!(markdown.contains("inbox_empty"));
+            }
+            other => panic!("expected MemPack, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn v1_mem_pack_empty_topic_does_not_return_guide() {
+        let (state, nora, _quinn, _tmp) = test_state();
+        let app = routes(state.clone());
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/v1/mem/pack")
+            .header("X-AgTalk-Address", nora.clone())
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let pack: ServerMsg = serde_json::from_slice(&bytes).unwrap();
+        match pack {
+            ServerMsg::MemPack { topic, markdown } => {
+                assert_eq!(topic, "all");
+                assert!(markdown.is_empty());
+            }
+            other => panic!("expected MemPack, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn v1_mem_pack_old_handbook_alias_does_not_return_guide() {
+        let (state, nora, _quinn, _tmp) = test_state();
+        let app = routes(state.clone());
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/v1/mem/pack?topic=agent-learning-handbook")
+            .header("X-AgTalk-Address", nora.clone())
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let pack: ServerMsg = serde_json::from_slice(&bytes).unwrap();
+        match pack {
+            ServerMsg::MemPack { topic, markdown } => {
+                assert_eq!(topic, "agent-learning-handbook");
+                assert!(markdown.is_empty());
+            }
+            other => panic!("expected MemPack, got {:?}", other),
+        }
     }
 }

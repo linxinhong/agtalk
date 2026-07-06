@@ -267,6 +267,14 @@ pub fn handle_pack(
     };
 
     let topic_str = topic.unwrap_or_default();
+
+    if mem::guide::is_agent_guide_topic(&topic_str) {
+        return ServerMsg::MemPack {
+            topic: topic_str,
+            markdown: mem::guide::agent_guide_markdown(),
+        };
+    }
+
     match mem::pack(&state.dot_agtalk, &name, &topic_str, limit) {
         Ok(markdown) => ServerMsg::MemPack {
             topic: if topic_str.is_empty() {

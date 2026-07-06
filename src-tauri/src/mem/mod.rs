@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use uuid::Uuid;
 
+pub mod guide;
 pub mod index;
 
 #[derive(Debug, Error)]

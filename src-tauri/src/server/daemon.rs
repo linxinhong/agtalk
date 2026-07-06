@@ -97,6 +97,11 @@ pub async fn start(dot_agtalk: PathBuf) -> Result<(), DaemonError> {
     let config = AgConfig::load()?;
     let storage = Storage::open()?;
 
+    // 确保全局用户 memory 目录存在
+    if let Err(e) = crate::paths::ensure_global_memory_dir() {
+        error!("创建全局 memory 目录失败: {}", e);
+    }
+
     // 确保 human mailbox 存在
     if let Err(e) = mailbox::ensure_human(&storage, &config.human) {
         error!("创建 human mailbox 失败: {}", e);

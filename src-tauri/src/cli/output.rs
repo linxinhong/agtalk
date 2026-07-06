@@ -99,6 +99,7 @@ fn print_text_server_msg(msg: &ServerMsg) {
         ServerMsg::Pong => println!("pong"),
         ServerMsg::Ok { id } => println!("{}", id),
         ServerMsg::Error { code, message } => eprintln!("{}: {}", code, message),
+        ServerMsg::AgentHelp { text, .. } => println!("{}", text),
         ServerMsg::Identity {
             address,
             name,
@@ -233,7 +234,7 @@ fn print_text_server_msg(msg: &ServerMsg) {
             active_mailboxes,
             pending_messages,
             sse_subscribers,
-            config_path: _,
+            config_path,
             db_path: _,
             ..
         } => {
@@ -245,6 +246,7 @@ fn print_text_server_msg(msg: &ServerMsg) {
                 *active_mailboxes,
                 *pending_messages,
                 *sse_subscribers,
+                config_path,
             );
         }
         ServerMsg::BrowserJoinResult {
@@ -426,6 +428,7 @@ fn capitalize(s: &str) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn print_daemon_status(
     pid: u32,
     version: &str,
@@ -434,6 +437,7 @@ fn print_daemon_status(
     active_mailboxes: i64,
     pending_messages: i64,
     sse_subscribers: usize,
+    config_path: &str,
 ) {
     let blue = Style::new().blue().underlined();
 
@@ -445,6 +449,14 @@ fn print_daemon_status(
         println!("  ╭●─●╮  agtalk daemon stopped");
         println!("  ╰─●─╯  Local agent bus is not available on this machine.");
         println!();
+        if !config_path.is_empty() {
+            println!(
+                "  {:<width$} {}",
+                "Config:",
+                config_path,
+                width = label_width
+            );
+        }
         println!(
             "  {:<width$} agtalk daemon start",
             "Start:",
@@ -465,6 +477,14 @@ fn print_daemon_status(
         blue.apply_to(local_url),
         width = label_width
     );
+    if !config_path.is_empty() {
+        println!(
+            "  {:<width$} {}",
+            "Config:",
+            config_path,
+            width = label_width
+        );
+    }
     println!("  {:<width$} {}", "PID:", pid, width = label_width);
     println!(
         "  {:<width$} {}",
@@ -547,14 +567,44 @@ fn format_uptime(seconds: u64) -> String {
     let mins = seconds / 60;
     let secs = seconds % 60;
     if mins < 60 {
-        return format!("{}m {:02}s", mins, secs);
+        return format!("{}m {}s", mins, secs);
     }
     let hours = mins / 60;
     let mins = mins % 60;
     if hours < 24 {
-        return format!("{}h {:02}m {:02}s", hours, mins, secs);
+        return format!("{}h {}m {}s", hours, mins, secs);
     }
     let days = hours / 24;
     let hours = hours % 24;
-    format!("{}d {:02}h {:02}m", days, hours, mins)
+    format!("{}days {}h {}m {}s", days, hours, mins, secs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_uptime_seconds() {
+        assert_eq!(format_uptime(11), "11s");
+    }
+
+    #[test]
+    fn format_uptime_minutes() {
+        assert_eq!(format_uptime(611), "10m 11s");
+    }
+
+    #[test]
+    fn format_uptime_hours() {
+        assert_eq!(format_uptime(43811), "12h 10m 11s");
+    }
+
+    #[test]
+    fn format_uptime_days() {
+        assert_eq!(format_uptime(993011), "11days 11h 50m 11s");
+    }
+
+    #[test]
+    fn format_uptime_one_day_one_second() {
+        assert_eq!(format_uptime(86401), "1days 0h 0m 1s");
+    }
 }

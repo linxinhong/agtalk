@@ -104,6 +104,22 @@ pub struct RunResult {
     pub stopped_at: Option<usize>,
 }
 
+/// agent help 单条命令示例。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentHelpExample {
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// agent help 一个工作流分组。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentHelpSection {
+    pub index: usize,
+    pub title: String,
+    pub examples: Vec<AgentHelpExample>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
@@ -273,6 +289,11 @@ pub enum ServerMsg {
     Error {
         code: String,
         message: String,
+    },
+    AgentHelp {
+        text: String,
+        full_docs: String,
+        sections: Vec<AgentHelpSection>,
     },
 
     // id

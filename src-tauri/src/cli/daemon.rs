@@ -93,6 +93,13 @@ pub fn restart(json: bool) -> Result<(), String> {
 
 /// 返回当前 daemon 状态信息：先读状态文件，若运行中再调 HTTP 接口取实时指标。
 pub fn status_info() -> Result<ServerMsg, CliError> {
+    let default_config_path = crate::paths::config_path()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let default_db_path = crate::paths::db_path()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
     let file = match daemon::read_status_file().map_err(|e| CliError::from(e.to_string()))? {
         Some(f) => f,
         None => {
@@ -105,8 +112,8 @@ pub fn status_info() -> Result<ServerMsg, CliError> {
                 active_mailboxes: 0,
                 pending_messages: 0,
                 sse_subscribers: 0,
-                config_path: String::new(),
-                db_path: String::new(),
+                config_path: default_config_path,
+                db_path: default_db_path,
             })
         }
     };

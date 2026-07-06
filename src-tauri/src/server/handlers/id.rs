@@ -142,7 +142,12 @@ pub fn handle_join(
         &memory_path,
     );
 
-    ServerMsg::Ok { id: address }
+    ServerMsg::Identity {
+        address,
+        name,
+        workspace: session.workspace,
+        intro: session.intro,
+    }
 }
 
 pub fn handle_show(state: &AppState, headers: &HeaderMap) -> ServerMsg {
@@ -150,11 +155,14 @@ pub fn handle_show(state: &AppState, headers: &HeaderMap) -> ServerMsg {
         Ok(s) => s,
         Err(e) => return e,
     };
+    let intro = session_file_mod::read(&state.dot_agtalk, &session.name)
+        .map(|s| s.intro)
+        .unwrap_or_default();
     ServerMsg::Identity {
         address: session.address,
         name: session.name,
         workspace: session.workspace,
-        intro: "".into(),
+        intro,
     }
 }
 
@@ -254,4 +262,155 @@ fn short_id() -> String {
 
 fn iso_now() -> String {
     chrono::Utc::now().to_rfc3339()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AgConfig;
+    use crate::identity::session_file;
+    use crate::storage::Storage;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use sysinfo::{Pid, System};
+    use tempfile::TempDir;
+
+    fn test_state() -> (AppState, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        let dot = tmp.path().join(".agtalk");
+        let storage = Storage::open_in_memory().unwrap();
+        let state = AppState::new(storage, AgConfig::default(), dot);
+        (state, tmp)
+    }
+
+    fn current_pid_start_time() -> (u32, u64) {
+        let pid = std::process::id();
+        let mut sys = System::new_all();
+        sys.refresh_processes();
+        let start = sys
+            .process(Pid::from(pid as usize))
+            .map(|p| p.start_time())
+            .unwrap_or_else(|| {
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+            });
+        (pid, start)
+    }
+
+    #[test]
+    fn join_creates_identity_with_intro_and_workspace() {
+        let (state, _tmp) = test_state();
+        let (pid, start_time) = current_pid_start_time();
+
+        let msg = handle_join(
+            &state,
+            Some("reviewer".into()),
+            Some("设计评审专家".into()),
+            Some("agtalk".into()),
+            "none".into(),
+            pid,
+            start_time,
+        );
+
+        match msg {
+            ServerMsg::Identity {
+                address,
+                name,
+                workspace,
+                intro,
+            } => {
+                assert!(!address.is_empty());
+                assert_eq!(name, "reviewer");
+                assert_eq!(workspace, "agtalk");
+                assert_eq!(intro, "设计评审专家");
+            }
+            other => panic!("expected Identity, got {:?}", other),
+        }
+
+        let session = session_file::read(&state.dot_agtalk, "reviewer").unwrap();
+        assert_eq!(session.intro, "设计评审专家");
+        assert_eq!(session.workspace, "agtalk");
+    }
+
+    #[test]
+    fn join_reuses_session_address_and_updates_intro() {
+        let (state, _tmp) = test_state();
+        let (pid, start_time) = current_pid_start_time();
+
+        let first = handle_join(
+            &state,
+            Some("reviewer".into()),
+            Some("初代 intro".into()),
+            Some("agtalk".into()),
+            "none".into(),
+            pid,
+            start_time,
+        );
+        let first_address = match first {
+            ServerMsg::Identity { address, .. } => address,
+            other => panic!("expected Identity, got {:?}", other),
+        };
+
+        let second = handle_join(
+            &state,
+            Some("reviewer".into()),
+            Some("更新后的 intro".into()),
+            None,
+            "none".into(),
+            pid,
+            start_time,
+        );
+
+        match second {
+            ServerMsg::Identity {
+                address,
+                name,
+                workspace,
+                intro,
+            } => {
+                assert_eq!(address, first_address);
+                assert_eq!(name, "reviewer");
+                assert_eq!(workspace, "agtalk");
+                assert_eq!(intro, "更新后的 intro");
+            }
+            other => panic!("expected Identity, got {:?}", other),
+        }
+
+        let session = session_file::read(&state.dot_agtalk, "reviewer").unwrap();
+        assert_eq!(session.intro, "更新后的 intro");
+    }
+
+    #[test]
+    fn show_returns_session_intro() {
+        let (state, _tmp) = test_state();
+        let (pid, start_time) = current_pid_start_time();
+
+        handle_join(
+            &state,
+            Some("reviewer".into()),
+            Some("展示用 intro".into()),
+            Some("agtalk".into()),
+            "none".into(),
+            pid,
+            start_time,
+        );
+
+        let session = session_file::read(&state.dot_agtalk, "reviewer").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("X-AgTalk-Address", session.address.parse().unwrap());
+        headers.insert("X-AgTalk-Pid", pid.to_string().parse().unwrap());
+        headers.insert(
+            "X-AgTalk-Start-Time",
+            start_time.to_string().parse().unwrap(),
+        );
+
+        let msg = handle_show(&state, &headers);
+        match msg {
+            ServerMsg::Identity { intro, .. } => {
+                assert_eq!(intro, "展示用 intro");
+            }
+            other => panic!("expected Identity, got {:?}", other),
+        }
+    }
 }

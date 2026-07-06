@@ -8,6 +8,7 @@ pub mod runner;
 
 use crate::cli::context::Context;
 use crate::cli::output::{print_server_msg, run_with_output, CliError};
+use crate::proto::{AgentHelpExample, AgentHelpSection, ServerMsg};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -25,7 +26,7 @@ struct Cli {
     json: bool,
 
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -202,6 +203,8 @@ pub(crate) enum MemCmd {
     },
     /// 打包记忆为 prompt（预留）
     Pack {
+        /// 位置参数 topic
+        topic_pos: Option<String>,
         #[arg(short, long)]
         topic: Option<String>,
         #[arg(short, long)]
@@ -268,102 +271,225 @@ pub fn run_cli() -> ExitCode {
     run_with_output(json, || run(cli, json))
 }
 
+fn agent_help_message() -> ServerMsg {
+    let sections = vec![
+        AgentHelpSection {
+            index: 1,
+            title: "Identity".to_string(),
+            examples: vec![
+                AgentHelpExample {
+                    command: "agtalk id show".to_string(),
+                    note: None,
+                },
+                AgentHelpExample {
+                    command: "agtalk id join <name> --intro \"<role>\" --workspace \"<project>\""
+                        .to_string(),
+                    note: None,
+                },
+            ],
+        },
+        AgentHelpSection {
+            index: 2,
+            title: "Find target".to_string(),
+            examples: vec![AgentHelpExample {
+                command: "agtalk id lookup [name]".to_string(),
+                note: None,
+            }],
+        },
+        AgentHelpSection {
+            index: 3,
+            title: "Send / reply / done".to_string(),
+            examples: vec![
+                AgentHelpExample {
+                    command: "agtalk msg send <address-uuid> \"<body>\"".to_string(),
+                    note: None,
+                },
+                AgentHelpExample {
+                    command: "agtalk msg reply <msg-id> \"<body>\"".to_string(),
+                    note: None,
+                },
+                AgentHelpExample {
+                    command: "agtalk msg done [msg-id]".to_string(),
+                    note: None,
+                },
+            ],
+        },
+        AgentHelpSection {
+            index: 4,
+            title: "Read loop".to_string(),
+            examples: vec![
+                AgentHelpExample {
+                    command: "agtalk msg read".to_string(),
+                    note: Some("If inbox_empty: continue normal work.".to_string()),
+                },
+            ],
+        },
+        AgentHelpSection {
+            index: 5,
+            title: "Wait / ask human".to_string(),
+            examples: vec![
+                AgentHelpExample {
+                    command: "agtalk msg wait [msg-id] --timeout 30".to_string(),
+                    note: None,
+                },
+                AgentHelpExample {
+                    command: "agtalk msg ask \"<question>\" --option approve --option reject --wait --timeout 60".to_string(),
+                    note: None,
+                },
+            ],
+        },
+        AgentHelpSection {
+            index: 6,
+            title: "Memory / plan".to_string(),
+            examples: vec![
+                AgentHelpExample {
+                    command: "agtalk mem plan show".to_string(),
+                    note: None,
+                },
+                AgentHelpExample {
+                    command: "agtalk mem pack agtalk/agent-guide".to_string(),
+                    note: Some("Full usage guide.".to_string()),
+                },
+            ],
+        },
+        AgentHelpSection {
+            index: 7,
+            title: "Diagnose".to_string(),
+            examples: vec![AgentHelpExample {
+                command: "agtalk tool doctor".to_string(),
+                note: None,
+            }],
+        },
+    ];
+
+    let text = format_agent_help_text(&sections);
+
+    ServerMsg::AgentHelp {
+        text,
+        full_docs: "agtalk mem pack agtalk/agent-guide".to_string(),
+        sections,
+    }
+}
+
+fn format_agent_help_text(sections: &[AgentHelpSection]) -> String {
+    let mut lines = vec![
+        "agtalk agent quick guide".to_string(),
+        String::new(),
+        "More:".to_string(),
+        "  agtalk mem pack agtalk/agent-guide".to_string(),
+        String::new(),
+        "Rules:".to_string(),
+        "  - Route only by UUID. Use id lookup to find address.".to_string(),
+        "  - name is display only, not routing.".to_string(),
+        "  - Before replying to user, run msg read.".to_string(),
+        "  - inbox_empty means no message, not failure.".to_string(),
+        "  - Use --json when parsing output.".to_string(),
+    ];
+
+    for section in sections {
+        lines.push(String::new());
+        lines.push(format!("{}. {}", section.index, section.title));
+        for ex in &section.examples {
+            lines.push(format!("  {}", ex.command));
+            if let Some(note) = &ex.note {
+                lines.push(format!("  # {}", note));
+            }
+        }
+    }
+
+    lines.join("\n")
+}
+
+fn print_agent_help(json: bool) {
+    let msg = agent_help_message();
+    print_server_msg(json, &msg);
+}
+
 fn run(cli: Cli, json: bool) -> Result<(), CliError> {
     let as_name = cli.as_name.as_deref();
     match cli.command {
-        Commands::Daemon { cmd } => match cmd {
-            DaemonCommands::Start => {
-                if daemon::is_child_process() {
-                    daemon::run_server().map_err(CliError::from)
-                } else {
-                    daemon::start(json).map_err(CliError::from)
+        Some(cmd) => match cmd {
+            Commands::Daemon { cmd } => match cmd {
+                DaemonCommands::Start => {
+                    if daemon::is_child_process() {
+                        daemon::run_server().map_err(CliError::from)
+                    } else {
+                        daemon::start(json).map_err(CliError::from)
+                    }
                 }
-            }
-            DaemonCommands::Stop => daemon::stop(json).map_err(CliError::from),
-            DaemonCommands::Restart => daemon::restart(json).map_err(CliError::from),
-            DaemonCommands::Status => {
-                let msg = daemon::status_info()?;
-                print_server_msg(json, &msg);
-                Ok(())
-            }
-        },
-        Commands::Id { cmd } => match cmd {
-            IdCmd::Join {
-                name,
-                intro,
-                workspace,
-                notify,
-            } => {
-                let ctx = Context::pre_join().map_err(CliError::from)?;
-                client::id::join(ctx, name, intro, workspace, notify, json)
-            }
-            IdCmd::Show => {
-                let ctx = Context::current(as_name).map_err(CliError::from)?;
-                client::id::show(ctx, json)
-            }
-            IdCmd::Lookup { name } => {
-                let ctx = Context::current(as_name).map_err(CliError::from)?;
-                client::id::lookup(ctx, name, json)
-            }
-            IdCmd::Leave { purge } => {
-                let ctx = Context::current(as_name).map_err(CliError::from)?;
-                client::id::leave(ctx, purge, json)
-            }
-        },
-        Commands::Msg { cmd } => match cmd {
-            MsgCmd::Send {
-                to,
-                body,
-                subject,
-                file,
-                notify,
-                more,
-            } => {
-                let ctx = Context::current(as_name).map_err(CliError::from)?;
-                let files: Vec<String> = file
-                    .into_iter()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .collect();
-                client::msg::send(ctx, to, body, subject, files, notify, more, json)
-            }
-            MsgCmd::Reply {
-                message_id,
-                body,
-                file,
-                notify,
-            } => {
-                let ctx = Context::current(as_name).map_err(CliError::from)?;
-                let files: Vec<String> = file
-                    .into_iter()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .collect();
-                client::msg::reply(ctx, message_id, body, files, notify, json)
-            }
-            MsgCmd::Done {
-                message_id,
-                body,
-                file,
-            } => {
-                let ctx = Context::current(as_name).map_err(CliError::from)?;
-                let files: Vec<String> = file
-                    .into_iter()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .collect();
-                client::msg::done(ctx, message_id, body, files, json)
-            }
-            MsgCmd::Ask {
-                message,
-                question,
-                option,
-                recommended,
-                single,
-                select_only,
-                wait,
-                timeout,
-            } => {
-                let ctx = Context::current(as_name).map_err(CliError::from)?;
-                client::msg::ask(
-                    ctx,
+                DaemonCommands::Stop => daemon::stop(json).map_err(CliError::from),
+                DaemonCommands::Restart => daemon::restart(json).map_err(CliError::from),
+                DaemonCommands::Status => {
+                    let msg = daemon::status_info()?;
+                    print_server_msg(json, &msg);
+                    Ok(())
+                }
+            },
+            Commands::Id { cmd } => match cmd {
+                IdCmd::Join {
+                    name,
+                    intro,
+                    workspace,
+                    notify,
+                } => {
+                    let ctx = Context::pre_join().map_err(CliError::from)?;
+                    client::id::join(ctx, name, intro, workspace, notify, json)
+                }
+                IdCmd::Show => {
+                    let ctx = Context::current(as_name).map_err(CliError::from)?;
+                    client::id::show(ctx, json)
+                }
+                IdCmd::Lookup { name } => {
+                    let ctx = Context::current(as_name).map_err(CliError::from)?;
+                    client::id::lookup(ctx, name, json)
+                }
+                IdCmd::Leave { purge } => {
+                    let ctx = Context::current(as_name).map_err(CliError::from)?;
+                    client::id::leave(ctx, purge, json)
+                }
+            },
+            Commands::Msg { cmd } => match cmd {
+                MsgCmd::Send {
+                    to,
+                    body,
+                    subject,
+                    file,
+                    notify,
+                    more,
+                } => {
+                    let ctx = Context::current(as_name).map_err(CliError::from)?;
+                    let files: Vec<String> = file
+                        .into_iter()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .collect();
+                    client::msg::send(ctx, to, body, subject, files, notify, more, json)
+                }
+                MsgCmd::Reply {
+                    message_id,
+                    body,
+                    file,
+                    notify,
+                } => {
+                    let ctx = Context::current(as_name).map_err(CliError::from)?;
+                    let files: Vec<String> = file
+                        .into_iter()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .collect();
+                    client::msg::reply(ctx, message_id, body, files, notify, json)
+                }
+                MsgCmd::Done {
+                    message_id,
+                    body,
+                    file,
+                } => {
+                    let ctx = Context::current(as_name).map_err(CliError::from)?;
+                    let files: Vec<String> = file
+                        .into_iter()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .collect();
+                    client::msg::done(ctx, message_id, body, files, json)
+                }
+                MsgCmd::Ask {
                     message,
                     question,
                     option,
@@ -372,45 +498,181 @@ fn run(cli: Cli, json: bool) -> Result<(), CliError> {
                     select_only,
                     wait,
                     timeout,
-                    json,
-                )
-            }
-            MsgCmd::Inbox { all, limit } => {
+                } => {
+                    let ctx = Context::current(as_name).map_err(CliError::from)?;
+                    client::msg::ask(
+                        ctx,
+                        message,
+                        question,
+                        option,
+                        recommended,
+                        single,
+                        select_only,
+                        wait,
+                        timeout,
+                        json,
+                    )
+                }
+                MsgCmd::Inbox { all, limit } => {
+                    let ctx = Context::current(as_name).map_err(CliError::from)?;
+                    client::msg::inbox(ctx, all, limit, json)
+                }
+                MsgCmd::Read { message_id } => {
+                    let ctx = Context::current(as_name).map_err(CliError::from)?;
+                    client::msg::read(ctx, message_id, json)
+                }
+                MsgCmd::Wait {
+                    message_id,
+                    timeout,
+                    since,
+                } => {
+                    let ctx = Context::current(as_name).map_err(CliError::from)?;
+                    client::msg::wait(ctx, message_id, timeout, since, json)
+                }
+                MsgCmd::Attachment { attachment_id } => {
+                    let ctx = Context::current(as_name).map_err(CliError::from)?;
+                    client::msg::attachment(ctx, attachment_id, json)
+                }
+            },
+            Commands::Mem { cmd } => {
                 let ctx = Context::current(as_name).map_err(CliError::from)?;
-                client::msg::inbox(ctx, all, limit, json)
+                client::mem::dispatch(ctx, cmd, json)
             }
-            MsgCmd::Read { message_id } => {
-                let ctx = Context::current(as_name).map_err(CliError::from)?;
-                client::msg::read(ctx, message_id, json)
+            Commands::Tool { cmd } => {
+                let ctx = Context::current(as_name).ok();
+                client::tool::dispatch(ctx, cmd, json, as_name)
             }
-            MsgCmd::Wait {
-                message_id,
-                timeout,
-                since,
-            } => {
-                let ctx = Context::current(as_name).map_err(CliError::from)?;
-                client::msg::wait(ctx, message_id, timeout, since, json)
+            Commands::Config { cmd } => {
+                let ctx = Context::current(as_name).ok();
+                client::config::dispatch(ctx, cmd, json)
             }
-            MsgCmd::Attachment { attachment_id } => {
-                let ctx = Context::current(as_name).map_err(CliError::from)?;
-                client::msg::attachment(ctx, attachment_id, json)
+            Commands::Run { file } => {
+                let ctx = Context::current(as_name).ok();
+                client::run::run(ctx, file, json)
             }
         },
-        Commands::Mem { cmd } => {
-            let ctx = Context::current(as_name).map_err(CliError::from)?;
-            client::mem::dispatch(ctx, cmd, json)
+        None => {
+            print_agent_help(json);
+            Ok(())
         }
-        Commands::Tool { cmd } => {
-            let ctx = Context::current(as_name).ok();
-            client::tool::dispatch(ctx, cmd, json, as_name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn parse_bare_agtalk_has_no_command() {
+        let cli = Cli::try_parse_from(["agtalk"]).unwrap();
+        assert!(!cli.json);
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn parse_json_without_subcommand() {
+        let cli = Cli::try_parse_from(["agtalk", "--json"]).unwrap();
+        assert!(cli.json);
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn parse_mem_pack_positional_topic() {
+        let cli =
+            Cli::try_parse_from(["agtalk", "mem", "pack", "agent-learning-handbook"]).unwrap();
+        let cmd = match cli.command {
+            Some(Commands::Mem { cmd }) => cmd,
+            _ => panic!("expected Mem pack"),
+        };
+        match cmd {
+            MemCmd::Pack {
+                topic_pos, topic, ..
+            } => {
+                assert_eq!(topic_pos, Some("agent-learning-handbook".to_string()));
+                assert!(topic.is_none());
+            }
+            _ => panic!("expected Pack"),
         }
-        Commands::Config { cmd } => {
-            let ctx = Context::current(as_name).ok();
-            client::config::dispatch(ctx, cmd, json)
+    }
+
+    #[test]
+    fn parse_mem_pack_named_topic_takes_precedence() {
+        let cli = Cli::try_parse_from([
+            "agtalk",
+            "mem",
+            "pack",
+            "positional-topic",
+            "--topic",
+            "named-topic",
+        ])
+        .unwrap();
+        let cmd = match cli.command {
+            Some(Commands::Mem { cmd }) => cmd,
+            _ => panic!("expected Mem pack"),
+        };
+        match cmd {
+            MemCmd::Pack {
+                topic_pos, topic, ..
+            } => {
+                assert_eq!(topic_pos, Some("positional-topic".to_string()));
+                assert_eq!(topic, Some("named-topic".to_string()));
+            }
+            _ => panic!("expected Pack"),
         }
-        Commands::Run { file } => {
-            let ctx = Context::current(as_name).ok();
-            client::run::run(ctx, file, json)
+    }
+
+    #[test]
+    fn agent_help_text_is_quick_guide() {
+        let msg = agent_help_message();
+        let text = match msg {
+            ServerMsg::AgentHelp { text, .. } => text,
+            _ => panic!("expected AgentHelp"),
+        };
+        assert!(text.starts_with("agtalk agent quick guide"));
+        assert!(text.contains("More:\n  agtalk mem pack agtalk/agent-guide"));
+        assert!(text.contains("inbox_empty means no message, not failure"));
+        assert!(!text.contains("agent-learning-handbook"));
+    }
+
+    #[test]
+    fn agent_help_has_all_sections() {
+        let msg = agent_help_message();
+        let text = match msg {
+            ServerMsg::AgentHelp { text, .. } => text,
+            _ => panic!("expected AgentHelp"),
+        };
+        let sections = [
+            "1. Identity",
+            "2. Find target",
+            "3. Send / reply / done",
+            "4. Read loop",
+            "5. Wait / ask human",
+            "6. Memory / plan",
+            "7. Diagnose",
+        ];
+        for s in sections {
+            assert!(text.contains(s), "missing section: {}", s);
         }
+        // guide command appears in More + Memory / plan
+        let count = text.matches("agtalk mem pack agtalk/agent-guide").count();
+        assert!(
+            count >= 2,
+            "guide command should appear at least twice, got {}",
+            count
+        );
+    }
+
+    #[test]
+    fn agent_help_json_has_structured_sections() {
+        let msg = agent_help_message();
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "agent_help");
+        assert_eq!(parsed["full_docs"], "agtalk mem pack agtalk/agent-guide");
+        let sections = parsed["sections"].as_array().unwrap();
+        assert_eq!(sections.len(), 7);
+        assert_eq!(sections[0]["title"], "Identity");
+        assert_eq!(sections[5]["title"], "Memory / plan");
     }
 }

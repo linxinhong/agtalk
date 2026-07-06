@@ -209,11 +209,18 @@ Android APK 无法访问本地 `.agtalk/` 文件系统，因此 Android BLE tran
 
 ### 2.8 mem：计划、上下文与长期记忆
 
-`mem` 是 agent 自己的知识与工作现场，分两层：
+`mem` 分三层，边界清晰：
 
-#### 2.8.1 文件系统（agent 私有真相源）
+#### 2.8.1 内置 guide（二进制嵌入）
 
-每个 agent 的持久 memory 放在：
+- 源文件：`docs/agent-usage.md`。
+- 编译时通过 `include_str!` 嵌入二进制。
+- 通过 `agtalk mem pack agtalk/agent-guide` 读取。
+- 不写入任何 agent 本地 memory，不进入 `<config_dir>/memory/`，不进入 `agtalk.db`。
+
+#### 2.8.2 agent 本地 memory（私有真相源）
+
+每个 agent 的持久 memory 放在当前 workspace：
 
 ```
 .agtalk/<agent-name>/memory/
@@ -227,7 +234,13 @@ Android APK 无法访问本地 `.agtalk/` 文件系统，因此 Android BLE tran
 - `entries.jsonl` 是长期知识沉淀，默认不跨 agent 开放。
 - 这些文件只参与展示/协作，不参与认证、路由、PID 校验。
 
-#### 2.8.2 SQLite 在线索引（daemon 派生视图）
+#### 2.8.3 全局用户 memory（跨 workspace，预留）
+
+- 路径：`<config_dir>/memory/`。
+- 用于未来用户可写的全局记忆，跨 workspace 生效。
+- 当前只建立目录与文档约定，不引入复杂写入命令。
+
+#### 2.8.4 SQLite 在线索引（daemon 派生视图）
 
 daemon 维护 `mem_index` 表，只记录**当前在线** agent 的公开 mem 元数据：
 
@@ -246,7 +259,7 @@ public_topics    TEXT
 - 离线 agent 的长期记忆仍在文件系统，但不再进入 daemon 的在线查询结果。
 - 其他 agent 通过 `GET /api/v1/mem/plan` / `mem plan status` 只能看到已注册的在线 agent 的公开 plan/context/status。
 
-#### 2.8.3 与身份生命周期的关系
+#### 2.8.5 与身份生命周期的关系
 
 mem 索引生命周期严格跟随 mailbox 生命周期：
 
@@ -446,6 +459,8 @@ daemon → 从 DB 重放该 UUID 下 event_id > 50 的消息 → 继续正常订
 ---
 
 ## 5. 打扰层（notify）：解决"agent 会偷懒"
+
+notify 插件机制的完整设计见 `docs/notify-plugin.md`。本节只描述 notify 在总体架构中的定位与红线。
 
 ### 5.1 问题：pull 模型的根本局限
 
