@@ -121,6 +121,12 @@ fn compute_root_causes(
         });
     }
 
+    // daemon stopped 时，message/wait/notify 中的派生错误不是独立根因；
+    // 保留 daemon.* 与 identity.*（含合并后的 identity.stale_mailbox）。
+    if causes.iter().any(|c| c.id == "daemon.stopped") {
+        causes.retain(|c| c.id == "daemon.stopped" || c.id.starts_with("identity."));
+    }
+
     causes
 }
 
@@ -1388,6 +1394,27 @@ mod tests {
         assert_eq!(root_causes.len(), 1);
         assert_eq!(root_causes[0].id, "daemon.stopped");
         assert_eq!(actions, vec!["agtalk daemon start"]);
+    }
+
+    #[test]
+    fn doctor_daemon_stopped_suppresses_derived_errors() {
+        let tmp = TempDir::new().unwrap();
+        let (_ctx, _guard) = test_ctx(&tmp);
+        // 无 storage 时 message.db 会 error，但 daemon stopped 场景下不应进入 root causes。
+        let dot = tmp.path().join(".agtalk");
+        std::fs::create_dir_all(&dot).unwrap();
+        let mut config = AgConfig::default();
+        config.http_port = 0;
+        let ctx = DoctorContext::new(dot, config, None, None);
+
+        let msg = run(ctx);
+        let root_causes = match msg {
+            ServerMsg::ToolDiagnosis { root_causes, .. } => root_causes,
+            other => panic!("expected ToolDiagnosis, got {:?}", other),
+        };
+
+        let ids: Vec<_> = root_causes.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["daemon.stopped"]);
     }
 
     #[test]
