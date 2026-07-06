@@ -1273,7 +1273,9 @@ mod tests {
         let guard = EnvGuard::set(tmp.path());
         let dot = tmp.path().join(".agtalk");
         std::fs::create_dir_all(&dot).unwrap();
-        let config = AgConfig::default();
+        let mut config = AgConfig::default();
+        // 使用端口 0 避免与真实 daemon 或其他测试冲突；doctor 检查只尝试 bind，不建立长期服务。
+        config.http_port = 0;
         let storage = Storage::open_in_memory().unwrap();
         let ctx = DoctorContext::new(dot, config, Some(storage), None);
         (ctx, guard)

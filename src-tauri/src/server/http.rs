@@ -648,6 +648,8 @@ mod tests {
     #[tokio::test]
     async fn v1_daemon_status_returns_running() {
         let (state, _nora, _quinn, _tmp) = test_state();
+        let cfg_tmp = TempDir::new().unwrap();
+        let _cfg_guard = EnvGuard::set(cfg_tmp.path());
         crate::server::daemon::write_status_file(
             std::process::id(),
             crate::server::daemon::now_unix_secs(),
