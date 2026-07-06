@@ -6,3 +6,8 @@
 *.token
 __pycache__/
 .DS_Store
+
+# WXT 浏览器扩展
+extension/node_modules/
+extension/.output/
+extension/.wxt/

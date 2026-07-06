@@ -35,3 +35,35 @@ jobs:
           cache: "pnpm"
       - run: pnpm install
       - run: pnpm build
+
+  extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "pnpm"
+          cache-dependency-path: extension/pnpm-lock.yaml
+      - run: cd extension && pnpm install
+      - run: cd extension && pnpm run typecheck
+      - run: cd extension && pnpm run build
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri"
+      - name: install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: build debug binary
+        run: cargo build -p agtalk
+      - name: run browser e2e
+        run: ./scripts/e2e-browser.sh

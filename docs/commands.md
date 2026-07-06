@@ -1,276 +1,801 @@
 # agtalk 命令参考
 
-> 版本：v1（初版）｜ 日期：2026-07-01
-> 配套：架构设计见 `docs/design.md`，开发要求见 `AGENTS.md`。
-> 二进制：单一 `agtalk`，argv 分派。
+> 状态：NG 命令面（已实现）
+> 目标：agent-first、命令克制、知识通用、避免旧版功能膨胀
+> 约束：路由只认 UUID；name 只用于本地身份选择与 lookup 消歧
 
 ---
 
-## 设计原则（贯穿所有命令）
+## 1. 设计目标
 
-- **路由只认 UUID**：`send` 的 `<address>` 是 UUID。name 永远不进路由路径。
-- **消歧在调用方**：用 name 找人时，`lookup` 返回带 intro/workspace 的候选列表，由调用方（agent/人）选定 UUID，再用 UUID 发消息。
-- **身份载体 = 文件系统**：身份存在 `.agtalk/<name>/session.json`，认证链 `PID → agents.json → session.json → UUID`（详见 design §2）。
+agtalk 是本地 Agent 对话总线。命令面必须服务 agent 的稳定心智模型，而不是为每个功能新增一个顶层命令。
 
-### 接收消息的两条路径（agent 按自身能力自选，agtalk 不强制）
+新版命令面只保留少数稳定领域，加一个高频编排入口：
 
-agtalk 提供两种接收消息的方式，适配不同形态的 agent。**两种都一等公民，agent 用自己擅长的方式。**
+```text
+daemon   daemon 生命周期
+id       身份与寻址
+msg      消息与询问
+mem      计划、上下文与长期记忆
+tool     运行时辅助
+config   配置
+run      YAML 编排入口
+```
 
-**路径 1：CLI pull（所有 CLI agent 通用，推荐为默认）**
-- agent 反复调 `agtalk inbox` / `agtalk detail -`，每次秒级返回，agent 自己控制查询节奏。
-- 零依赖——任何能执行 shell 命令的 agent（Kimi、codex CLI、claude code 等）都能用，契合"接收消息→调工具→返回"的核心循环。
-- 不需要 agent 维持长连接，不需要原生 SSE 能力。
-- **本质：daemon 就是那个常驻 bridge**——它持久化所有消息到 DB，agent 只是秒级短轮询查状态。"长连接生命周期"和"agent 单次 turn"彻底解耦，agent 永不被占住。**等待可能超过几十秒时，用这条路径。**
-
-**路径 2：HTTP SSE（常驻进程 + 有 HTTP 工具能力的 agent）**
-- daemon 暴露 `GET /events`（127.0.0.1）SSE 端点，按自己的 UUID 过滤推送。
-- **常驻进程**（GUI、浏览器扩展 background）直接 fetch 持续订阅。
-- **有 HTTP 工具能力的 agent**（如 codex / claude code）有两种消费方式：
-  - **官方封装 `agtalk wait`**（推荐）：agtalk 帮你封装 SSE 连接 + 身份认证 + Last-Event-ID 续传 + 命中目标即退 + 超时返回。你只调一个会返回的命令，不用自己拼 curl、不用自己记 id、不用自己处理认证。见下方"阻塞等待"节。
-  - **自己 curl**（想精细控制时）：见下方示例。
-- daemon 推送前先持久化（at-least-once），断线不丢消息。
-
-> **`agtalk wait` 是路径 2 的官方封装**：与其让每个 agent 自己拼 curl + 记 Last-Event-ID + 带认证 + 解析输出，agtalk 把这些重复劳动收进一条会返回的命令。agent 调 `wait`（带 `--timeout`）就像调任何普通命令——要么等到目标消息（exit 0），要么超时（exit 非 0），绝不会永不返回占住整个 turn。
-
-> **想精细控制时，agent 也可自己 curl**（claude code 建议，`--max-time` 兜底超时、`grep -m1` 命中即退、`Last-Event-ID` 续传）：
-> ```bash
-> curl -N -H "Last-Event-ID: $id" --max-time 30 http://127.0.0.1:19527/events \
->   | grep --line-buffered -m1 -A5 '"type":"你关心的"'
-> ```
-
-> **CLI 层不提供 `agtalk events` 长驻命令**（永不返回的那种）。CLI agent 等"特定消息"用 `agtalk wait`（会返回），看"现在有什么"用 `inbox`，常驻订阅用 `GET /events`（不经 CLI）。
+`run` 是高频入口，不是一个功能领域。它只执行 agtalk 内部白名单动作，不执行任意 shell。
 
 ---
 
-## Daemon 管理
+## 2. 全局规则
 
-```
-agtalk daemon start       # 后台启动 daemon
-agtalk daemon stop        # 停止 daemon
-agtalk daemon status      # 查看运行状态
-agtalk daemon restart     # 重启
-```
+### 2.1 路由规则
 
----
+- 消息投递只认 address UUID。
+- name 不唯一，只用于展示、本地身份选择、lookup 消歧。
+- 不提供按 name 发送消息的能力。
 
-## 身份
+### 2.2 身份规则
 
-身份由工作目录的 `.agtalk/` 承载（design §2.2）。创建/注销身份即建/删文件夹。
+身份在当前 workspace 的文件系统中：
 
-```
-agtalk join [name] [--intro <text>] [--workspace <text>] [--notify <channel>]
-```
-创建身份：
-- 写 `.agtalk/<name>/session.json`（含 address UUID / name / workspace / intro）
-- 注册 `.agtalk/agents.json`（pid + start_time → name 映射）
-- 同步到 daemon 的 lookup 表
-- `name` 省略时由 daemon 自动生成（一次性身份）
-- `--notify <channel>`：声明有新消息时 daemon 主动打扰的通道（详见 design §5）：
-  - `zellij` / `tmux`：终端 pane 注入一行提示（适合在多路复用器里跑的 agent）
-  - `gui`：系统通知 / Tauri 弹窗（适合 GUI/IDE agent）
-  - `webhook:<url>`：POST 回调（适合有 HTTP 端点的后台 agent）
-  - `none`（默认）：不打扰，纯 pull（agent 自查 inbox/detail -）
-
-```
-agtalk leave [name]
-```
-注销身份（design §3.3 正常路径）：
-- 通知 daemon 实时从 lookup 表剔除
-- 删除 `.agtalk/<name>/` 文件夹
-- `name` 省略时注销当前进程身份（按 PID 查 agents.json）
-- 异常退出未 leave 时，daemon 惰性清理兜底
-
-```
-agtalk whoami
-```
-查自己的身份。执行认证链 `PID → agents.json → session.json`，输出：
-```
-address   : 550e8400-e29b-41d4-a716-446655440000
-name      : nora
-workspace : projA
-intro     : 前端 review
+```text
+.agtalk/
+  agents.json
+  <agent-name>/
+    session.json
+    memory/
+      plan.md
+      context.md
+      status.json
+      entries.jsonl
 ```
 
----
+`session.json` 是身份/认证锚点，只保存低频身份字段。`memory/` 是 agent 自己的知识与工作现场，不能参与认证、路由、PID 校验。
 
-## 寻址（路由前查询）
+daemon SQLite 里只保存全局可见的 mem 注册/索引，不是长期记忆仓库：
 
-```
-agtalk lookup [name]
-```
-查询 agent，返回候选列表供消歧。**这是用 name 找 UUID 的唯一入口**——name 不进路由，只在这里作查询条件。
+- agent 上线（`id join`）后，daemon 才从 `.agtalk/<agent-name>/memory/` 注册它的 mem。
+- agent 下线或 `id leave` 后，daemon 从 SQLite 移除该 agent 的 mem 注册/索引。
+- SQLite 中的 mem 记录是派生视图，可重建；agent 自己的长期记录以文件系统为准。
+- 其他 agent 只能看到在线 agent 已注册的公开计划、状态和允许公开的索引。
 
-- 无参：列全部可用 agent
-- 有参：按 name 过滤（name 不唯一，可能返回多条）
-
-输出（每条带完整画像供调用方精确消歧）：
-```
-address                                name    intro          workspace
-550e8400-...-446655440000               nora    前端 review    projA
-6ba7b810-...-15d3-1e2b3c4d5e6f          nora    后端           projB
-```
-
-选定 address 后，用 `send` 发消息。
-
----
-
-## 消息
-
-### send（agent ↔ agent，UUID 路由）
-
-```
-agtalk send <address> <body> [--more]
-```
-按 UUID 发消息。`<address>` 是收件 agent 的 UUID（通过 `lookup` 取得）。
-- 这是 agent 之间通信的唯一发送方式。
-- **不支持按 name 发**——路由层完全不认识 name。
-- `--more`：表示“后面还有同一条逻辑消息的下一段”。`wait` 会累积到无 `--more` 的消息再退出。
-
-#### HTTP 直接写入
-
-除了 CLI，任何能发 HTTP 的客户端（GUI、浏览器扩展、外部脚本）都可以直接 POST：
+### 2.3 全局参数
 
 ```bash
-curl -s -X POST http://127.0.0.1:19527/api/send \
-  -H 'Content-Type: application/json' \
-  -H 'X-AgTalk-Address: <发送方 UUID>' \
-  -H 'X-AgTalk-Pid: <发送方 pid>' \
-  -H 'X-AgTalk-Start-Time: <发送方 start_time>' \
-  -d '{
-    "to": "<收件方 UUID>",
-    "body": "hello",
-    "content_type": "text",
-    "reply_to_id": "...",
-    "metadata": "{}",
-    "more_coming": false
-  }'
+agtalk --as <name> <command>
+agtalk --json <command>
+AGTALK_NAME=<name> agtalk <command>
 ```
 
-- 认证头与 `/api`、`/events` 一致。
-- 响应：`{"type":"ok","id":"<msg-id>"}` 或 `{"type":"error",...}`。
-
-### human（agent → human）
-
-```
-agtalk human <message> [--choices <a,b,c,...>]
-```
-与人类对话的专用命令。人类是一个持久 mailbox（daemon 启动时建）。
-- 不带 `--choices`：给人类发普通消息（GUI / 弹窗可见）
-- 带 `--choices`：发起**审批请求**（content_type=approval_request），人类可经 GUI / 弹窗 / CLI 选择一个 choice 回复
-- 触发 daemon 的 notify（终端提醒）和/或 popup（审批弹窗）
-
-### reply（通用回复，指定回复哪条）
-
-```
-agtalk reply <msg-id> [text] [--choice <c>]
-```
-通用回复命令，指定回复哪条消息（形成 reply_to_id 回复链）。
-- 回复审批消息时带 `--choice`
-- 回复普通消息时用 `text` 正文
-- 不限于审批——任何消息都能 reply，建立回复关系
-
-### inbox（读快照：当前收件箱）
-
-```
-agtalk inbox [--all]
-```
-读取自己 mailbox 此刻的快照（查 DB，一次性 pull，立即返回）。
-- 默认：**只列未完成消息**（status != done），类似待办中心
-- `--all`：列全部消息（含已完成）
-- 定位：**读当前状态**。人/agent 想看一眼"现在有什么没处理"就用它，看完就走。
-- 这是 CLI agent 接收消息的**路径 1（pull）**——agent 可反复调它轮询新消息。
-
-### detail（单条详情 / 取最新一条）
-
-```
-agtalk detail <msg-id>
-agtalk detail -                # 特殊用法：取最新一条消息（agtalk-office 实战验证）
-```
-查看单条消息详情（正文、附件、投递状态、回复链），自动标记已读。
-
-**`detail -` 的语义**（参考 agtalk-office 的 `resolve_detail_dash`）：
-- 先返回最新一条**未读**消息
-- 没有未读则返回最新一条（任意状态）
-- 都没有则报错"当前 inbox 没有可查看的消息"
-
-**这是 CLI agent 等/收消息最轻量的方式**：
-```
-agent 循环（agtalk 不参与，agent 自己控制）：
-  反复调 agtalk detail -   # 每次秒级返回最新一条
-  → 没新消息就 sleep 再调
-  → 有新消息就处理
-```
-契合 CLI agent "接收→调工具→返回"的核心循环，零连接、零依赖、绝不会被执行框架超时。agtalk-office 中 Kimi/codex 实战使用此模式。
-
-### wait（阻塞等待消息，带超时必返回）
-
-```
-agtalk wait [<msg-id>] [--timeout <秒>] [--since <event-id>]
-```
-**阻塞等待消息，必定返回**（等到目标消息 exit 0，或超时 exit 非 0）。
-
-这是**路径 2（SSE）的官方封装**——agtalk 替你做完路径 2 的所有脏活：
-- 用你的身份（PID → session.json → UUID）连 `GET /events`，**不用你自己拼认证**
-- 无 `<msg-id>`：收到**下一条发给当前 agent 的消息**即退出
-- 有 `<msg-id>`：按 `reply_to = <msg-id>` 过滤，**命中目标消息退出**
-- `--timeout` 兜底（默认 30s），**超时体面返回**，绝不永不返回占住整个 turn
-- `--since <event-id>` 续传，**agent 不用自己记 Last-Event-ID**
-- 若遇到 `send --more` 的连续消息，`wait` 会累积到无 `--more` 的最后一条再输出完整 body
-
-**典型场景**：
-
-```
-agent: agtalk human "是否删除 target?" --choices approve,reject
-       → 返回 msg-id
-agent: agtalk wait <msg-id> --timeout 60
-       → 60s 内人类回复 → exit 0 输出 choice
-       → 60s 超时 → exit 非 0，agent 下一 turn 再 wait 或改用 detail - 轮询
-```
-
-**什么时候不用 wait**：
-- 目标消息可能几分钟以上才来 → 用路径 1（`detail -` 循环），别让单次工具调用挂太久。
-- 你是 Kimi 这类不能/不想碰 SSE 的 agent → 直接用路径 1。
-- 你是常驻进程（GUI/扩展）→ 直接 `GET /events`，不用 wait。
-
-> **wait vs events**：`events`（永不返回的长驻订阅）不作为 CLI 命令暴露——它会占住 agent 整个 turn 被强杀。`wait` 是"会返回的 SSE 封装"，带 `--timeout`，是 agent 等消息的正确姿势。底层都是同一个 daemon SSE 推送通道。
+- `--as` 和 `AGTALK_NAME` 只选择本地 session，不参与路由。
+- `--json` 输出稳定 JSON，供 agent 和脚本消费。
+- 人类文本输出只是辅助，不作为 agent 的稳定解析接口。
 
 ---
 
-## 自动化
+## 3. 顶层命令
 
-```
-agtalk run <file.yaml>
-```
-YAML Runner，批量/脚本化执行上述命令（send / human / reply / inbox / detail / lookup 等）。
-- 仅执行 agtalk 内部命令，**不执行任意 shell**（安全约束）
-- 相对路径按 YAML 所在目录解析
-- 用于多 agent 协作编排、任务脚本
-
----
-
-## GUI / 配置
-
-```
-agtalk gui                  # 启动 Tauri GUI
-agtalk config get <key>     # 读配置（支持点号路径，如 message.preview_limit_chars）
-agtalk config set <key> <value>   # 写配置
-```
-
----
-
-## 知识库（mem）
-
-```
+```bash
+agtalk daemon ...
+agtalk id ...
+agtalk msg ...
 agtalk mem ...
+agtalk tool ...
+agtalk config ...
+agtalk run [file.yaml]
 ```
-长期知识库，支持 scoped（global / workspace）的记忆存储与检索。
 
-> **mem 的完整子命令、数据模型、scope 语义另行单独设计**（`docs/mem-design.md`，待补）。本表仅占位，表明 mem 是 agtalk 的一部分。
+不再新增这些顶层命令：
+
+```text
+agent human ask plan browser peers me chats attachment poll-inbox gui settings
+```
+
+这些语义必须归入 `daemon`、`id`、`msg`、`mem`、`tool`、`config` 或 `run`。
 
 ---
 
-## 隐藏入口（不直接使用）
+## 4. daemon：daemon 生命周期
 
-以下入口由 daemon 内部 spawn，**不供用户/agent 直接调用**，此处仅说明其存在：
+```bash
+agtalk daemon start
+agtalk daemon stop
+agtalk daemon status
+agtalk daemon restart
+```
 
-- 审批弹窗进程：daemon 的 PopupTransport 在收到审批请求时自动 spawn，不暴露为顶层命令。
+daemon 是 agtalk 的唯一真相来源，不放进 `tool`。人类或启动脚本通常只需要执行 `agtalk daemon start`。
+
+---
+
+## 5. id：身份与寻址
+
+### 5.1 id join
+
+```bash
+agtalk id join [name] [--intro <text>] [--workspace <text>] [--notify <channel>]
+```
+
+创建或复用当前 workspace 下的 agent 身份。
+
+- 如果 `.agtalk/<name>/session.json` 已存在，复用原 address，只重新绑定当前进程/会话锚点。
+- 如果不存在，创建新 mailbox、session、agents.json 记录。
+- `--intro` / `--workspace` 传入时更新展示元数据；未传入则保留旧值。
+- `--notify` 默认 `auto`。
+- 上线成功后注册或刷新 `.agtalk/<name>/memory/` 到 SQLite 的在线 mem 索引。
+
+notify channel：
+
+```text
+auto        自动检测 zellij/tmux，否则 none
+zellij      使用 zellij write-chars
+tmux        使用 tmux send-keys
+none        关闭打扰，仅 pull
+gui         预留
+webhook:<url> 预留
+```
+
+### 5.2 id show
+
+```bash
+agtalk id show
+agtalk --json id show
+```
+
+显示当前身份。
+
+JSON 输出：
+
+```json
+{
+  "type": "identity",
+  "address": "550e8400-e29b-41d4-a716-446655440000",
+  "name": "codex-coder-Alex",
+  "workspace": "agtalk",
+  "intro": "代码实现 agent"
+}
+```
+
+### 5.3 id lookup
+
+```bash
+agtalk id lookup [name]
+agtalk --json id lookup [name]
+```
+
+查询候选 mailbox，供调用方消歧。
+
+- 无参：列出全部活跃 mailbox。
+- 有参：按 name 过滤。
+- 返回 address、name、intro、workspace。
+- 不做按 name 路由。
+
+### 5.4 id leave
+
+```bash
+agtalk id leave [--purge]
+```
+
+注销当前身份。
+
+- 标记 mailbox left。
+- 删除 `.agtalk/<name>/`。
+- 移除当前 PID/session 锚点。
+- 移除 SQLite 中该 agent 的在线 mem 索引。
+- `--purge` 保留给“即使 session 已失效也删除本地凭证”的场景。
+
+---
+
+## 6. msg：消息与询问
+
+### 6.1 msg send
+
+```bash
+agtalk msg send <address> <body> [--subject <text>] [--file <path> ...] [--notify] [--more]
+```
+
+按 UUID 发送消息。
+
+- `<address>` 必须是目标 mailbox UUID。
+- `--notify` 只提醒对方查收，不传正文。
+- `--more` 表示后续还有同一逻辑消息的下一段。
+
+### 6.2 msg reply
+
+```bash
+agtalk msg reply <msg-id> <body> [--file <path> ...] [--notify]
+```
+
+回复指定消息，形成 reply chain。
+
+### 6.3 msg done
+
+```bash
+agtalk msg done <msg-id> [--body <text>] [--file <path> ...]
+```
+
+标记消息完成。可附带结果说明或附件。
+
+`done` 是显式状态动作，避免消息长期停留在待办列表。
+
+### 6.4 msg ask
+
+```bash
+agtalk msg ask <message> [options]
+```
+
+向 human mailbox 发送普通询问或审批请求。
+
+常用选项：
+
+```text
+-q, --question <text>        提出问题，可多次出现
+-o, --option <text>          为当前问题添加选项
+--recommended <text>         添加推荐选项
+--single                     单选
+--select-only                禁止自由文本
+--wait                       发送后等待回复
+--timeout <sec>              等待超时
+```
+
+示例：
+
+```bash
+agtalk msg ask "要继续部署吗？" --option 继续 --recommended 停止 --single --wait --timeout 60
+```
+
+`ask` 属于消息域，不提供顶层 `agtalk ask`。
+
+### 6.5 msg inbox
+
+```bash
+agtalk msg inbox [--all]
+```
+
+查看当前身份的收件箱。
+
+- 默认显示未完成消息。
+- `--all` 显示全部消息，包括已完成。
+- `--peek`、`--unread`、`--pending`、`--action-required`、`--limit` 是后续扩展，不进入第一阶段。
+
+### 6.6 msg read
+
+```bash
+agtalk msg read
+agtalk msg read <msg-id>
+```
+
+读取消息。
+
+无参数时读取当前身份的所有未读消息，并标记为 read。这是 agent 工作循环的默认收信入口，不需要 `-`：
+
+- 有未读消息：返回未读消息列表，按 event_id 升序。
+- 没有未读消息：返回 `inbox_empty`。
+- 不回退读取已读历史；需要看历史时用 `msg inbox --all` 或 `msg read <msg-id>`。
+
+指定 `<msg-id>` 时读取单条消息详情，并标记为 read。
+
+### 6.7 msg wait
+
+```bash
+agtalk msg wait [msg-id] --timeout <sec> [--since <event-id>]
+```
+
+短期等待消息，底层使用 SSE。
+
+- 无 `msg-id`：收到下一条发给当前 agent 的消息即返回。
+- 有 `msg-id`：等待 `reply_to_id == msg-id` 的回复。
+- 必须有 timeout，避免占住 agent turn。
+
+### 6.8 msg attachment
+
+```bash
+agtalk msg attachment <attachment-id>
+```
+
+查看附件全文。附件属于消息域，不作为顶层命令。
+
+---
+
+## 7. mem：计划、上下文与长期记忆
+
+`mem` 是 agent 的知识与工作现场。它同时承载两类内容：
+
+- 当前工作现场：计划、上下文、状态，其他 agent 可读，用于协作和恢复现场。
+- 长期记忆：事实、决策、规则、偏好等沉淀，不默认向所有 agent 展示，通常通过 `pack` 注入上下文。
+
+命令域叫 `mem`，磁盘目录叫 `memory`。这样命令保持短，文件系统语义保持清楚。
+
+### 7.1 文件结构
+
+每个 agent 自己的持久 memory 放在：
+
+```text
+.agtalk/<agent-name>/memory/
+  plan.md
+  context.md
+  status.json
+  entries.jsonl
+```
+
+- `plan.md`：当前目标、计划、进度、下一步、阻塞项。
+- `context.md`：公开背景、约束、关键决策、协作注意事项。
+- `status.json`：机器可读摘要。
+- `entries.jsonl`：长期记忆条目，第一阶段使用简单 JSONL。
+
+`plan.md`、`context.md`、`status.json` 是公开协作状态，不保存私密推理、token、敏感正文。`entries.jsonl` 用于长期知识沉淀。
+
+### 7.2 SQLite 全局索引
+
+SQLite 只保存在线 agent 的全局 mem 注册/索引：
+
+```text
+address
+name
+workspace
+memory_path
+plan_updated_at
+status_summary
+public_topics
+```
+
+规则：
+
+- `id join` 成功后注册或刷新当前 agent 的 memory。
+- `id leave`、session 失效、PID/start_time 校验失败后的惰性清理会移除该 agent 的 mem 索引。
+- SQLite 不持久保存离线 agent 的长期 entries 正文。
+- 其他 agent 的 `mem plan show/status` 只依赖这个在线索引；离线 agent 不可见。
+- 后续如果要做跨 agent `mem search`，也必须遵守“只索引在线 agent，离线即移除”的规则。
+
+### 7.3 mem plan show
+
+```bash
+agtalk mem plan show [address|name]
+```
+
+查看某个 agent 的公开计划和上下文。
+
+- 优先按 address 查。
+- 按 name 查询如果多匹配，返回候选并要求消歧。
+- 只能查看在线 agent 已注册的公开 memory；离线 agent 不进入查询结果。
+
+### 7.4 mem plan update
+
+```bash
+agtalk mem plan update [--plan <file|->] [--context <file|->] [--status <status>] [--summary <text>]
+```
+
+更新当前 agent 的公开计划、上下文和状态摘要。
+
+- 写入使用临时文件 + rename，避免读到半截文件。
+- 只能更新当前身份自己的 mem plan。
+- 更新成功后刷新 SQLite 中当前 agent 的在线 mem 索引。
+
+### 7.5 mem plan status
+
+```bash
+agtalk mem plan status [address|name]
+agtalk --json mem plan status [address|name]
+```
+
+读取机器可读状态摘要。
+
+示例：
+
+```json
+{
+  "type": "mem_plan_status",
+  "address": "550e8400-e29b-41d4-a716-446655440000",
+  "name": "codex-coder-Alex",
+  "updated_at": "2026-07-06T12:00:00Z",
+  "status": "working",
+  "summary": "正在实现命令面重构"
+}
+```
+
+### 7.6 长期记忆
+
+```bash
+agtalk mem add <text> --topic <slug> --type <type> [--title <title>] [--tags <tags>]
+agtalk mem search <query> [--topic <slug>] [--limit <n>]
+agtalk mem show <mem-id|prefix>
+agtalk mem list [--topic <slug>]
+agtalk mem pack <topic> [--limit <n>]
+```
+
+type 建议：
+
+```text
+fact decision rule procedure issue snippet preference summary note context
+```
+
+约束：
+
+- 不默认上向量库。
+- 不在第一阶段设计复杂 topic 管理命令。
+- 记忆文件优先使用 Markdown/JSONL。
+- `mem add/search/show/list/pack` 默认只操作当前 agent 的 `.agtalk/<agent-name>/memory/entries.jsonl`。
+- 长期项目知识优先沉淀进项目文档。
+- `mem pack` 保留旧版价值：生成可注入 prompt/message 的通用 Markdown 上下文包。
+
+---
+
+## 8. tool：运行时辅助
+
+`tool` 只放辅助能力，不承载核心协作语义。
+
+允许：
+
+```bash
+agtalk tool doctor
+agtalk tool version
+agtalk tool path
+```
+
+禁止：
+
+```text
+tool ask
+tool plan
+tool browser
+tool send
+tool daemon
+```
+
+### 8.1 doctor
+
+```bash
+agtalk tool doctor
+agtalk --json tool doctor
+```
+
+诊断当前环境，只诊断，不自动修复。
+
+检查项：
+
+- daemon 是否运行。
+- config 是否可读。
+- 当前身份是否可解析。
+- `.agtalk/` 结构是否正常。
+- DB 是否可达。
+- 端口是否被占用。
+- notify 环境是否可用。
+- 当前执行的是哪个 agtalk 二进制。
+
+如果发现问题，只输出建议命令，不自动执行修复。
+
+### 8.2 version / path
+
+```bash
+agtalk tool version
+agtalk tool path
+```
+
+用于排查多版本 agtalk 混用问题。
+
+---
+
+## 9. config：配置
+
+```bash
+agtalk config show
+agtalk config get <key>
+agtalk config set <key> <value>
+agtalk config path
+```
+
+配置只管理全局设置，不做交互式向导。
+
+常见 key：
+
+```text
+http_port
+notify.default
+human.name
+human.intro
+message.preview_limit_chars
+message.inbox_inline_limit_bytes
+```
+
+配置文件权限保持 0600。
+
+---
+
+## 10. run：YAML 编排入口
+
+```bash
+agtalk run [file.yaml]
+agtalk --json run [file.yaml]
+```
+
+`run` 是顶层保留命令，因为旧版实际高频，agent 也更容易使用。
+
+不传文件时读取：
+
+```text
+.agtalk/runs/<current-agent-name>.yaml
+```
+
+约束：
+
+- 只执行 agtalk 内部白名单动作。
+- 不执行任意 shell。
+- 相对路径按 YAML 文件所在目录解析。
+- 任一步失败默认停止。
+- `--json` 输出步骤结果数组。
+- 第一阶段没有变量替换：每个 step 的字段按字面量传给对应内部动作，不支持 `${}`、`{{ }}` 或任何模板语法。
+
+允许的 action：
+
+```text
+id.join
+id.show
+id.lookup
+msg.send
+msg.reply
+msg.done
+msg.ask
+msg.wait
+msg.read
+msg.inbox
+mem.plan.show
+mem.plan.update
+mem.plan.status
+mem.pack
+config.get
+```
+
+第一阶段不允许：
+
+```text
+tool.doctor
+config.set
+id.leave
+shell
+```
+
+示例：
+
+```yaml
+version: 1
+steps:
+  - action: msg.send
+    to: "550e8400-e29b-41d4-a716-446655440000"
+    subject: "TASK: 实现命令面重构"
+    body: |
+      请根据 docs/commands.md 实现命令面重构。
+    notify: true
+
+  - action: msg.read
+```
+
+第一阶段不支持变量替换、条件、循环、失败回滚。后续如果要加变量语法，必须先定义转义、作用域和失败行为。
+
+---
+
+## 11. REST API
+
+REST API 需要随 NG 命令面同步，但同步的是领域语义，不是一比一复制 CLI 命令。
+
+原则：
+
+- REST API 是 daemon 的资源接口，CLI / GUI / 浏览器扩展都是薄客户端。
+- API 路径按 `id`、`msg`、`mem` 三个核心领域组织。
+- `tool`、`config`、`run` 默认是 CLI 本地能力，不进入第一阶段 REST API。
+- SSE 仍是唯一推送机制，长驻订阅走 events endpoint，不新增轮询 API。
+- 所有写操作都使用 `POST` 或 `PATCH`，避免 `GET` 产生已读、完成等副作用。
+- `/api` 原始 `ClientMsg` envelope 只作为内部兼容/调试入口；NG canonical API 使用下面的资源路径。
+- REST API 不提供 `--as` 等价参数；身份来自 PID/start_time 认证头或浏览器 token。
+
+### 11.1 id API
+
+```text
+POST /api/v1/id/join
+POST /api/v1/id/leave
+GET  /api/v1/id/me
+GET  /api/v1/id/lookup?name=<name>
+```
+
+`POST /api/v1/id/join` 对应 `agtalk id join`：
+
+- 创建或复用 session。
+- 注册 PID/start_time。
+- 捕获或刷新 notify target。
+- 注册当前 agent 的在线 memory 索引。
+
+`POST /api/v1/id/leave` 对应 `agtalk id leave`：
+
+- 标记 mailbox left。
+- 删除本地 session。
+- 移除 PID/session 锚点。
+- 移除在线 memory 索引。
+
+### 11.2 msg API
+
+```text
+POST /api/v1/msg/send
+POST /api/v1/msg/reply
+POST /api/v1/msg/done
+POST /api/v1/msg/ask
+GET  /api/v1/msg/inbox?all=true|false
+POST /api/v1/msg/read
+POST /api/v1/msg/wait
+GET  /api/v1/msg/attachment/:id
+```
+
+`POST /api/v1/msg/read` 请求体：
+
+```json
+{
+  "message_id": null
+}
+```
+
+- `message_id == null`：读取当前身份全部未读消息，并标记 read。
+- `message_id != null`：读取指定消息详情，并标记 read。
+- 不使用 `GET /read`，因为 read 会改变已读状态。
+
+`POST /api/v1/msg/wait` 是短期 SSE 封装，必须带 timeout；常驻进程直接使用 events endpoint。
+
+### 11.3 mem API
+
+```text
+GET   /api/v1/mem/plan?address=<uuid>
+GET   /api/v1/mem/plan?name=<name>
+PATCH /api/v1/mem/plan
+GET   /api/v1/mem/plan/status?address=<uuid>
+GET   /api/v1/mem/plan/status?name=<name>
+```
+
+第一阶段 REST 只暴露公开协作状态：
+
+- `plan.md`
+- `context.md`
+- `status.json`
+
+长期记忆 `entries.jsonl` 默认是 agent 本地能力，先不开放跨 agent REST 读写。后续如果需要跨 agent `mem search`，只能搜索在线 agent 的公开索引，离线即从 SQLite 移除。
+
+### 11.4 events API
+
+```text
+GET /api/v1/events
+```
+
+也可以保留 `/events` 作为短路径别名，但 canonical endpoint 是 `/api/v1/events`。
+
+认证头：
+
+```text
+X-AgTalk-Address: <uuid>
+X-AgTalk-Pid: <pid>
+X-AgTalk-Start-Time: <start_time>
+Last-Event-ID: <event_id>
+```
+
+浏览器扩展域继续使用：
+
+```text
+X-AgTalk-Address: <uuid>
+X-AgTalk-Browser-Token: <token>
+Last-Event-ID: <event_id>
+```
+
+REST API 不新增轮询收信接口。需要“现在有什么”用 `msg inbox/read`，需要推送用 events。
+
+### 11.5 旧 REST 路径映射
+
+| 旧路径 | NG canonical |
+|---|---|
+| `POST /api/join` | `POST /api/v1/id/join` |
+| `POST /api/leave` | `POST /api/v1/id/leave` |
+| `GET /api/lookup` | `GET /api/v1/id/lookup` |
+| `POST /api/send` | `POST /api/v1/msg/send` |
+| `POST /api` + `Whoami` | `GET /api/v1/id/me` |
+| `POST /api` + `Inbox` | `GET /api/v1/msg/inbox` |
+| `POST /api` + `Detail` | `POST /api/v1/msg/read` |
+| `POST /api` + `Reply` | `POST /api/v1/msg/reply` |
+| `POST /api` + `Human` | `POST /api/v1/msg/ask` |
+| `GET /events` | `GET /api/v1/events`，`/events` 可作为别名 |
+
+---
+
+## 12. --agent-help
+
+保留：
+
+```bash
+agtalk --agent-help
+```
+
+它不是完整帮助，而是面向 AI agent 的最小闭环。
+
+应展示：
+
+```bash
+agtalk id join <name> --intro "..." --workspace "..."
+agtalk id show
+agtalk id lookup [name]
+agtalk msg send <address> "<body>"
+agtalk msg ask "<question>" --option approve --option reject --wait --timeout 60
+agtalk msg read
+agtalk msg wait <msg-id> --timeout 30
+agtalk msg done <msg-id>
+agtalk mem plan show <address>
+agtalk mem plan update --plan plan.md --context context.md
+agtalk mem pack <topic>
+agtalk run [file.yaml]
+```
+
+不在 `--agent-help` 展示完整 config/tool 细节。
+
+---
+
+## 13. 旧版到新版映射
+
+| 旧版命令 | 新版位置 |
+|---|---|
+| `join` / `attach` | `id join` |
+| `me` / `whoami` | `id show` |
+| `peers` / `lookup` | `id lookup` |
+| `leave` / `cleanup` | `id leave` / `tool doctor` 提示清理 |
+| `agent` | `msg send` / `msg reply` / `msg done` |
+| `human` | `msg ask` |
+| `inbox` | `msg inbox` |
+| `detail` | `msg read` |
+| `wait` | `msg wait` |
+| `attachment` | `msg attachment` |
+| `plan` / `state` | `mem plan` |
+| `mem add/search/pack` | `mem add/search/pack` |
+| `daemon` | `daemon` |
+| `config` | `config` |
+| `poll-inbox` | 删除 |
+| `gui` / `settings` / `chats` | 第一阶段不进入命令面 |
+
+---
+
+## 14. 稳定错误码
+
+```text
+identity_missing
+identity_ambiguous
+inbox_empty
+message_not_found
+timeout
+daemon_unavailable
+lookup_ambiguous
+memory_unavailable
+invalid_command
+not_supported
+```
+
+`--json` 错误格式：
+
+```json
+{
+  "type": "error",
+  "code": "inbox_empty",
+  "message": "当前 inbox 没有可查看的消息"
+}
+```
+
+---
+
+## 15. 命令治理规则
+
+顶层命令固定为：
+
+```text
+daemon id msg mem tool config run
+```
+
+新增能力必须先回答：
+
+1. 是 daemon 生命周期吗？放 `daemon`。
+2. 是身份吗？放 `id`。
+3. 是通信吗？放 `msg`。
+4. 是计划、上下文、公开状态或长期记忆吗？放 `mem`。
+5. 是运行时辅助吗？放 `tool`。
+6. 是配置吗？放 `config`。
+7. 是多步编排吗？放 `run`。
+
+如果不能归类，先改设计文档讨论，不直接加命令。

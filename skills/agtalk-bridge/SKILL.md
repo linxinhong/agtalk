@@ -1,7 +1,7 @@
 ---
 name: agtalk-bridge
 metadata:
-  version: "1.0.0"
+  version: "2.0.0"
 description: >-
   Communicate with other agents and humans via the agtalk local bus. Use when you need to
   send a message to another agent, ask a human for approval, check your inbox, or coordinate
@@ -22,16 +22,17 @@ This skill teaches you (an AI agent) how to use the **agtalk** local communicati
 - You need to receive a reply from an agent or human.
 - You lost your context (compaction) and need to recover who you are.
 - You want to look up another agent's address.
+- You want to share or inspect public plan/context state with peers.
 
 ## Core mental model
 
 ```
 identity = filesystem  (.agtalk/<your-name>/session.json)
 routing  = UUID only   (send to <address>, never to a name)
-receiving = pull by default (inbox / detail -), SSE only for second-level hits
+receiving = pull by default (msg inbox / msg read), SSE only for short waits with timeout
 ```
 
-**You never hold a secret token.** Your identity is resolved at call time: `PID → .agtalk/agents.json → your name → session.json → your UUID`. After compaction, just run `agtalk whoami` to recover — nothing to remember.
+**You never hold a secret token.** Your identity is resolved at call time: `PID → .agtalk/agents.json → your name → session.json → your UUID`. After compaction, just run `agtalk id show` to recover — nothing to remember.
 
 ## Step 0: Check daemon is running
 
@@ -43,46 +44,83 @@ agtalk daemon status
 ## Step 1: Know who you are (or create identity)
 
 ```bash
-agtalk whoami
+agtalk id show
 ```
+
 Outputs your `address` (UUID), `name`, `workspace`, `intro`. **This is the command to run first, and after any compaction** — it rebuilds your identity from the filesystem. No token, no memory needed.
 
-If you have no identity yet (first run):
+If `id show` fails because there are multiple sessions in the directory, specify one:
+
 ```bash
-agtalk join <your-name> --intro "<what you do>" --workspace "<project>"
+agtalk --as <your-name> id show
+# or
+AGTALK_NAME=<your-name> agtalk id show
 ```
+
+If you have no identity yet (first run):
+
+```bash
+agtalk id join <your-name> --intro "<what you do>" --workspace "<project>"
+```
+
+`id join` is idempotent: running it again reuses the same address and just rebinds the current process.
 
 ## Step 2: Find the recipient's UUID (routing is UUID-only)
 
 You **cannot** send to a name. Names are display-only and may be duplicated. Find the UUID first:
 
 ```bash
-agtalk lookup <name>          # filter by name, may return several
-agtalk lookup                 # list all available agents
+agtalk id lookup <name>          # filter by name, may return several
+agtalk id lookup                 # list all available agents
 ```
+
 Returns candidates with `address / name / intro / workspace`. **You (the caller) disambiguate** by reading `intro` + `workspace` and picking the right UUID. Then send to that UUID.
 
-For humans, skip the lookup — `agtalk human` targets the human directly.
+Use `--json` if you need machine-parseable output:
 
-## Step 3: Send
+```bash
+agtalk --json id lookup <name>
+```
+
+For humans, skip the lookup — `agtalk msg ask` targets the human directly.
+
+## Step 3: Send / ask / reply / done
 
 **To another agent** (UUID only):
+
 ```bash
-agtalk send <address-uuid> "<message body>"
+agtalk msg send <address-uuid> "<message body>"
+```
+
+`--json` for machine-parseable result:
+
+```bash
+agtalk --json msg send <address-uuid> "<message body>"
 ```
 
 **To a human** (message or approval request):
+
 ```bash
-agtalk human "<message>"                           # plain message
-agtalk human "<question>" --choices approve,reject  # approval request
+agtalk msg ask "<message>"                           # plain message
+agtalk msg ask "<question>" --option approve --option reject  # approval request
 ```
+
 Approval requests pop up in the GUI / terminal; the human replies with a choice.
 
 **Reply to a specific message** (builds a reply chain):
+
 ```bash
-agtalk reply <msg-id> "<your reply text>"           # normal reply
-agtalk reply <msg-id> --choice approve              # reply to an approval
+agtalk msg reply <msg-id> "<your reply text>"           # normal reply
+agtalk msg reply <msg-id> --option approve              # reply to an approval
 ```
+
+**Mark a message as done**:
+
+```bash
+agtalk msg done <msg-id> [--body "<result summary>"]
+```
+
+Use `done` to explicitly close a task or request so it does not stay in the inbox.
 
 ## Step 4: Receive messages
 
@@ -91,21 +129,21 @@ agtalk reply <msg-id> --choice approve              # reply to an approval
 **Before replying to the user at the end of each task turn, you MUST run:**
 
 ```bash
-agtalk detail -
+agtalk msg read
 ```
 
 - If there's a new message: handle it first (continue the conversation / run its instruction / tell the user there's a pending item), then reply.
-- If no new message (error "inbox empty" or similar): don't block — continue and reply to the user.
+- If no new message: `msg read` returns error code `inbox_empty` (non-zero exit). Don't block — continue and reply to the user.
 
 This is a non-negotiable part of your work loop, not an optional courtesy. It costs one second per turn and ensures agtalk messages never sit unread. Notify signals (if configured) are a reminder to do this — they don't replace this check.
 
 ```
 your loop:
   1. receive user/upstream message
-  2. do the task (may include agtalk send / human)
-  3. 【MUST】agtalk detail -        ← check agtalk inbox
+  2. do the task (may include agtalk msg send / msg ask)
+  3. 【MUST】agtalk msg read        ← check agtalk inbox
         new message → handle it (may start a new turn)
-        none        → continue
+        inbox_empty → continue
   4. reply to user
 ```
 
@@ -114,92 +152,99 @@ Caveat: not real-time — if you're mid-way through a long task, a message arriv
 ### Default path: pull (recommended, works for every CLI agent)
 
 ```bash
-agtalk inbox            # snapshot of unfinished messages (status != done)
-agtalk inbox --all      # all messages including done
-agtalk detail -         # the single latest message (unread preferred) — the lightest way to poll
-agtalk detail <msg-id>  # full detail of a specific message
+agtalk msg inbox            # snapshot of unfinished messages (status != done)
+agtalk msg inbox --all      # all messages including done
+agtalk msg read             # all unread messages, marked read
+agtalk msg read <msg-id>    # full detail of a specific message, marked read
 ```
 
 **Polling loop (you control the cadence):**
+
 ```bash
 while true; do
-  out=$(agtalk detail - 2>/dev/null) || { sleep 3; continue; }
+  out=$(agtalk msg read 2>/dev/null) || { sleep 3; continue; }
   # process $out ...
   sleep 3
 done
 ```
+
 Each call returns in seconds. You decide when to sleep and re-query. Works for Kimi, codex CLI, claude code — any agent that can run shell commands. **Use this when the wait may exceed tens of seconds.**
 
-### Path 2: `agtalk wait` — blocking wait for a *specific* message (recommended over hand-rolled curl)
+### Path 2: `agtalk msg wait` — blocking wait for a *specific* message
 
-When you expect a reply to a specific message within ~30s (e.g. you just sent an approval request and are waiting for the human's choice), use `wait` instead of a poll loop. It is the **official SSE wrapper** — agtalk handles the SSE connection, your auth, Last-Event-ID resume, and hit-and-exit for you:
+When you expect a reply to a specific message within ~30s (e.g. you just sent an approval request and are waiting for the human's choice), use `msg wait` instead of a poll loop. It is the **official SSE wrapper** — agtalk handles the SSE connection, your auth, Last-Event-ID resume, and hit-and-exit for you:
 
 ```bash
-agtalk wait <msg-id> [--timeout 30] [--since <event-id>]
+agtalk msg wait <msg-id> [--timeout 30] [--since <event-id>]
 # exits 0 with the matching message (reply_to == msg-id) when it arrives
-# exits non-zero on --timeout (default 30s) — then retry, or fall back to `detail -` polling
+# exits non-zero on --timeout (default 30s) — then retry, or fall back to `msg read` polling
 ```
 
-`wait` **always returns** (hit or timeout) — it is NOT the never-returning `events` subscription. Use it like any normal command.
+`msg wait` **always returns** (hit or timeout) — it is NOT the never-returning `events` subscription. Use it like any normal command.
 
-When **not** to use `wait`:
+When **not** to use `msg wait`:
 - The reply may take minutes → use the pull loop above (don't hang a single tool call too long).
 - You are Kimi-like (no SSE appetite) → just use the pull loop.
 
-### Path 2 alt: hand-rolled curl (when you want fine control)
+## Step 5: Share public state (optional)
 
-If you'd rather drive SSE yourself, a one-liner beats writing a parser:
+You can publish your current plan, context, and status so other online agents can see them:
+
 ```bash
-curl -N -H "Last-Event-ID: $id" --max-time 30 http://127.0.0.1:19527/events \
-  | grep --line-buffered -m1 -A5 '"type":"you care about"'
+agtalk mem plan update --plan plan.md --context context.md --status working --summary "<one-line status>"
+agtalk mem plan show <address>        # inspect another online agent's public plan
+agtalk mem plan status <address>      # machine-readable status summary
 ```
-- `-N` streaming, `--max-time` caps the turn, `grep -m1` exits on hit, `Last-Event-ID` resumes.
-- **Never raw-connect** — a long SSE call with no timeout will occupy your whole turn and get force-killed by your tool-timeout. `agtalk wait` is usually the better choice since it handles all of this for you.
 
-## Step 5: After compaction — recover
+This is optional. Do not put sensitive reasoning, tokens, or private message content in `plan.md` / `context.md` / `status.json`.
+
+## Step 6: After compaction — recover
 
 You don't need to remember anything. Just:
+
 ```bash
-agtalk whoami      # rebuild identity from filesystem
-agtalk inbox       # see what you missed
+agtalk id show      # rebuild identity from filesystem
+agtalk msg inbox    # see what you missed
 ```
+
 That's it. No token to restore, no session to replay — the filesystem `.agtalk/<name>/session.json` is your identity, and compaction can't touch the filesystem.
 
-## Step 6: Leave when done (optional)
+If `id show` fails due to multiple sessions, use `--as <name>` or `AGTALK_NAME=<name>`.
+
+## Step 7: Leave when done (optional)
 
 ```bash
-agtalk leave            # deregister + remove your .agtalk/<name>/ folder
+agtalk id leave            # deregister + remove your .agtalk/<name>/ folder
 ```
+
 If you forget, the daemon lazily cleans up when it notices the folder is gone.
-
-## Automation: run a YAML script
-
-```bash
-agtalk run <file.yaml>   # batch send/reply/inbox/etc. — internal commands only, no shell
-```
-Useful for multi-step coordination.
 
 ## Quick reference
 
 | Goal | Command |
 |---|---|
-| Who am I / recover after compaction | `agtalk whoami` |
-| Create identity | `agtalk join <name> --intro "..." --workspace "..."` |
-| Find recipient UUID | `agtalk lookup [name]` |
-| Send to agent | `agtalk send <uuid> "<body>"` |
-| Message a human | `agtalk human "<msg>"` |
-| Ask human to approve | `agtalk human "<q>" --choices a,b` |
-| Reply to a message | `agtalk reply <msg-id> [text] [--choice c]` |
-| Inbox snapshot | `agtalk inbox [--all]` |
-| Latest message | `agtalk detail -` |
-| Message detail | `agtalk detail <msg-id>` |
-| Wait for a specific reply (≤30s) | `agtalk wait <msg-id> [--timeout 30]` |
-| Leave | `agtalk leave` |
-| Batch script | `agtalk run <file.yaml>` |
+| Who am I / recover after compaction | `agtalk id show` |
+| Create or reuse identity | `agtalk id join <name> --intro "..." --workspace "..."` |
+| Specify identity for one command | `agtalk --as <name> <cmd>` |
+| Find recipient UUID | `agtalk id lookup [name]` |
+| Send to agent | `agtalk msg send <uuid> "<body>"` |
+| Message a human | `agtalk msg ask "<msg>"` |
+| Ask human to approve | `agtalk msg ask "<q>" --option a --option b` |
+| Reply to a message | `agtalk msg reply <msg-id> [text] [--option c]` |
+| Mark message done | `agtalk msg done <msg-id> [--body "..."]` |
+| Inbox snapshot | `agtalk msg inbox [--all]` |
+| Read unread messages | `agtalk msg read` |
+| Message detail | `agtalk msg read <msg-id>` |
+| Wait for a specific reply (≤30s) | `agtalk msg wait <msg-id> [--timeout 30]` |
+| Update public plan/context | `agtalk mem plan update --plan plan.md --context context.md` |
+| Show another agent's plan | `agtalk mem plan show <address>` |
+| Leave | `agtalk id leave` |
 
 ## Rules to never break
 
-1. **Never send to a name.** Always `lookup` first, then `send <uuid>`.
-2. **Never hold a token in your head/context.** Identity is on disk; run `agtalk whoami` to recover.
-3. **Never block forever.** `wait` always has a `--timeout` and always returns; never raw-connect SSE without a timeout. If the wait may exceed tens of seconds, use the `detail -` pull loop instead.
-4. **You disambiguate, not the daemon.** Multiple agents can share a name; pick by intro+workspace.
+1. **Never send to a name.** Always `id lookup` first, then `msg send <uuid>`.
+2. **Never hold a token in your head/context.** Identity is on disk; run `agtalk id show` to recover.
+3. **Always run `agtalk msg read` before replying to the user.** It is part of your core loop.
+4. **Never block forever.** `msg wait` always has a `--timeout` and always returns; never raw-connect SSE without a timeout. If the wait may exceed tens of seconds, use the `msg read` pull loop instead.
+5. **You disambiguate, not the daemon.** Multiple agents can share a name; pick by intro+workspace.
+6. **Use `msg done` to close completed items.** Don't leave finished tasks in the inbox.

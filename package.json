@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "build:extension": "cd extension && pnpm run build",
+    "typecheck:extension": "cd extension && pnpm run typecheck"
   },
   "dependencies": {
     "vue": "^3.4.0",
