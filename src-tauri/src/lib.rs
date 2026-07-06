@@ -7,7 +7,6 @@ pub mod notify;
 pub mod paths;
 pub mod proto;
 pub mod routing;
-pub mod run;
 pub mod server;
 pub mod storage;
 pub mod tool;

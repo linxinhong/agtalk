@@ -10,7 +10,6 @@ pub mod daemon;
 pub mod id;
 pub mod mem;
 pub mod msg;
-pub mod run;
 pub mod tool;
 
 /// 从请求头读取认证信息并认证。

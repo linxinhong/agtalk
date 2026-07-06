@@ -1,7 +1,7 @@
 //! HTTP API v1：canonical `/api/v1/*` 路由。
 
 use crate::proto::ServerMsg;
-use crate::server::handlers::{config, daemon, id, mem, msg, run, status_for, tool};
+use crate::server::handlers::{config, daemon, id, mem, msg, status_for, tool};
 use crate::server::state::AppState;
 use crate::transport::sse::events_stream;
 use axum::extract::{Path, Query, State};
@@ -49,8 +49,6 @@ pub fn routes(state: AppState) -> Router {
         .route("/api/v1/config/:key", get(config_get_handler))
         .route("/api/v1/config/:key", patch(config_set_handler))
         .route("/api/v1/config/path", get(config_path_handler))
-        // run
-        .route("/api/v1/run", post(run_handler))
         // daemon
         .route("/api/v1/daemon/status", get(daemon::daemon_status_handler))
         // browser
@@ -465,42 +463,6 @@ async fn config_set_handler(
 
 async fn config_path_handler(State(state): State<AppState>) -> (StatusCode, Json<ServerMsg>) {
     json_response(config::handle_path(&state))
-}
-
-// ---- run ----
-
-#[derive(serde::Deserialize)]
-struct RunBody {
-    #[serde(default)]
-    file: Option<String>,
-}
-
-async fn run_handler(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(body): Json<RunBody>,
-) -> (StatusCode, Json<ServerMsg>) {
-    let ctx = auth_context_from_headers(&headers);
-    json_response(run::handle_run(&state, body.file, ctx))
-}
-
-fn auth_context_from_headers(headers: &HeaderMap) -> Option<crate::run::AuthContext> {
-    let address = headers
-        .get("X-AgTalk-Address")
-        .and_then(|v| v.to_str().ok())?;
-    let pid = headers
-        .get("X-AgTalk-Pid")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse().ok())?;
-    let start_time = headers
-        .get("X-AgTalk-Start-Time")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse().ok())?;
-    Some(crate::run::AuthContext {
-        address: address.to_string(),
-        pid,
-        start_time,
-    })
 }
 
 // ---- browser ----

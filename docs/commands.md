@@ -508,7 +508,7 @@ agtalk run [file.yaml]
 agtalk --json run [file.yaml]
 ```
 
-`run` 是顶层保留命令，因为旧版实际高频，agent 也更容易使用。
+`run` 在 CLI 本进程执行编排，不经过 REST API。
 
 不传文件时读取：
 
@@ -520,7 +520,6 @@ agtalk --json run [file.yaml]
 
 - 只执行 agtalk 内部白名单动作。
 - 不执行任意 shell。
-- 相对路径按 YAML 文件所在目录解析。
 - 任一步失败默认停止。
 - `--json` 输出步骤结果数组。
 - 第一阶段没有变量替换：每个 step 的字段按字面量传给对应内部动作，不支持 `${}`、`{{ }}` 或任何模板语法。
@@ -528,7 +527,6 @@ agtalk --json run [file.yaml]
 允许的 action：
 
 ```text
-id.join
 id.show
 id.lookup
 msg.send
@@ -543,16 +541,17 @@ mem.plan.update
 mem.plan.status
 mem.pack
 config.get
+tool.doctor
 ```
 
 第一阶段不允许：
 
 ```text
-tool.doctor
+id.join
 config.set
 id.leave
 shell
-```
+
 
 示例：
 

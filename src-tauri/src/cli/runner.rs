@@ -175,11 +175,8 @@ fn execute_step(ctx: &Context, step: &RunStep) -> Result<ServerMsg, StepError> {
         "id.show" => http_get(ctx, "/api/v1/id/me"),
         "id.lookup" => {
             let name: Option<String> = field!("name", option);
-            let endpoint = match name {
-                Some(n) => format!("/api/v1/id/lookup?name={}", n),
-                None => "/api/v1/id/lookup".into(),
-            };
-            http_get(ctx, &endpoint)
+            let params = name.map(|n| vec![("name", n)]).unwrap_or_default();
+            http_get(ctx, &query_endpoint("/api/v1/id/lookup", params)?)
         }
         "msg.send" => {
             let body = serde_json::json!({
@@ -229,16 +226,14 @@ fn execute_step(ctx: &Context, step: &RunStep) -> Result<ServerMsg, StepError> {
         "msg.inbox" => {
             let all: bool = field!("all", bool);
             let limit: Option<usize> = field!("limit", opt_usize);
-            let mut endpoint = "/api/v1/msg/inbox".to_string();
-            let mut first = true;
+            let mut params = Vec::new();
             if all {
-                endpoint.push_str("?all=true");
-                first = false;
+                params.push(("all", "true".to_string()));
             }
             if let Some(l) = limit {
-                endpoint.push_str(&format!("{}limit={}", if first { "?" } else { "&" }, l));
+                params.push(("limit", l.to_string()));
             }
-            http_get(ctx, &endpoint)
+            http_get(ctx, &query_endpoint("/api/v1/msg/inbox", params)?)
         }
         "msg.wait" => {
             let message_id: Option<String> = field!("message_id", option);
@@ -248,11 +243,8 @@ fn execute_step(ctx: &Context, step: &RunStep) -> Result<ServerMsg, StepError> {
         }
         "mem.plan.show" => {
             let target: Option<String> = field!("target", option);
-            let endpoint = match target {
-                Some(t) => format!("/api/v1/mem/plan?target={}", t),
-                None => "/api/v1/mem/plan".into(),
-            };
-            http_get(ctx, &endpoint)
+            let params = target.map(|t| vec![("target", t)]).unwrap_or_default();
+            http_get(ctx, &query_endpoint("/api/v1/mem/plan", params)?)
         }
         "mem.plan.update" => {
             let body = serde_json::json!({
@@ -265,25 +257,20 @@ fn execute_step(ctx: &Context, step: &RunStep) -> Result<ServerMsg, StepError> {
         }
         "mem.plan.status" => {
             let target: Option<String> = field!("target", option);
-            let endpoint = match target {
-                Some(t) => format!("/api/v1/mem/plan/status?target={}", t),
-                None => "/api/v1/mem/plan/status".into(),
-            };
-            http_get(ctx, &endpoint)
+            let params = target.map(|t| vec![("target", t)]).unwrap_or_default();
+            http_get(ctx, &query_endpoint("/api/v1/mem/plan/status", params)?)
         }
         "mem.pack" => {
             let topic: Option<String> = field!("topic", option);
             let limit: Option<usize> = field!("limit", opt_usize);
-            let mut endpoint = "/api/v1/mem/pack".to_string();
-            let mut first = true;
+            let mut params = Vec::new();
             if let Some(t) = topic {
-                endpoint.push_str(&format!("{}topic={}", if first { "?" } else { "&" }, t));
-                first = false;
+                params.push(("topic", t));
             }
             if let Some(l) = limit {
-                endpoint.push_str(&format!("{}limit={}", if first { "?" } else { "&" }, l));
+                params.push(("limit", l.to_string()));
             }
-            http_get(ctx, &endpoint)
+            http_get(ctx, &query_endpoint("/api/v1/mem/pack", params)?)
         }
         "config.get" => {
             let key: String = field!("key");
@@ -307,6 +294,24 @@ fn http_post(ctx: &Context, endpoint: &str, body: impl Serialize) -> Result<Serv
 
 fn http_patch(ctx: &Context, endpoint: &str, body: impl Serialize) -> Result<ServerMsg, StepError> {
     patch(ctx, endpoint, body).map_err(Into::into)
+}
+
+/// 构建带 URL 编码的 query endpoint。
+fn query_endpoint(path: &str, params: Vec<(&str, String)>) -> Result<String, StepError> {
+    let base = "http://127.0.0.1:1";
+    let mut url =
+        reqwest::Url::parse(base).map_err(|e| StepError::new("url_parse", e.to_string()))?;
+    url.set_path(path);
+    {
+        let mut pairs = url.query_pairs_mut();
+        for (k, v) in params {
+            pairs.append_pair(k, &v);
+        }
+    }
+    Ok(match url.query() {
+        Some(q) if !q.is_empty() => format!("{}?{}", path, q),
+        _ => path.to_string(),
+    })
 }
 
 fn run_tool_doctor(ctx: &Context) -> ServerMsg {
@@ -475,5 +480,54 @@ steps:
         );
         assert_eq!(result.status, "error");
         assert_eq!(result.error.as_ref().unwrap().code, "missing_field");
+    }
+
+    #[test]
+    fn query_endpoint_encodes_special_chars() {
+        let endpoint =
+            query_endpoint("/api/v1/id/lookup", vec![("name", "a b&c?".into())]).unwrap();
+        assert_eq!(endpoint, "/api/v1/id/lookup?name=a+b%26c%3F");
+    }
+
+    #[test]
+    fn query_endpoint_omits_empty_params() {
+        let endpoint = query_endpoint("/api/v1/id/lookup", Vec::new()).unwrap();
+        assert_eq!(endpoint, "/api/v1/id/lookup");
+    }
+
+    #[test]
+    fn tool_doctor_step_runs_local_diagnosis() {
+        let tmp = tempfile::tempdir().unwrap();
+        let prev = std::env::var_os(crate::paths::CONFIG_DIR_ENV);
+        std::env::set_var(crate::paths::CONFIG_DIR_ENV, tmp.path());
+        let dot = tmp.path().join(".agtalk");
+        std::fs::create_dir_all(&dot).unwrap();
+
+        let ctx = Context {
+            dot_agtalk: dot,
+            address: "addr".into(),
+            name: "test".into(),
+            pid: 1,
+            start_time: 1,
+            base_url: "http://127.0.0.1:19527".into(),
+        };
+        let step = RunStep {
+            action: "tool.doctor".into(),
+            fields: serde_yaml::Mapping::new(),
+        };
+        let result = execute_step(&ctx, &step).unwrap();
+        match result {
+            ServerMsg::ToolDiagnosis { status, .. } => {
+                // 没有 daemon，至少会报 daemon.stopped
+                assert_eq!(status, "error");
+            }
+            other => panic!("expected ToolDiagnosis, got {:?}", other),
+        }
+
+        if let Some(p) = prev {
+            std::env::set_var(crate::paths::CONFIG_DIR_ENV, p);
+        } else {
+            std::env::remove_var(crate::paths::CONFIG_DIR_ENV);
+        }
     }
 }
