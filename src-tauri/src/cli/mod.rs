@@ -4,6 +4,7 @@ pub(crate) mod client;
 pub mod context;
 pub mod daemon;
 pub mod output;
+pub mod runner;
 
 use crate::cli::context::Context;
 use crate::cli::output::{print_server_msg, run_with_output, CliError};

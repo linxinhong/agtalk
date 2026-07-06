@@ -1,7 +1,7 @@
 //! YAML 编排执行：把一系列 agtalk 动作写成文件运行。
 
 use crate::config::AgConfig;
-use crate::proto::{AskOptions, InboxFilter, RunStepResult, ServerMsg};
+use crate::proto::{AskOptions, InboxFilter, RunResult, RunStepError, RunStepResult, ServerMsg};
 use crate::server::handlers::{config, id, mem, msg};
 use crate::server::state::AppState;
 use crate::storage::Storage;
@@ -37,11 +37,6 @@ pub enum RunError {
     Message(String),
 }
 
-#[derive(Debug, Clone)]
-pub struct RunResult {
-    pub steps: Vec<RunStepResult>,
-}
-
 #[derive(Debug, Deserialize)]
 struct RunSpec {
     #[serde(rename = "version")]
@@ -57,7 +52,6 @@ struct RunStep {
 }
 
 const ALLOWED_ACTIONS: &[&str] = &[
-    "id.join",
     "id.show",
     "id.lookup",
     "msg.send",
@@ -89,32 +83,49 @@ pub fn run_file(
     let state = AppState::new(storage.clone(), config, dot_agtalk.to_path_buf());
 
     let mut results = Vec::new();
-    for step in spec.steps {
+    let mut stopped_at = None;
+    for (index, step) in spec.steps.into_iter().enumerate() {
+        let index = index + 1;
         let result = execute_step(&state, ctx, &step.action, &step.fields);
         let status = if matches!(result, ServerMsg::Error { .. }) {
             "error".to_string()
         } else {
             "ok".to_string()
         };
-        let (error, payload) = match result {
-            ServerMsg::Error { message, .. } => (Some(message), serde_json::json!({})),
+        let (error, output) = match result {
+            ServerMsg::Error { code, message } => (
+                Some(RunStepError { code, message }),
+                serde_json::Value::Null,
+            ),
             other => (
                 None,
                 serde_json::to_value(&other).unwrap_or_else(|_| serde_json::json!({})),
             ),
         };
         results.push(RunStepResult {
-            action: step.action.clone(),
-            status,
+            index,
+            action: step.action,
+            status: status.clone(),
             error,
-            payload,
+            output,
         });
-        if results.last().unwrap().status == "error" {
+        if status == "error" {
+            stopped_at = Some(index);
             break;
         }
     }
 
-    Ok(RunResult { steps: results })
+    let status = if stopped_at.is_some() {
+        "error".to_string()
+    } else {
+        "ok".to_string()
+    };
+    Ok(RunResult {
+        status,
+        file: Some(path.to_string_lossy().into_owned()),
+        steps: results,
+        stopped_at,
+    })
 }
 
 fn execute_step(
@@ -173,34 +184,6 @@ fn execute_step(
     }
 
     match action {
-        "id.join" => {
-            let Some(ctx) = ctx else {
-                return ServerMsg::Error {
-                    code: "auth_required".into(),
-                    message: "id.join 需要进程认证信息".into(),
-                };
-            };
-            let name: Option<String> = field!("name", option);
-            let intro: Option<String> = field!("intro", option);
-            let workspace: Option<String> = field!("workspace", option);
-            let notify: String = {
-                let raw: String = field!("notify", default);
-                if raw.is_empty() {
-                    "auto".to_string()
-                } else {
-                    raw
-                }
-            };
-            id::handle_join(
-                state,
-                name,
-                intro,
-                workspace,
-                notify,
-                ctx.pid,
-                ctx.start_time,
-            )
-        }
         "id.show" => match headers {
             Some(ref h) => id::handle_show(state, h),
             None => auth_required_error(),

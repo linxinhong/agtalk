@@ -1,6 +1,6 @@
 //! CLI 输出封装：统一处理文本与 --json 两种模式。
 
-use crate::proto::{DiagnosisCheck, RootCause, ServerMsg};
+use crate::proto::{DiagnosisCheck, RootCause, RunStepResult, ServerMsg};
 use console::Style;
 use serde::Serialize;
 use std::process::ExitCode;
@@ -217,15 +217,13 @@ fn print_text_server_msg(msg: &ServerMsg) {
         ServerMsg::ToolPathInfo { path } => {
             println!("{}", path);
         }
-        ServerMsg::RunResult { steps } => {
-            for s in steps {
-                println!(
-                    "{}: {} {}",
-                    s.action,
-                    s.status,
-                    s.error.as_deref().unwrap_or("")
-                );
-            }
+        ServerMsg::RunResult {
+            status,
+            file,
+            steps,
+            stopped_at,
+        } => {
+            print_run_report(status, file.as_deref(), steps, stopped_at);
         }
         ServerMsg::DaemonStatus {
             pid,
@@ -497,6 +495,49 @@ fn print_daemon_status(
         "Stop:",
         width = label_width
     );
+}
+
+fn print_run_report(
+    status: &str,
+    file: Option<&str>,
+    steps: &[RunStepResult],
+    stopped_at: &Option<usize>,
+) {
+    println!();
+    if let Some(file) = file {
+        println!("run: {}", file);
+    }
+    if !steps.is_empty() {
+        println!();
+    }
+    for s in steps {
+        let (label, pad) = summary_status_label(&s.status);
+        println!("    {}{}  {:>3}  {}", label, pad, s.index, s.action);
+        let summary = run_step_summary(s);
+        if !summary.is_empty() {
+            println!("               {}", summary);
+        }
+    }
+    if let Some(step) = stopped_at {
+        println!();
+        println!("stopped at step {}", step);
+    } else if status != "ok" && !steps.is_empty() {
+        println!();
+        println!("status: {}", status);
+    }
+}
+
+fn run_step_summary(s: &RunStepResult) -> String {
+    if let Some(ref e) = s.error {
+        return format!("{}: {}", e.code, e.message);
+    }
+    if let Some(id) = s.output.get("id").and_then(|v| v.as_str()) {
+        return id.to_string();
+    }
+    if let Some(ty) = s.output.get("type").and_then(|v| v.as_str()) {
+        return ty.to_string();
+    }
+    String::new()
 }
 
 fn format_uptime(seconds: u64) -> String {

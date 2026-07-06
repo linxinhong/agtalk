@@ -7,6 +7,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use sysinfo::{Pid, System};
 
+#[derive(Clone)]
 pub struct Context {
     pub dot_agtalk: PathBuf,
     pub address: String,

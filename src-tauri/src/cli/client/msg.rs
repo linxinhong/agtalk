@@ -140,8 +140,21 @@ pub fn wait(
     since: Option<i64>,
     json: bool,
 ) -> Result<(), CliError> {
+    let msg = wait_result(ctx, msg_id, timeout, since)?;
+    print_wait_msg(json, &msg);
+    Ok(())
+}
+
+/// 阻塞等待 SSE 消息，返回 `ServerMsg::WaitResult` 或超时错误。
+/// runner 复用此函数，避免重复实现 SSE 解析。
+pub fn wait_result(
+    ctx: Context,
+    msg_id: Option<String>,
+    timeout: Option<u64>,
+    since: Option<i64>,
+) -> Result<ServerMsg, CliError> {
     let rt = tokio::runtime::Runtime::new().map_err(|e| CliError::new("runtime", e.to_string()))?;
-    rt.block_on(wait_async(ctx, msg_id, timeout, since, json))
+    rt.block_on(wait_sse(ctx, msg_id, timeout, since))
 }
 
 pub fn attachment(_ctx: Context, _attachment_id: String, json: bool) -> Result<(), CliError> {
@@ -153,21 +166,12 @@ pub fn attachment(_ctx: Context, _attachment_id: String, json: bool) -> Result<(
     Ok(())
 }
 
-#[derive(serde::Serialize)]
-struct WaitResult<'a> {
-    #[serde(rename = "type")]
-    ty: &'a str,
-    messages: &'a [crate::routing::Message],
-    body: String,
-}
-
-async fn wait_async(
+async fn wait_sse(
     ctx: Context,
     msg_id: Option<String>,
     timeout: Option<u64>,
     since: Option<i64>,
-    json: bool,
-) -> Result<(), CliError> {
+) -> Result<ServerMsg, CliError> {
     let timeout_secs = timeout.unwrap_or(30);
     let url = format!("{}/api/v1/events", ctx.base_url);
     let client = reqwest::Client::builder()
@@ -218,8 +222,12 @@ async fn wait_async(
                             let more = is_more_coming(&msg.metadata);
                             collected.push(msg);
                             if !more {
-                                print_wait_result(json, &collected);
-                                return Ok(());
+                                let body: String =
+                                    collected.iter().map(|m| m.body.as_str()).collect();
+                                return Ok(ServerMsg::WaitResult {
+                                    messages: collected,
+                                    body,
+                                });
                             }
                         }
                     }
@@ -236,17 +244,13 @@ async fn wait_async(
     Err(CliError::new("timeout", "wait timeout".to_string()))
 }
 
-fn print_wait_result(json: bool, msgs: &[crate::routing::Message]) {
-    let body: String = msgs.iter().map(|m| m.body.as_str()).collect();
+fn print_wait_msg(json: bool, msg: &ServerMsg) {
     if json {
-        let result = WaitResult {
-            ty: "wait_result",
-            messages: msgs,
-            body,
-        };
-        println!("{}", serde_json::to_string(&result).unwrap_or_default());
-    } else {
-        if let Some(first) = msgs.first() {
+        println!("{}", serde_json::to_string(msg).unwrap_or_default());
+        return;
+    }
+    if let ServerMsg::WaitResult { messages, body } = msg {
+        if let Some(first) = messages.first() {
             println!("from: {} <{}>", first.from_name, first.from_address);
         }
         println!("{}", body);

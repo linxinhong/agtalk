@@ -1,8 +1,8 @@
 //! CLI `run` 客户端。
 
-use crate::cli::client::post;
 use crate::cli::context::Context;
-use crate::cli::output::{print_server_msg, CliError};
+use crate::cli::output::CliError;
+use crate::cli::runner;
 use std::path::PathBuf;
 
 pub fn run(ctx: Option<Context>, file: Option<PathBuf>, json: bool) -> Result<(), CliError> {
@@ -13,19 +13,5 @@ pub fn run(ctx: Option<Context>, file: Option<PathBuf>, json: bool) -> Result<()
         )
     })?;
 
-    let file = match file {
-        Some(p) => p,
-        None => ctx
-            .dot_agtalk
-            .join("runs")
-            .join(format!("{}.yaml", ctx.name)),
-    };
-
-    let resp = post(
-        &ctx,
-        "/api/v1/run",
-        serde_json::json!({ "file": file.to_string_lossy() }),
-    )?;
-    print_server_msg(json, &resp);
-    Ok(())
+    runner::run(ctx, file, json)
 }

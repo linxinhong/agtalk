@@ -74,15 +74,34 @@ pub struct DiagnosisContext {
     pub pending: Option<i64>,
 }
 
+/// run 单步错误，结构化 code + message。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunStepError {
+    pub code: String,
+    pub message: String,
+}
+
 /// run 单步结果，用于 `RunResult`。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunStepResult {
+    pub index: usize,
     pub action: String,
     pub status: String, // ok / error
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    #[serde(flatten)]
-    pub payload: serde_json::Value,
+    pub error: Option<RunStepError>,
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub output: serde_json::Value,
+}
+
+/// run 执行结果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunResult {
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    pub steps: Vec<RunStepResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_at: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -346,7 +365,12 @@ pub enum ServerMsg {
 
     // run
     RunResult {
+        status: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file: Option<String>,
         steps: Vec<RunStepResult>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stopped_at: Option<usize>,
     },
 
     // daemon

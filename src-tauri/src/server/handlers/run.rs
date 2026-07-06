@@ -9,7 +9,10 @@ pub fn handle_run(state: &AppState, file: Option<String>, ctx: Option<AuthContex
     let file = file.map(PathBuf::from);
     match crate::run::run_file(&state.storage, &state.dot_agtalk, ctx.as_ref(), file) {
         Ok(result) => ServerMsg::RunResult {
+            status: result.status,
+            file: result.file,
             steps: result.steps,
+            stopped_at: result.stopped_at,
         },
         Err(e) => ServerMsg::Error {
             code: "run_failed".into(),

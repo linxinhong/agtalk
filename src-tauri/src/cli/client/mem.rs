@@ -1,6 +1,6 @@
 //! CLI `mem` 命名空间客户端。
 
-use crate::cli::client::{get, post};
+use crate::cli::client::{get, patch, post};
 use crate::cli::context::Context;
 use crate::cli::output::{print_server_msg, CliError};
 use crate::cli::MemCmd;
@@ -21,7 +21,7 @@ pub fn dispatch(ctx: Context, cmd: MemCmd, json: bool) -> Result<(), CliError> {
                 context,
                 status,
                 summary,
-            } => post(
+            } => patch(
                 &ctx,
                 "/api/v1/mem/plan",
                 serde_json::json!({
