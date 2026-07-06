@@ -21,7 +21,7 @@ pub fn detail(storage: &Storage, message_id: &str) -> Result<Option<Message>, Ro
     Ok(msg)
 }
 
-/// 查询消息详情并标记已读；`detail -` 语义：先最新未读，没有再最新一条。
+/// 查询消息详情并标记已读。
 pub fn detail_and_mark_read(
     storage: &Storage,
     address: &str,

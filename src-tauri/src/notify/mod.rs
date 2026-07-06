@@ -125,7 +125,7 @@ pub async fn trigger(
 /// 构造注入文本。不包含正文，只含信号 + 取信命令模板。
 pub fn build_hint_text(hint: &NotifyHint) -> String {
     format!(
-        "[agtalk] 新消息来自 {}，运行 {} detail - 查看\n",
+        "[agtalk] 新消息来自 {}，运行 {} msg read 查看\n",
         hint.from_name, hint.binary_path
     )
 }
@@ -186,7 +186,7 @@ mod tests {
         };
         let text = build_hint_text(&hint);
         assert!(text.contains("nora"));
-        assert!(text.contains("/usr/local/bin/agtalk detail -"));
+        assert!(text.contains("/usr/local/bin/agtalk msg read"));
         assert!(!text.contains("secret"));
     }
 
