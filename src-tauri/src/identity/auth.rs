@@ -1,6 +1,7 @@
 //! 认证链：PID → agents.json → name → session.json → UUID。
 
 use super::agents_map;
+use super::browser_session;
 use super::session_file;
 use super::IdentityError;
 use crate::storage::Storage;
@@ -27,7 +28,16 @@ pub fn authenticate(
     address: &str,
     pid: Option<u32>,
     start_time: Option<u64>,
+    browser_token: Option<&str>,
 ) -> Result<AuthenticatedSession, IdentityError> {
+    if let Some(token) = browser_token {
+        let session = browser_session::validate(storage, token)?;
+        if session.address != address {
+            return Err(IdentityError::SessionMismatch);
+        }
+        return Ok(session);
+    }
+
     let mb = storage
         .conn()
         .query_row(
@@ -100,10 +110,11 @@ mod tests {
             workspace: "projA".to_string(),
             intro: "前端".to_string(),
             created_at: "2026-07-01T00:00:00Z".to_string(),
+            ..Default::default()
         };
         session_file::write(&dot, "nora", &session).unwrap();
 
-        let s = authenticate(&storage, &dot, &addr, None, None).unwrap();
+        let s = authenticate(&storage, &dot, &addr, None, None, None).unwrap();
         assert_eq!(s.name, "nora");
     }
 
@@ -119,9 +130,36 @@ mod tests {
             workspace: "projA".to_string(),
             intro: "前端".to_string(),
             created_at: "2026-07-01T00:00:00Z".to_string(),
+            ..Default::default()
         };
         session_file::write(&dot, "nora", &session).unwrap();
 
-        assert!(authenticate(&storage, &dot, &addr, None, None).is_err());
+        assert!(authenticate(&storage, &dot, &addr, None, None, None).is_err());
+    }
+
+    #[test]
+    fn auth_browser_token_ok() {
+        let tmp = TempDir::new().unwrap();
+        let previous = std::env::var_os("AGTALK_CONFIG_DIR");
+        std::env::set_var("AGTALK_CONFIG_DIR", tmp.path());
+        let dot = tmp.path().join(".agtalk");
+        let storage = Storage::open_in_memory().unwrap();
+        let (addr, _name, token) = crate::identity::browser_session::create(
+            &storage,
+            Some("browser".to_string()),
+            Some("bridge".to_string()),
+            Some("web".to_string()),
+        )
+        .unwrap();
+
+        let session = authenticate(&storage, &dot, &addr, None, None, Some(&token)).unwrap();
+        assert_eq!(session.address, addr);
+        assert_eq!(session.name, "browser");
+
+        if let Some(p) = previous {
+            std::env::set_var("AGTALK_CONFIG_DIR", p);
+        } else {
+            std::env::remove_var("AGTALK_CONFIG_DIR");
+        }
     }
 }

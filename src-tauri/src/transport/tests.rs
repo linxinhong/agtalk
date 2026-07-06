@@ -56,6 +56,7 @@ async fn sse_replays_past_events() {
             workspace: "".to_string(),
             intro: "".to_string(),
             created_at: "2026-07-01T00:00:00Z".to_string(),
+            ..Default::default()
         },
     )
     .unwrap();
@@ -104,6 +105,7 @@ async fn sse_realtime_event() {
             workspace: "".to_string(),
             intro: "".to_string(),
             created_at: "2026-07-01T00:00:00Z".to_string(),
+            ..Default::default()
         },
     )
     .unwrap();

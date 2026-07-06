@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 
-pub const CURRENT_VERSION: u32 = 3;
+pub const CURRENT_VERSION: u32 = 5;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS _migrations (
@@ -63,6 +63,30 @@ ALTER TABLE messages ADD COLUMN to_name TEXT NOT NULL DEFAULT '';
 ALTER TABLE messages ADD COLUMN from_name TEXT NOT NULL DEFAULT '';
 "#;
 
+const MIGRATE_V4: &str = r#"
+CREATE TABLE IF NOT EXISTS browser_sessions (
+    address TEXT PRIMARY KEY REFERENCES mailboxes(address),
+    token TEXT NOT NULL,
+    name TEXT NOT NULL,
+    created_at REAL NOT NULL DEFAULT (unixepoch('subsec'))
+);
+CREATE INDEX IF NOT EXISTS idx_browser_sessions_token ON browser_sessions(token);
+"#;
+
+const MIGRATE_V5: &str = r#"
+CREATE TABLE IF NOT EXISTS mem_index (
+    address TEXT PRIMARY KEY REFERENCES mailboxes(address),
+    name TEXT NOT NULL,
+    workspace TEXT NOT NULL DEFAULT '',
+    memory_path TEXT NOT NULL,
+    plan_updated_at REAL NOT NULL DEFAULT 0,
+    status_summary TEXT NOT NULL DEFAULT '',
+    public_topics TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_mem_index_name ON mem_index(name);
+CREATE INDEX IF NOT EXISTS idx_mem_index_workspace ON mem_index(workspace);
+"#;
+
 pub fn run(conn: &mut Connection) -> Result<(), super::StorageError> {
     let tx = conn.transaction()?;
 
@@ -88,6 +112,12 @@ pub fn run(conn: &mut Connection) -> Result<(), super::StorageError> {
     }
     if version < 3 {
         tx.execute_batch(MIGRATE_V3)?;
+    }
+    if version < 4 {
+        tx.execute_batch(MIGRATE_V4)?;
+    }
+    if version < 5 {
+        tx.execute_batch(MIGRATE_V5)?;
     }
 
     tx.execute(

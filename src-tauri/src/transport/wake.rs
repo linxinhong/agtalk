@@ -42,4 +42,9 @@ impl SubscriberRegistry {
             let _ = sender.send(event);
         }
     }
+
+    pub fn subscriber_count(&self) -> usize {
+        let senders = self.senders.lock().unwrap_or_else(|e| e.into_inner());
+        senders.values().map(|s| s.receiver_count()).sum()
+    }
 }

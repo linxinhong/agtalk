@@ -11,7 +11,7 @@ pub enum PathsError {
     Io(#[from] std::io::Error),
 }
 
-const CONFIG_DIR_ENV: &str = "AGTALK_CONFIG_DIR";
+pub const CONFIG_DIR_ENV: &str = "AGTALK_CONFIG_DIR";
 
 /// 全局配置目录：~/.config/agtalk2
 /// 可通过环境变量 `AGTALK_CONFIG_DIR` 覆盖，用于测试或多实例。
@@ -53,6 +53,29 @@ pub fn daemon_pid_path() -> Result<PathBuf, PathsError> {
     Ok(config_dir()?.join("daemon.pid"))
 }
 
+/// daemon 状态文件路径：~/.config/agtalk2/daemon.json
+pub fn daemon_status_path() -> Result<PathBuf, PathsError> {
+    Ok(config_dir()?.join("daemon.json"))
+}
+
+/// 浏览器扩展 workspace：~/.config/agtalk2/browser
+pub fn browser_workspace_dir() -> Result<PathBuf, PathsError> {
+    Ok(config_dir()?.join("browser"))
+}
+
+/// 确保浏览器扩展 workspace 存在，权限 0700
+pub fn ensure_browser_workspace_dir() -> Result<PathBuf, PathsError> {
+    let dir = browser_workspace_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    {
+        use std::fs::Permissions;
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, Permissions::from_mode(0o700))?;
+    }
+    Ok(dir)
+}
+
 /// 设置文件权限 0600
 pub fn set_permissions_0600(path: &Path) -> Result<(), PathsError> {
     #[cfg(unix)]
@@ -81,7 +104,12 @@ mod tests {
 
     #[test]
     fn config_dir_ends_with_agtalk2() {
+        let previous = std::env::var_os(CONFIG_DIR_ENV);
+        std::env::remove_var(CONFIG_DIR_ENV);
         let dir = config_dir().unwrap();
         assert_eq!(dir.file_name().unwrap(), "agtalk2");
+        if let Some(p) = previous {
+            std::env::set_var(CONFIG_DIR_ENV, p);
+        }
     }
 }

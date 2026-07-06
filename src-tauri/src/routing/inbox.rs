@@ -54,6 +54,19 @@ pub fn inbox(
     Ok(mapped.collect::<Result<_, _>>()?)
 }
 
+/// 统计状态为 pending 的消息数量。
+pub fn count_pending(storage: &Storage) -> Result<i64, RoutingError> {
+    let conn = storage.conn();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE status = 'pending'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    Ok(count)
+}
+
 /// 将消息状态标记为 delivered（SSE 推送后调用）。
 pub fn mark_delivered(storage: &Storage, message_id: &str) -> Result<(), RoutingError> {
     let conn = storage.conn();
@@ -71,5 +84,18 @@ pub fn mark_read(storage: &Storage, message_id: &str) -> Result<(), RoutingError
         "UPDATE messages SET status = 'read' WHERE id = ?1 AND status IN ('pending', 'delivered')",
         [message_id],
     )?;
+    Ok(())
+}
+
+/// 将消息状态标记为 done；验证该消息确实属于指定 address。
+pub fn mark_done(storage: &Storage, message_id: &str, address: &str) -> Result<(), RoutingError> {
+    let conn = storage.conn();
+    let affected = conn.execute(
+        "UPDATE messages SET status = 'done' WHERE id = ?1 AND to_address = ?2",
+        [message_id, address],
+    )?;
+    if affected == 0 {
+        return Err(RoutingError::MessageNotFound(message_id.to_string()));
+    }
     Ok(())
 }

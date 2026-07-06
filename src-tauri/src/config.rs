@@ -19,6 +19,10 @@ pub enum ConfigError {
     Json(#[from] serde_json::Error),
     #[error("IO 错误: {0}")]
     Io(#[from] std::io::Error),
+    #[error("配置项不存在: {0}")]
+    KeyNotFound(String),
+    #[error("配置值格式错误: {0}")]
+    InvalidValue(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,10 +48,25 @@ pub struct NotifyPluginEntry {
     pub timeout_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+fn default_notify_channel() -> String {
+    "auto".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotifyConfig {
     #[serde(default)]
     pub plugins: HashMap<String, NotifyPluginEntry>,
+    #[serde(default = "default_notify_channel")]
+    pub default: String,
+}
+
+impl Default for NotifyConfig {
+    fn default() -> Self {
+        Self {
+            plugins: HashMap::new(),
+            default: default_notify_channel(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,42 +150,141 @@ impl AgConfig {
         set_permissions_0600(&path)?;
         Ok(())
     }
+
+    /// 返回配置文件路径。
+    pub fn path() -> Result<std::path::PathBuf, ConfigError> {
+        config_path().map_err(ConfigError::Paths)
+    }
+
+    /// 读取点分配置项，如 `human.name`。
+    pub fn get(&self, key: &str) -> Result<serde_json::Value, ConfigError> {
+        let value = serde_json::to_value(self)?;
+        let mut current = &value;
+        for part in key.split('.') {
+            match current.get(part) {
+                Some(v) => current = v,
+                None => return Err(ConfigError::KeyNotFound(key.to_string())),
+            }
+        }
+        Ok(current.clone())
+    }
+
+    /// 设置点分配置项，自动解析整数、布尔与字符串。
+    pub fn set(&mut self, key: &str, value: &str) -> Result<(), ConfigError> {
+        let parsed = parse_config_value(value);
+        let mut config_value = serde_json::to_value(&self)?;
+        let parts: Vec<&str> = key.split('.').collect();
+        set_nested_value(&mut config_value, &parts, parsed)?;
+        *self = serde_json::from_value(config_value)?;
+        self.save()?;
+        Ok(())
+    }
+}
+
+fn parse_config_value(s: &str) -> serde_json::Value {
+    if s.eq_ignore_ascii_case("true") {
+        return serde_json::Value::Bool(true);
+    }
+    if s.eq_ignore_ascii_case("false") {
+        return serde_json::Value::Bool(false);
+    }
+    if let Ok(n) = s.parse::<i64>() {
+        return serde_json::Value::Number(serde_json::Number::from(n));
+    }
+    serde_json::Value::String(s.to_string())
+}
+
+fn set_nested_value(
+    value: &mut serde_json::Value,
+    parts: &[&str],
+    new_val: serde_json::Value,
+) -> Result<(), ConfigError> {
+    if parts.is_empty() {
+        return Err(ConfigError::InvalidValue("空 key".to_string()));
+    }
+    let mut current = value;
+    for (i, part) in parts.iter().enumerate() {
+        if i == parts.len() - 1 {
+            current[part] = new_val;
+            return Ok(());
+        }
+        if current.get(*part).map(|v| !v.is_object()).unwrap_or(true) {
+            current[*part] = serde_json::json!({});
+        }
+        current = current
+            .get_mut(*part)
+            .ok_or_else(|| ConfigError::KeyNotFound(parts[..=i].join(".")))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
     use tempfile::TempDir;
 
-    fn with_temp_config_dir<F>(f: F)
-    where
-        F: FnOnce(),
-    {
-        let tmp = TempDir::new().unwrap();
-        // 临时替换 config_dir 的行为不直接可行，改为测 save/load 的完整流程
-        // 这里仅做序列化/默认值测试，文件 IO 测试留在集成测试。
-        let _ = tmp;
-        f();
+    struct EnvGuard(Option<OsString>);
+
+    impl EnvGuard {
+        fn set(path: &std::path::Path) -> Self {
+            let previous = std::env::var_os(crate::paths::CONFIG_DIR_ENV);
+            std::env::set_var(crate::paths::CONFIG_DIR_ENV, path);
+            Self(previous)
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(ref p) = self.0 {
+                std::env::set_var(crate::paths::CONFIG_DIR_ENV, p);
+            } else {
+                std::env::remove_var(crate::paths::CONFIG_DIR_ENV);
+            }
+        }
     }
 
     #[test]
     fn default_config_serializes() {
-        with_temp_config_dir(|| {
-            let cfg = AgConfig::default();
-            let json = serde_json::to_string(&cfg).unwrap();
-            assert!(json.contains("19527"));
-        });
+        let cfg = AgConfig::default();
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains("19527"));
     }
 
     #[test]
-    fn load_missing_returns_default() {
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("config.json");
-        // 不存在时应返回默认
-        assert!(!path.exists());
-        // 这里无法阻止 AgConfig::load 读取真实目录，故只验证默认值结构
+    fn get_top_level_and_nested_defaults() {
         let cfg = AgConfig::default();
-        assert_eq!(cfg.http_port, 19527);
-        assert_eq!(cfg.human.name, "human");
+        assert_eq!(cfg.get("http_port").unwrap(), serde_json::json!(19527));
+        assert_eq!(cfg.get("human.name").unwrap(), serde_json::json!("human"));
+        assert_eq!(
+            cfg.get("message.preview_limit_chars").unwrap(),
+            serde_json::json!(4000)
+        );
+        assert!(cfg.get("no.such.key").is_err());
+    }
+
+    #[test]
+    fn set_integer_string_and_bool_and_persists() {
+        let tmp = TempDir::new().unwrap();
+        let _guard = EnvGuard::set(tmp.path());
+
+        let mut cfg = AgConfig::load().unwrap();
+        cfg.set("http_port", "19528").unwrap();
+        cfg.set("human.name", "bob").unwrap();
+        cfg.set("notify.default", "none").unwrap();
+
+        let reloaded = AgConfig::load().unwrap();
+        assert_eq!(reloaded.http_port, 19528);
+        assert_eq!(reloaded.human.name, "bob");
+        assert_eq!(reloaded.notify.default, "none");
+
+        assert_eq!(reloaded.get("http_port").unwrap(), serde_json::json!(19528));
+    }
+
+    #[test]
+    fn path_returns_config_json() {
+        let tmp = TempDir::new().unwrap();
+        let _guard = EnvGuard::set(tmp.path());
+        assert!(AgConfig::path().unwrap().ends_with("config.json"));
     }
 }

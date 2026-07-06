@@ -61,6 +61,17 @@ pub fn get_by_address(storage: &Storage, address: &str) -> Result<Option<Mailbox
     Ok(mb)
 }
 
+/// 按 address 查询 mailbox，包含已 leave。
+pub fn get_including_left(
+    storage: &Storage,
+    address: &str,
+) -> Result<Option<Mailbox>, IdentityError> {
+    let conn = storage.conn();
+    let mut stmt = conn.prepare("SELECT * FROM mailboxes WHERE address = ?1")?;
+    let mb = stmt.query_row([address], Mailbox::from_row).optional()?;
+    Ok(mb)
+}
+
 /// 按 name 过滤查询活跃 mailbox；name 为空时返回全部活跃。
 pub fn list(storage: &Storage, name_filter: Option<&str>) -> Result<Vec<Mailbox>, IdentityError> {
     let conn = storage.conn();
@@ -87,6 +98,78 @@ pub fn mark_left(storage: &Storage, address: &str) -> Result<(), IdentityError> 
         [address],
     )?;
     Ok(())
+}
+
+/// 更新活跃 mailbox 的展示元数据。
+pub fn update(
+    storage: &Storage,
+    address: &str,
+    name: &str,
+    intro: &str,
+    workspace: &str,
+) -> Result<(), IdentityError> {
+    let conn = storage.conn();
+    conn.execute(
+        "UPDATE mailboxes SET name = ?2, intro = ?3, workspace = ?4 WHERE address = ?1 AND left_at IS NULL",
+        params![address, name, intro, workspace],
+    )?;
+    Ok(())
+}
+
+/// 恢复一个已 leave 或可能缺失的 mailbox。
+/// 如果 address 不存在则创建；如果存在但 left_at 不为空则清空 left_at 并更新元数据；
+/// 如果存在且活跃则仅更新元数据。同时确保 event_sequences 存在。
+pub fn revive(
+    storage: &Storage,
+    address: &str,
+    name: &str,
+    intro: &str,
+    workspace: &str,
+) -> Result<(), IdentityError> {
+    let mut conn = storage.conn();
+    let tx = conn.transaction()?;
+
+    let exists: bool = tx
+        .query_row(
+            "SELECT 1 FROM mailboxes WHERE address = ?1",
+            [address],
+            |_| Ok(true),
+        )
+        .optional()?
+        .unwrap_or(false);
+
+    if exists {
+        tx.execute(
+            "UPDATE mailboxes SET name = ?2, intro = ?3, workspace = ?4, left_at = NULL WHERE address = ?1",
+            params![address, name, intro, workspace],
+        )?;
+    } else {
+        tx.execute(
+            "INSERT INTO mailboxes (address, name, intro, workspace) VALUES (?1, ?2, ?3, ?4)",
+            params![address, name, intro, workspace],
+        )?;
+    }
+
+    tx.execute(
+        "INSERT OR IGNORE INTO event_sequences (address, last_event_id) VALUES (?1, 0)",
+        [address],
+    )?;
+
+    tx.commit()?;
+    Ok(())
+}
+
+/// 统计未 leave 的 mailbox 数量。
+pub fn count_active(storage: &Storage) -> Result<i64, IdentityError> {
+    let conn = storage.conn();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM mailboxes WHERE left_at IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    Ok(count)
 }
 
 /// 物理删除 mailbox（仅应在无历史消息关联时使用，如测试清理）。
@@ -167,5 +250,36 @@ mod tests {
         let a = ensure_human(&storage, &cfg).unwrap();
         let b = ensure_human(&storage, &cfg).unwrap();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn revive_creates_missing_mailbox() {
+        let storage = Storage::open_in_memory().unwrap();
+        revive(&storage, "addr-1", "nora", "前端", "projA").unwrap();
+        let mb = get_by_address(&storage, "addr-1").unwrap().unwrap();
+        assert_eq!(mb.name, "nora");
+    }
+
+    #[test]
+    fn revive_restores_left_mailbox() {
+        let storage = Storage::open_in_memory().unwrap();
+        let addr = create(&storage, "nora", "前端", "projA").unwrap();
+        mark_left(&storage, &addr).unwrap();
+        assert!(get_by_address(&storage, &addr).unwrap().is_none());
+        revive(&storage, &addr, "nora", "后端", "projB").unwrap();
+        let mb = get_by_address(&storage, &addr).unwrap().unwrap();
+        assert_eq!(mb.intro, "后端");
+        assert_eq!(mb.workspace, "projB");
+        assert!(mb.left_at.is_none());
+    }
+
+    #[test]
+    fn update_changes_metadata() {
+        let storage = Storage::open_in_memory().unwrap();
+        let addr = create(&storage, "nora", "前端", "projA").unwrap();
+        update(&storage, &addr, "nora", "后端", "projB").unwrap();
+        let mb = get_by_address(&storage, &addr).unwrap().unwrap();
+        assert_eq!(mb.intro, "后端");
+        assert_eq!(mb.workspace, "projB");
     }
 }

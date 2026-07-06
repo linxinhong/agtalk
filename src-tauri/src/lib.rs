@@ -2,11 +2,15 @@ pub mod cli;
 pub mod commands;
 pub mod config;
 pub mod identity;
+pub mod mem;
+pub mod notify;
 pub mod paths;
 pub mod proto;
 pub mod routing;
+pub mod run;
 pub mod server;
 pub mod storage;
+pub mod tool;
 pub mod transport;
 
 pub fn run_gui() {
