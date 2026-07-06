@@ -151,8 +151,8 @@ pub(crate) enum MsgCmd {
         #[arg(short, long)]
         limit: Option<usize>,
     },
-    /// 读取消息，`read -` 取最新一条
-    Read { message_id: String },
+    /// 读取消息；无参数时读取所有未读并标记为 read
+    Read { message_id: Option<String> },
     /// 阻塞等待消息（SSE 封装，带超时必返回）
     Wait {
         message_id: Option<String>,

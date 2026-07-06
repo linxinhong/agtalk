@@ -70,7 +70,6 @@ agtalk/
 │   │   ├── main.rs         # argv 分派入口
 │   │   ├── lib.rs          # lib 入口
 │   │   ├── cli/            # CLI 子命令与客户端
-│   │   ├── cli/            # CLI 子命令与客户端
 │   │   ├── identity/       # session、agents.json、mailbox、认证
 │   │   ├── routing/        # send、lookup、inbox、reply
 │   │   ├── mem/            # 计划、上下文、长期记忆

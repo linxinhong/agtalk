@@ -121,7 +121,7 @@ pub fn inbox(ctx: Context, all: bool, _limit: Option<usize>, json: bool) -> Resu
     Ok(())
 }
 
-pub fn read(ctx: Context, message_id: String, json: bool) -> Result<(), CliError> {
+pub fn read(ctx: Context, message_id: Option<String>, json: bool) -> Result<(), CliError> {
     let resp = post(
         &ctx,
         "/api/v1/msg/read",

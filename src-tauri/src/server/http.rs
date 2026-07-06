@@ -1002,7 +1002,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v1_msg_read_dash_empty_inbox() {
+    async fn v1_msg_read_empty_inbox_returns_inbox_empty() {
         let (state, nora, _quinn, _tmp) = test_state();
         let app = routes(state.clone());
 
@@ -1011,7 +1011,7 @@ mod tests {
             .uri("/api/v1/msg/read")
             .header("Content-Type", "application/json")
             .header("X-AgTalk-Address", nora.clone())
-            .body(Body::from(r#"{"message_id":"-"}"#))
+            .body(Body::from(r#"{"message_id":null}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -1020,7 +1020,7 @@ mod tests {
             .unwrap();
         let msg: ServerMsg = serde_json::from_slice(&bytes).unwrap();
         match msg {
-            ServerMsg::Error { code, .. } => assert_eq!(code, "not_found"),
+            ServerMsg::Error { code, .. } => assert_eq!(code, "inbox_empty"),
             other => panic!("expected Error, got {:?}", other),
         }
     }

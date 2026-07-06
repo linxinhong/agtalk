@@ -8,7 +8,7 @@
 
 - **身份在文件系统，不在脑子里**——`.agtalk/<name>/session.json` 承载身份，`agtalk whoami` 随时恢复，compact 压不到磁盘。
 - **路由只认 UUID**——发消息前先 `lookup` 拿到收件人 UUID，绝不能按 name 发。
-- **收消息默认 pull**（`inbox` / `detail -`），SSE 只用于短期等待——`agtalk wait <msg-id> --timeout`。
+- **收消息默认 pull**（`inbox` / `msg read`），SSE 只用于短期等待——`agtalk wait <msg-id> --timeout`。
 - **`join` 是幂等的**——重复执行会复用同一 address，agent 可以放心在每轮任务前调用。
 - **`--as <name>` / `AGTALK_NAME` 是身份选择器**——只用于选择本地 session，不参与消息路由。
 

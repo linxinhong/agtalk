@@ -36,11 +36,12 @@ agent 发不出消息 / 读不到消息 / wait 不返回 / notify 不触发 / �
 
 ## 2. 命令
 
-第一版只保留一个入口：
+当前入口：
 
 ```bash
-agtalk tool doctor
-agtalk --json tool doctor
+agtalk tool doctor              # 默认摘要：根因 + Actions + Context
+agtalk tool doctor --debug      # 完整检查矩阵
+agtalk --json tool doctor       # 稳定 JSON（含完整 checks / root_causes / actions / context）
 ```
 
 暂缓以下扩展：
@@ -296,34 +297,38 @@ command: agtalk id join <name> --notify zellij
 
 ---
 
-## 5. 文本输出效果
+## 5. 默认文本输出（Agent-First 摘要）
 
-沿用 `daemon status` 的 CLI icon：
+默认只展示根因、修复命令、必要上下文和 Debug 提示，减少 agent 认知噪音：
 
 ```text
-  ╭●─●╮  agtalk doctor  warn
-  ╰─●─╯  Local agent bus has 1 warning, 0 errors.
+  ╭●─●╮  agtalk doctor  error
+  ╰─●─╯  local agent bus unavailable
 
-  Runtime
-    ok     binary        ./target/debug/agtalk
-    ok     version       0.1.0
+  Root causes:
+    error  daemon.stopped
+           daemon.json 不存在，daemon 未运行
+    warn   identity.dot_agtalk
+           .agtalk/ 不存在
 
-  Daemon
-    ok     status        running, pid 12345
-    ok     http          http://127.0.0.1:19527
+  Actions:
+    1. agtalk daemon start
+    2. agtalk id join <name>
 
-  Identity
-    warn   current       multiple sessions found
-           use --as <name> or AGTALK_NAME=<name>
+  Context:
+    identity:  -
+    address:   -
+    pending:   unavailable
 
-  Message
-    skip   inbox         identity unresolved
+  Debug:
+    agtalk tool doctor --debug
+    agtalk --json tool doctor
+```
 
-  Wait
-    skip   sse           identity unresolved
+完整检查矩阵保留给 `--debug`：
 
-  Notify
-    skip   target        identity unresolved
+```bash
+agtalk tool doctor --debug
 ```
 
 状态含义：
@@ -341,23 +346,38 @@ command: agtalk id join <name> --notify zellij
 
 JSON 必须稳定，供 agent 自动解析。
 
-建议结构：
+JSON 结构（稳定接口）：
 
 ```json
 {
   "type": "tool_diagnosis",
-  "status": "warn",
+  "status": "error",
+  "summary": "local agent bus unavailable",
+  "root_causes": [
+    {
+      "id": "daemon.stopped",
+      "status": "error",
+      "message": "daemon.json 不存在，daemon 未运行",
+      "command": "agtalk daemon start"
+    }
+  ],
+  "actions": [
+    "agtalk daemon start"
+  ],
+  "context": {
+    "identity": null,
+    "address": null,
+    "pending": null
+  },
   "checks": [
     {
-      "id": "daemon.http",
       "category": "daemon",
-      "status": "ok",
-      "message": "daemon HTTP is reachable",
-      "suggestion": null,
-      "command": null,
-      "details": {
-        "url": "http://127.0.0.1:19527"
-      }
+      "name": "daemon.status_file",
+      "status": "error",
+      "message": "daemon.json 不存在，daemon 未运行",
+      "suggestion": "运行 `agtalk daemon start` 启动 daemon",
+      "command": "agtalk daemon start",
+      "details": null
     }
   ]
 }
@@ -369,13 +389,11 @@ JSON 必须稳定，供 agent 自动解析。
 | --- | --- |
 | `type` | 固定为 `tool_diagnosis` |
 | `status` | 聚合状态：`ok` / `warn` / `error` |
-| `checks[].id` | 稳定检查项 ID |
-| `checks[].category` | 分类 |
-| `checks[].status` | 单项状态 |
-| `checks[].message` | 简短事实描述 |
-| `checks[].suggestion` | 修复建议 |
-| `checks[].command` | 可执行修复命令 |
-| `checks[].details` | 机器可读细节 |
+| `summary` | 一句话结论 |
+| `root_causes` | 聚合后的根因列表（默认文本同此） |
+| `actions` | 建议执行的修复命令 |
+| `context` | 当前 identity / address / pending 摘要 |
+| `checks` | 完整检查矩阵（--debug 与 --json 均包含） |
 
 聚合规则：
 
@@ -383,6 +401,14 @@ JSON 必须稳定，供 agent 自动解析。
 任一 error → error
 否则任一 warn → warn
 否则 ok
+```
+
+根因去重规则：
+
+```text
+- daemon.status_file error → daemon.stopped
+- identity.db_mailbox error + message.mailbox error → identity.stale_mailbox
+- daemon stopped 后派生的 daemon.http / wait.sse / daemon.version 不进入 root_causes
 ```
 
 退出码建议：

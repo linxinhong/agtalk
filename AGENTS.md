@@ -229,7 +229,7 @@ notify 是 agtalk 解决"agent 会偷懒"的机制：daemon 有新消息时**主
 
 ### 红线
 
-1. **notify 只推"有消息"信号，绝不推正文**（防 shell 注入）。注入文本只含信号 + 取信命令模板（如 `[agtalk] 新消息，运行 agtalk detail -`）。
+1. **notify 只推"有消息"信号，绝不推正文**（防 shell 注入）。注入文本只含信号 + 取信命令模板（如 `[agtalk] 新消息，运行 agtalk msg read`）。
 2. **notify 是 pull 的互补，不是替代**。notify 失败时退化为纯 pull，消息仍在 DB 不丢。禁止把 notify 设计成"唯一投递路径"。
 3. **agent 可关闭 notify**（`join --notify none`）。禁止强制打扰。
 
@@ -243,8 +243,8 @@ agent 跑在不同环境，notify 必须多通道，按 agent `join` 时声明�
 
 ### 诚实标注局限
 
-- **"普通终端（无多路复用器）"无标准注入方式**——不假装能解决。文档明确：该环境下 notify 不生效，agent 需自查（detail -）或建议用户在 zellij/tmux 里跑 agent。agtalk-office 对此也无解。
-- 注入命令模板末尾（如 `agtalk detail -`）会读 stdin——若 agent pane 当前在交互提示中（sudo 密码/REPL），文本会被当输入。属固有风险，须在用户文档说明。
+- **"普通终端（无多路复用器）"无标准注入方式**——不假装能解决。文档明确：该环境下 notify 不生效，agent 需自查（`agtalk msg read`）或建议用户在 zellij/tmux 里跑 agent。agtalk-office 对此也无解。
+- 注入命令模板末尾（如 `agtalk msg read`）会读 stdin——若 agent pane 当前在交互提示中（sudo 密码/REPL），文本会被当输入。属固有风险，须在用户文档说明。
 
 ### 扩展性
 
@@ -364,12 +364,12 @@ notify（打扰层，design §5）：daemon 主动敲门 → agent 意识到"有
 **作为 agtalk 客户端的 agent，在每次完成一轮任务、准备回复用户之前，必须先执行：**
 
 ```bash
-agtalk detail -
+agtalk msg read
 ```
 
 行为：
 - **有新消息**：先处理该消息（继续对话 / 执行消息里的指令 / 告知用户有待处理事项），再回复用户当前任务。
-- **没有新消息**（命令返回错误"当前 inbox 没有可查看的消息"或类似）：不阻塞，立即继续回复用户。
+- **没有新消息**（命令返回错误码 `inbox_empty`）：不阻塞，立即继续回复用户。
 
 **这个检查必须在每轮任务后都执行，不能跳过。** 它是 agent 工作循环的一部分，开销很小（一次秒级命令），但确保 agtalk 消息不会"躺在 daemon 里没人取"。
 
@@ -379,7 +379,7 @@ agtalk detail -
 agent 标准循环：
   1. 接收用户/上游消息
   2. 调工具完成任务（含可能调 agtalk send 发消息给其他 agent/human）
-  3. 【必做】agtalk detail -   ← 检查 agtalk 收件箱
+  3. 【必做】agtalk msg read   ← 检查 agtalk 收件箱
        有新消息 → 处理（可能触发新一轮循环）
        无新消息 → 继续
   4. 回复用户
@@ -389,10 +389,10 @@ agent 标准循环：
 
 - **不是实时的**：如果 agent 正在执行一个长任务（如几分钟的代码生成），中途来的 agtalk 消息要等任务完成才被发现。这是不可避免的——agent 不会中断当前任务。
 - **约定不是强制**：这是行为约定，依赖 agent 遵守。配合 notify（design §5）的打扰信号，能显著提高 agent 遵守率（notify 让它"意识到该查"，本约定让它"真的查"）。
-- **需要时可用 wait 替代**：当 agent 明确在等某条特定回复（如刚发了审批请求等人类响应）且预期 30 秒内有结果，可用 `agtalk wait <msg-id> --timeout 30` 阻塞等，而不是反复 `detail -`。
+- **需要时可用 wait 替代**：当 agent 明确在等某条特定回复（如刚发了审批请求等人类响应）且预期 30 秒内有结果，可用 `agtalk wait <msg-id> --timeout 30` 阻塞等，而不是反复 `msg read`。
 
 ### 12.5 给 agent 实现者/skill 编写者的指引
 
-- 把"每轮任务后 `agtalk detail -`"写进 agent 的系统提示或 skill（见 `skills/agtalk-bridge/`）。
-- 在 agent 的工作循环代码里（若有），把 detail - 检查放在"回复用户前"的固定位置。
+- 把"每轮任务后 `agtalk msg read`"写进 agent 的系统提示或 skill（见 `skills/agtalk-bridge/`）。
+- 在 agent 的工作循环代码里（若有），把 `msg read` 检查放在"回复用户前"的固定位置。
 - 不要依赖 agent"自觉"——把这条作为明确指令写入 prompt/skill，而非含糊建议。

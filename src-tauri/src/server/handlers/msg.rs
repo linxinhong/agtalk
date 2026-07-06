@@ -270,8 +270,12 @@ pub fn handle_read(state: &AppState, headers: &HeaderMap, message_id: Option<Str
             },
         }
     } else {
-        // 读取所有未读并标记 read
+        // 读取所有未读并标记 read；空 inbox 返回稳定错误码 inbox_empty
         match inbox::inbox(&state.storage, &session.address, false) {
+            Ok(msgs) if msgs.is_empty() => ServerMsg::Error {
+                code: "inbox_empty".into(),
+                message: "当前 inbox 没有可查看的消息".into(),
+            },
             Ok(msgs) => {
                 let ids: Vec<String> = msgs.iter().map(|m| m.id.clone()).collect();
                 for id in &ids {
