@@ -457,7 +457,11 @@ fn print_agent_help(json: bool) {
 /// CLI 侧解析 notify 通道。对 `auto` / `plugin:<name>` 会调用插件 `discover`。
 /// 失败时返回错误，不自动降级，让 agent 明确知道原因。
 /// 对 `auto`，如果没有任何 plugin 就绪，返回 `("none", None)`。
-fn resolve_notify(notify: &str) -> Result<(String, Option<serde_json::Value>), CliError> {
+/// `agent_name` 仅在 join 场景传入，用于让插件重命名当前 pane/tab 等上下文。
+fn resolve_notify(
+    notify: &str,
+    agent_name: Option<&str>,
+) -> Result<(String, Option<serde_json::Value>), CliError> {
     let notify = notify.trim();
     if notify.eq_ignore_ascii_case("none") {
         return Ok(("none".to_string(), None));
@@ -466,7 +470,7 @@ fn resolve_notify(notify: &str) -> Result<(String, Option<serde_json::Value>), C
         for candidate in ["zellij", "tmux"] {
             let channel_name = format!("plugin:{}", candidate);
             if let Ok(channel) = crate::notify::plugin::PluginChannel::new(candidate) {
-                match channel.discover() {
+                match channel.discover_with_name(agent_name) {
                     Ok(endpoint) if endpoint.ready => {
                         return Ok((channel_name, Some(endpoint.endpoint)));
                     }
@@ -479,7 +483,7 @@ fn resolve_notify(notify: &str) -> Result<(String, Option<serde_json::Value>), C
     if let Some(plugin_name) = notify.strip_prefix("plugin:") {
         let channel = crate::notify::plugin::PluginChannel::new(plugin_name)
             .map_err(|e| CliError::new("notify_plugin_invalid", e.to_string()))?;
-        match channel.discover() {
+        match channel.discover_with_name(agent_name) {
             Ok(endpoint) if endpoint.ready => Ok((notify.to_string(), Some(endpoint.endpoint))),
             Ok(endpoint) => Err(CliError::new(
                 "notify_plugin_not_ready",
@@ -527,7 +531,7 @@ fn run(cli: Cli, json: bool) -> Result<(), CliError> {
                     notify,
                 } => {
                     let ctx = Context::pre_join().map_err(CliError::from)?;
-                    let (notify, notify_endpoint) = resolve_notify(&notify)?;
+                    let (notify, notify_endpoint) = resolve_notify(&notify, name.as_deref())?;
                     client::id::join(ctx, name, intro, workspace, notify, notify_endpoint, json)
                 }
                 IdCmd::Show => {

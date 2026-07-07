@@ -171,21 +171,29 @@ impl PluginChannel {
     }
 
     /// 调用 `<plugin> discover` 获取当前 endpoint。
-    pub fn discover(&self) -> Result<PluginEndpoint, NotifyError> {
+    /// 如果 `agent_name` 不为空，会通过环境变量 `AGTALK_NOTIFY_NAME` 传给插件，
+    /// 让插件有机会把当前 pane/tab 等上下文重命名为 agent 名字。
+    pub fn discover_with_name(
+        &self,
+        agent_name: Option<&str>,
+    ) -> Result<PluginEndpoint, NotifyError> {
         let plugin_path = self.resolve_binary()?;
         Self::validate_binary(&plugin_path)?;
 
-        let output = Command::new(&plugin_path)
-            .arg("discover")
-            .output()
-            .map_err(|e| {
-                NotifyError::Other(format!(
-                    "无法执行插件 discover {} ({}): {}",
-                    self.name,
-                    plugin_path.display(),
-                    e
-                ))
-            })?;
+        let mut cmd = Command::new(&plugin_path);
+        cmd.arg("discover");
+        if let Some(name) = agent_name {
+            cmd.env("AGTALK_NOTIFY_NAME", name);
+        }
+
+        let output = cmd.output().map_err(|e| {
+            NotifyError::Other(format!(
+                "无法执行插件 discover {} ({}): {}",
+                self.name,
+                plugin_path.display(),
+                e
+            ))
+        })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -211,6 +219,11 @@ impl PluginChannel {
         }
 
         Ok(endpoint)
+    }
+
+    /// 不带 agent 名字的 `discover`，用于非 join 场景（doctor、auto detect、retry 等）。
+    pub fn discover(&self) -> Result<PluginEndpoint, NotifyError> {
+        self.discover_with_name(None)
     }
 
     /// 调用 `<plugin> send [--dry-run]`。
