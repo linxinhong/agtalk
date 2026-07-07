@@ -346,6 +346,12 @@ pub enum ServerMsg {
         workspace: String,
         intro: String,
     },
+    IdentityLeft {
+        address: String,
+        name: String,
+        workspace: String,
+        removed_session: bool,
+    },
     LookupResult {
         mailboxes: Vec<LookupMailbox>,
     },

@@ -62,6 +62,13 @@ pub fn remove_pid(dot_agtalk: &Path, pid: u32) -> Result<(), IdentityError> {
     write(dot_agtalk, &map)
 }
 
+/// 删除 agents.json 中所有指向指定 name 的 pid entry。
+pub fn remove_by_name(dot_agtalk: &Path, name: &str) -> Result<(), IdentityError> {
+    let mut map = read(dot_agtalk)?;
+    map.agents.retain(|_, entry| entry.name != name);
+    write(dot_agtalk, &map)
+}
+
 pub fn get_by_pid(dot_agtalk: &Path, pid: u32) -> Result<Option<AgentEntry>, IdentityError> {
     let map = read(dot_agtalk)?;
     Ok(map.agents.get(&pid.to_string()).cloned())
@@ -89,5 +96,18 @@ mod tests {
         register_pid(&dot, 12345, "nora", 1_700_000_000).unwrap();
         super::remove_pid(&dot, 12345).unwrap();
         assert!(get_by_pid(&dot, 12345).unwrap().is_none());
+    }
+
+    #[test]
+    fn remove_by_name_removes_all_entries() {
+        let tmp = TempDir::new().unwrap();
+        let dot = tmp.path().join(".agtalk");
+        register_pid(&dot, 12345, "nora", 1_700_000_000).unwrap();
+        register_pid(&dot, 12346, "nora", 1_700_000_000).unwrap();
+        register_pid(&dot, 12347, "quinn", 1_700_000_000).unwrap();
+        super::remove_by_name(&dot, "nora").unwrap();
+        assert!(get_by_pid(&dot, 12345).unwrap().is_none());
+        assert!(get_by_pid(&dot, 12346).unwrap().is_none());
+        assert_eq!(get_by_pid(&dot, 12347).unwrap().unwrap().name, "quinn");
     }
 }

@@ -2,6 +2,7 @@
 
 pub(crate) mod client;
 pub mod context;
+pub mod context_error;
 pub mod daemon;
 pub mod output;
 pub mod runner;
@@ -525,7 +526,8 @@ fn run(cli: Cli, json: bool) -> Result<(), CliError> {
                     client::id::show(ctx, json)
                 }
                 IdCmd::Lookup { name } => {
-                    let ctx = Context::current(as_name).map_err(CliError::from)?;
+                    // lookup 是“无身份命令”：不需要当前 session，只访问 daemon。
+                    let ctx = Context::daemon_only().map_err(CliError::from)?;
                     client::id::lookup(ctx, name, json)
                 }
                 IdCmd::Leave { purge } => {

@@ -218,18 +218,17 @@ pub fn handle_leave(state: &AppState, headers: &HeaderMap, _purge: bool) -> Serv
             message: e.to_string(),
         };
     }
-    if let Err(e) = session_file_mod::remove(&state.dot_agtalk, &session.name) {
-        return ServerMsg::Error {
-            code: "leave_failed".into(),
-            message: e.to_string(),
-        };
-    }
-    if let Some(pid) = session.pid {
-        let _ = agents_map::remove_pid(&state.dot_agtalk, pid);
-    }
+    let removed_session = session_file_mod::remove(&state.dot_agtalk, &session.name).is_ok();
+    // 清理所有指向该 name 的 pid 锚点，避免 stale agents.json。
+    let _ = agents_map::remove_by_name(&state.dot_agtalk, &session.name);
     crate::mem::index::remove(&state.storage, &session.address);
 
-    ServerMsg::Pong
+    ServerMsg::IdentityLeft {
+        address: session.address,
+        name: session.name,
+        workspace: session.workspace,
+        removed_session,
+    }
 }
 
 pub fn handle_browser_join(
@@ -641,6 +640,57 @@ mod tests {
             }
             other => panic!("expected LookupResult, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn leave_returns_identity_left_and_removes_all_pid_entries() {
+        let (state, _tmp) = test_state();
+        let (pid, start_time) = current_pid_start_time();
+
+        handle_join(
+            &state,
+            Some("reviewer".into()),
+            Some("展示用 intro".into()),
+            Some("agtalk".into()),
+            "none".into(),
+            None,
+            pid,
+            start_time,
+        );
+
+        // 额外注册几个指向 reviewer 的 pid
+        agents_map::register_pid(&state.dot_agtalk, 12345, "reviewer", 1_700_000_000).unwrap();
+        agents_map::register_pid(&state.dot_agtalk, 12346, "reviewer", 1_700_000_001).unwrap();
+
+        let session = session_file::read(&state.dot_agtalk, "reviewer").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("X-AgTalk-Address", session.address.parse().unwrap());
+        headers.insert("X-AgTalk-Pid", pid.to_string().parse().unwrap());
+        headers.insert(
+            "X-AgTalk-Start-Time",
+            start_time.to_string().parse().unwrap(),
+        );
+
+        let msg = handle_leave(&state, &headers, false);
+        match msg {
+            ServerMsg::IdentityLeft {
+                name,
+                removed_session,
+                ..
+            } => {
+                assert_eq!(name, "reviewer");
+                assert!(removed_session);
+            }
+            other => panic!("expected IdentityLeft, got {:?}", other),
+        }
+
+        assert!(session_file::read(&state.dot_agtalk, "reviewer").is_err());
+        assert!(agents_map::get_by_pid(&state.dot_agtalk, 12345)
+            .unwrap()
+            .is_none());
+        assert!(agents_map::get_by_pid(&state.dot_agtalk, 12346)
+            .unwrap()
+            .is_none());
     }
 
     #[test]

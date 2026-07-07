@@ -9,6 +9,8 @@ use std::process::ExitCode;
 pub struct CliError {
     pub code: String,
     pub message: String,
+    /// --json 输出时附加的字段，如 identity_ambiguous 的 candidates。
+    pub extra: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl CliError {
@@ -16,7 +18,13 @@ impl CliError {
         Self {
             code: code.into(),
             message: message.into(),
+            extra: None,
         }
+    }
+
+    pub fn with_extra(mut self, extra: serde_json::Map<String, serde_json::Value>) -> Self {
+        self.extra = Some(extra);
+        self
     }
 }
 
@@ -25,6 +33,28 @@ impl From<String> for CliError {
         Self {
             code: "error".to_string(),
             message,
+            extra: None,
+        }
+    }
+}
+
+impl From<crate::cli::context_error::IdentityResolutionError> for CliError {
+    fn from(e: crate::cli::context_error::IdentityResolutionError) -> Self {
+        let code = e.code().to_string();
+        let message = e.to_string();
+        let mut extra = serde_json::Map::new();
+        if let crate::cli::context_error::IdentityResolutionError::Ambiguous(names) = e {
+            extra.insert(
+                "candidates".to_string(),
+                serde_json::Value::Array(
+                    names.into_iter().map(serde_json::Value::String).collect(),
+                ),
+            );
+        }
+        Self {
+            code,
+            message,
+            extra: if extra.is_empty() { None } else { Some(extra) },
         }
     }
 }
@@ -35,6 +65,8 @@ struct JsonError<'a> {
     ty: &'a str,
     code: &'a str,
     message: &'a str,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    extra: Option<&'a serde_json::Map<String, serde_json::Value>>,
 }
 
 /// 运行一个命令并打印输出；--json 模式下错误输出到 stderr。
@@ -50,12 +82,33 @@ where
                     ty: "error",
                     code: &e.code,
                     message: &e.message,
+                    extra: e.extra.as_ref(),
                 };
                 eprintln!("{}", serde_json::to_string(&err).unwrap_or_default());
             } else {
-                eprintln!("{}: {}", e.code, e.message);
+                print_text_error(&e);
             }
             ExitCode::FAILURE
+        }
+    }
+}
+
+fn print_text_error(e: &CliError) {
+    eprintln!("{}: {}", e.code, e.message);
+    if let Some(extra) = &e.extra {
+        if let Some(candidates) = extra.get("candidates").and_then(|v| v.as_array()) {
+            eprintln!();
+            eprintln!("Candidates:");
+            for c in candidates {
+                if let Some(name) = c.as_str() {
+                    eprintln!("  - {}", name);
+                }
+            }
+            eprintln!();
+            eprintln!("Next:");
+            eprintln!("  agtalk --as <name> id show");
+            eprintln!("  agtalk --as <name> msg read");
+            eprintln!("  agtalk id lookup");
         }
     }
 }
@@ -111,6 +164,17 @@ fn print_text_server_msg(msg: &ServerMsg) {
             println!("name      : {}", name);
             println!("workspace : {}", workspace);
             println!("intro     : {}", intro);
+        }
+        ServerMsg::IdentityLeft {
+            address,
+            name,
+            workspace,
+            removed_session,
+        } => {
+            println!("left: {} {} {}", name, address, workspace);
+            if !removed_session {
+                println!("warning: session directory could not be removed");
+            }
         }
         ServerMsg::LookupResult { mailboxes } => {
             for mb in mailboxes {
@@ -583,6 +647,38 @@ fn format_uptime(seconds: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identity_left_text_format() {
+        let msg = ServerMsg::IdentityLeft {
+            address: "550e8400-e29b-41d4-a716-446655440000".into(),
+            name: "reviewer".into(),
+            workspace: "agtalk".into(),
+            removed_session: true,
+        };
+        // 简单验证 print 不 panic；格式由 print_text_server_msg 保证。
+        print_text_server_msg(&msg);
+    }
+
+    #[test]
+    fn identity_ambiguous_json_has_candidates() {
+        let mut extra = serde_json::Map::new();
+        extra.insert(
+            "candidates".to_string(),
+            serde_json::json!(["nora", "quinn"]),
+        );
+        let e = CliError::new("identity_ambiguous", "多个 session").with_extra(extra);
+        let json = serde_json::to_string(&JsonError {
+            ty: "error",
+            code: &e.code,
+            message: &e.message,
+            extra: e.extra.as_ref(),
+        })
+        .unwrap();
+        assert!(json.contains("identity_ambiguous"));
+        assert!(json.contains("candidates"));
+        assert!(json.contains("nora"));
+    }
 
     #[test]
     fn format_uptime_seconds() {
