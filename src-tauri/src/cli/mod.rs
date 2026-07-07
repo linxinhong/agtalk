@@ -26,6 +26,10 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
+    /// 输出完整 agent 使用指南（Markdown）
+    #[arg(long, global = true)]
+    agent_guide: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -281,6 +285,13 @@ pub(crate) enum ConfigCmd {
 pub fn run_cli() -> ExitCode {
     let cli = Cli::parse();
     let json = cli.json;
+    if cli.agent_guide {
+        let msg = ServerMsg::AgentGuide {
+            markdown: crate::mem::guide::agent_guide_markdown(),
+        };
+        print_server_msg(json, &msg);
+        return ExitCode::SUCCESS;
+    }
     run_with_output(json, || run(cli, json))
 }
 
@@ -360,8 +371,8 @@ fn agent_help_message() -> ServerMsg {
                     note: None,
                 },
                 AgentHelpExample {
-                    command: "agtalk mem pack agtalk/agent-guide".to_string(),
-                    note: Some("Full usage guide.".to_string()),
+                    command: "agtalk mem pack [topic]".to_string(),
+                    note: None,
                 },
             ],
         },
@@ -377,6 +388,10 @@ fn agent_help_message() -> ServerMsg {
 
     let more = vec![
         AgentHelpMore {
+            command: "agtalk --agent-guide".to_string(),
+            description: "full agent guide".to_string(),
+        },
+        AgentHelpMore {
             command: "agtalk --help".to_string(),
             description: "full command tree".to_string(),
         },
@@ -384,17 +399,13 @@ fn agent_help_message() -> ServerMsg {
             command: "agtalk <cmd> --help".to_string(),
             description: "command flags".to_string(),
         },
-        AgentHelpMore {
-            command: "agtalk mem pack agtalk/agent-guide".to_string(),
-            description: "full agent guide".to_string(),
-        },
     ];
 
     let text = format_agent_help_text(&more, &sections);
 
     ServerMsg::AgentHelp {
         text,
-        full_docs: "agtalk mem pack agtalk/agent-guide".to_string(),
+        full_docs: "agtalk --agent-guide".to_string(),
         more,
         sections,
     }
@@ -664,9 +675,10 @@ mod tests {
         };
         assert!(text.starts_with("agtalk agent quick guide"));
         assert!(text.contains("More:"));
+        assert!(text.contains("agtalk --agent-guide"));
         assert!(text.contains("agtalk --help"));
         assert!(text.contains("agtalk <cmd> --help"));
-        assert!(text.contains("agtalk mem pack agtalk/agent-guide"));
+        assert!(!text.contains("agtalk mem pack agtalk/agent-guide"));
         assert!(text.contains("inbox_empty means no message, not failure"));
         assert!(!text.contains("agent-learning-handbook"));
         // quick guide 不展开完整 Commands: 树
@@ -692,13 +704,8 @@ mod tests {
         for s in sections {
             assert!(text.contains(s), "missing section: {}", s);
         }
-        // guide command appears in More + Memory / plan
-        let count = text.matches("agtalk mem pack agtalk/agent-guide").count();
-        assert!(
-            count >= 2,
-            "guide command should appear at least twice, got {}",
-            count
-        );
+        // full guide entry appears exactly in More
+        assert!(text.contains("agtalk --agent-guide"));
     }
 
     #[test]
@@ -707,19 +714,32 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["type"], "agent_help");
-        assert_eq!(parsed["full_docs"], "agtalk mem pack agtalk/agent-guide");
+        assert_eq!(parsed["full_docs"], "agtalk --agent-guide");
 
         let more = parsed["more"].as_array().unwrap();
         assert_eq!(more.len(), 3);
+        assert!(more.iter().any(|m| m["command"] == "agtalk --agent-guide"));
         assert!(more.iter().any(|m| m["command"] == "agtalk --help"));
         assert!(more.iter().any(|m| m["command"] == "agtalk <cmd> --help"));
-        assert!(more
-            .iter()
-            .any(|m| m["command"] == "agtalk mem pack agtalk/agent-guide"));
 
         let sections = parsed["sections"].as_array().unwrap();
         assert_eq!(sections.len(), 7);
         assert_eq!(sections[0]["title"], "Identity");
         assert_eq!(sections[5]["title"], "Memory / plan");
+    }
+
+    #[test]
+    fn parse_agent_guide_flag_without_subcommand() {
+        let cli = Cli::try_parse_from(["agtalk", "--agent-guide"]).unwrap();
+        assert!(cli.agent_guide);
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn agent_guide_markdown_is_non_empty() {
+        let markdown = crate::mem::guide::agent_guide_markdown();
+        assert!(!markdown.is_empty());
+        assert!(markdown.contains("agtalk --agent-guide"));
+        assert!(markdown.contains("inbox_empty"));
     }
 }

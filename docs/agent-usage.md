@@ -110,7 +110,7 @@ agtalk tool doctor
 | 询问/审批 | `agtalk msg ask "<q>" --option a --option b --wait --timeout 60` |
 | 查看计划 | `agtalk mem plan show` |
 | 更新计划 | `agtalk mem plan update --plan plan.md --context context.md --summary "..."` |
-| 阅读本指南 | `agtalk mem pack agtalk/agent-guide` |
+| 阅读本指南 | `agtalk --agent-guide` |
 | YAML 编排 | `agtalk run [file.yaml]` |
 | 诊断 | `agtalk tool doctor` |
 

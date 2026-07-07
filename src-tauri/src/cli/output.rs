@@ -100,6 +100,7 @@ fn print_text_server_msg(msg: &ServerMsg) {
         ServerMsg::Ok { id } => println!("{}", id),
         ServerMsg::Error { code, message } => eprintln!("{}: {}", code, message),
         ServerMsg::AgentHelp { text, .. } => println!("{}", text),
+        ServerMsg::AgentGuide { markdown } => println!("{}", markdown),
         ServerMsg::Identity {
             address,
             name,

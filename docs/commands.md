@@ -417,8 +417,8 @@ fact decision rule procedure issue snippet preference summary note context
 - `mem add/search/show/list/pack` 默认只操作当前 agent 的 `.agtalk/<agent-name>/memory/entries.jsonl`。
 - 长期项目知识优先沉淀进项目文档。
 - `mem pack` 保留旧版价值：生成可注入 prompt/message 的通用 Markdown 上下文包。
-- 内置全量使用指南：`agtalk mem pack agtalk/agent-guide`，源文件为 `docs/agent-usage.md`，编译时嵌入二进制，不写入任何 agent memory 或 agtalk.db。
-- `agent-learning-handbook` 不再作为内置 guide 别名。
+- 内置全量使用指南：`agtalk --agent-guide`，源文件为 `docs/agent-usage.md`，编译时嵌入二进制，不写入任何 agent memory 或 agtalk.db。
+- `agent-learning-handbook` 与 `agtalk mem pack agtalk/agent-guide` 不再作为 guide 入口。
 
 ---
 
@@ -720,13 +720,13 @@ REST API 不新增轮询收信接口。需要“现在有什么”用 `msg inbox
 
 ## 12. agent 入口
 
-agtalk 只向 agent 公开三个入口：
+agtalk 只向 agent 公开四个入口：
 
 ```bash
-agtalk                              # agent quick guide（文本）
-agtalk --json                       # agent quick guide（JSON，供脚本解析）
-agtalk --help                       # 完整 CLI help
-agtalk mem pack agtalk/agent-guide  # 全量使用文档
+agtalk              # agent quick guide（文本）
+agtalk --json       # agent quick guide（JSON，供脚本解析）
+agtalk --agent-guide # 全量 agent 使用指南（Markdown）
+agtalk --help       # 完整 CLI help
 ```
 
 裸 `agtalk` 不是错误，而是 agent-first 默认入口：输出可直接执行的最小操作手册，按使用场景排序。
@@ -735,7 +735,9 @@ agtalk mem pack agtalk/agent-guide  # 全量使用文档
 agtalk agent quick guide
 
 More:
-  agtalk mem pack agtalk/agent-guide
+  agtalk --agent-guide     full agent guide
+  agtalk --help            full command tree
+  agtalk <cmd> --help      command flags
 
 Rules:
   - Route only by UUID. Use id lookup to find address.
@@ -766,14 +768,14 @@ Rules:
 
 6. Memory / plan
   agtalk mem plan show
-  agtalk mem pack agtalk/agent-guide
+  agtalk mem pack [topic]
 
 7. Diagnose
   agtalk tool doctor
 ```
 
 - `--json` 输出结构化 recipe，不输出长文本。
-- 完整说明通过 `agtalk mem pack agtalk/agent-guide` 获取。
+- 完整说明通过 `agtalk --agent-guide` 获取。
 - 不在这里解释 daemon / SSE / notify 原理。
 
 ---

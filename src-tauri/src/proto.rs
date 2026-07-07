@@ -303,6 +303,9 @@ pub enum ServerMsg {
         more: Vec<AgentHelpMore>,
         sections: Vec<AgentHelpSection>,
     },
+    AgentGuide {
+        markdown: String,
+    },
 
     // id
     Identity {

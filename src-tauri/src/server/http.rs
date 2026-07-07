@@ -1062,35 +1062,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v1_mem_pack_agent_guide_returns_built_in_guide() {
-        let (state, nora, _quinn, _tmp) = test_state();
-        let app = routes(state.clone());
-
-        let req = Request::builder()
-            .method("GET")
-            .uri("/api/v1/mem/pack?topic=agtalk/agent-guide")
-            .header("X-AgTalk-Address", nora.clone())
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let pack: ServerMsg = serde_json::from_slice(&bytes).unwrap();
-        match pack {
-            ServerMsg::MemPack { topic, markdown } => {
-                assert_eq!(topic, "agtalk/agent-guide");
-                assert!(!markdown.is_empty());
-                assert!(markdown.contains("agtalk mem pack agtalk/agent-guide"));
-                assert!(markdown.contains("inbox_empty"));
-            }
-            other => panic!("expected MemPack, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
     async fn v1_mem_pack_empty_topic_does_not_return_guide() {
         let (state, nora, _quinn, _tmp) = test_state();
         let app = routes(state.clone());
@@ -1111,6 +1082,34 @@ mod tests {
         match pack {
             ServerMsg::MemPack { topic, markdown } => {
                 assert_eq!(topic, "all");
+                assert!(markdown.is_empty());
+            }
+            other => panic!("expected MemPack, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn v1_mem_pack_agent_guide_no_longer_returns_built_in_guide() {
+        let (state, nora, _quinn, _tmp) = test_state();
+        let app = routes(state.clone());
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/v1/mem/pack?topic=agtalk/agent-guide")
+            .header("X-AgTalk-Address", nora.clone())
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let pack: ServerMsg = serde_json::from_slice(&bytes).unwrap();
+        match pack {
+            ServerMsg::MemPack { topic, markdown } => {
+                assert_eq!(topic, "agtalk/agent-guide");
+                // guide 已迁到 --agent-guide，mem pack 不再特殊返回
                 assert!(markdown.is_empty());
             }
             other => panic!("expected MemPack, got {:?}", other),
