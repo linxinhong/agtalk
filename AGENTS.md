@@ -257,7 +257,8 @@ GUI 通知、系统通知、webhook 等通过 `plugin:<name>` 实现，不内置
 ### 扩展性
 
 - notify 通道用 trait（`NotifyChannel`）抽象，每个通道一个实现。新增通道不改 daemon 核心。
-- 外部 notify 命令插件路径必须绝对，参数数组执行（不经 shell）。
+- 外部 notify 命令插件默认放在 `<config_dir>/plugins/`；配置中 `path` 为相对路径或纯文件名时，自动解析到该目录。
+- 外部 notify 命令插件参数数组执行（不经 shell）。
 
 ---
 

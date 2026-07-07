@@ -1217,42 +1217,61 @@ fn notify_checks(ctx: &DoctorContext, identity: &Option<ResolvedIdentity>) -> Ve
         match crate::config::AgConfig::load() {
             Ok(config) => match config.notify.plugins.get(name) {
                 Some(entry) => {
-                    let path = std::path::Path::new(&entry.path);
-                    if !path.is_absolute() {
-                        checks.push(check(
-                            "notify",
-                            "notify.plugin",
-                            "error",
-                            format!("插件 {} 路径不是绝对路径: {}", name, entry.path),
-                            Some("使用绝对路径配置插件"),
-                            None,
-                            serde_json::to_value(entry).unwrap_or_default(),
-                        ));
-                    } else if !path.exists() {
-                        checks.push(check(
-                            "notify",
-                            "notify.plugin",
-                            "error",
-                            format!("插件 {} 路径不存在: {}", name, entry.path),
-                            Some("确认插件文件已安装"),
-                            None,
-                            serde_json::to_value(entry).unwrap_or_default(),
-                        ));
-                    } else {
-                        checks.push(check(
-                            "notify",
-                            "notify.plugin",
-                            "ok",
-                            format!("插件 {} 配置有效: {}", name, entry.path),
-                            None,
-                            None,
-                            serde_json::to_value(entry).unwrap_or_default(),
-                        ));
+                    let resolved =
+                        crate::notify::plugin::PluginChannel::resolve_plugin_path(&entry.path);
+                    match resolved {
+                        Ok(path) => {
+                            if !path.exists() {
+                                let suggestion = format!(
+                                    "将插件放入 {} 或使用绝对路径",
+                                    crate::paths::plugins_dir()
+                                        .map(|p| p.to_string_lossy().into_owned())
+                                        .unwrap_or_else(|_| "<config_dir>/plugins".to_string())
+                                );
+                                checks.push(check(
+                                    "notify",
+                                    "notify.plugin",
+                                    "error",
+                                    format!(
+                                        "插件 {} 解析后路径不存在: {} (原始配置: {})",
+                                        name,
+                                        path.display(),
+                                        entry.path
+                                    ),
+                                    Some(&suggestion),
+                                    None,
+                                    serde_json::to_value(entry).unwrap_or_default(),
+                                ));
+                            } else {
+                                checks.push(check(
+                                    "notify",
+                                    "notify.plugin",
+                                    "ok",
+                                    format!("插件 {} 配置有效: {}", name, path.display()),
+                                    None,
+                                    None,
+                                    serde_json::to_value(entry).unwrap_or_default(),
+                                ));
+                            }
+                        }
+                        Err(e) => {
+                            checks.push(check(
+                                "notify",
+                                "notify.plugin",
+                                "error",
+                                format!("插件 {} 路径解析失败: {}", name, e),
+                                None,
+                                None,
+                                serde_json::to_value(entry).unwrap_or_default(),
+                            ));
+                        }
                     }
                 }
                 None => {
-                    let suggestion =
-                        format!("agtalk config set notify.plugins.{}.path <abs-path>", name);
+                    let suggestion = format!(
+                        "agtalk config set notify.plugins.{}.path <name-or-abs-path>",
+                        name
+                    );
                     checks.push(check(
                         "notify",
                         "notify.plugin",

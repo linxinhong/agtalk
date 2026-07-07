@@ -168,11 +168,11 @@ auto -> zellij -> tmux -> plugin auto-match -> none
     "default": "auto",
     "plugins": {
       "macos": {
-        "path": "/Users/me/.config/agtalk2/plugins/agtalk-notify-macos",
+        "path": "agtalk-notify-macos",
         "timeout_ms": 1000
       },
       "webhook": {
-        "path": "/Users/me/.config/agtalk2/plugins/agtalk-notify-webhook",
+        "path": "agtalk-notify-webhook",
         "timeout_ms": 2000
       }
     }
@@ -184,26 +184,37 @@ auto -> zellij -> tmux -> plugin auto-match -> none
 
 | 字段 | 必填 | 说明 |
 |---|---:|---|
-| `notify.plugins.<name>.path` | 是 | 插件可执行文件的绝对路径 |
+| `notify.plugins.<name>.path` | 是 | 插件可执行文件的路径 |
 | `notify.plugins.<name>.timeout_ms` | 否 | 超时时间，默认 1000ms |
 
-配置要求：
+路径解析规则：
 
-1. `path` 必须是绝对路径。
-2. 文件必须存在。
-3. 文件必须可执行。
-4. `timeout_ms` 必须是有限值，建议 500-3000ms。
-5. 插件名称只作为本地配置 key，不参与路由。
+1. **约定目录**：插件默认放在 `<config_dir>/plugins/`（macOS/Linux 通常为 `~/.config/agtalk2/plugins/`）。
+2. 如果 `path` 是**绝对路径**，按原样使用。
+3. 如果 `path` 是**相对路径或纯文件名**，自动解析为 `<config_dir>/plugins/<path>`。
+4. 文件必须存在且可执行。
+5. `timeout_ms` 必须是有限值，建议 500-3000ms。
+6. 插件名称只作为本地配置 key，不参与路由。
 
 示例配置命令：
 
 ```bash
-agtalk config set notify.plugins.macos.path /Users/me/.config/agtalk2/plugins/agtalk-notify-macos
+# 将插件放入约定目录
+mkdir -p ~/.config/agtalk2/plugins
+cp agtalk-notify-macos ~/.config/agtalk2/plugins/
+chmod +x ~/.config/agtalk2/plugins/agtalk-notify-macos
+
+# 配置时只需写文件名，会自动解析到 plugins 目录
+agtalk config set notify.plugins.macos.path agtalk-notify-macos
 agtalk config set notify.plugins.macos.timeout_ms 1000
 agtalk id join coder --notify plugin:macos
 ```
 
-如果 `config set` 不支持 `~` 展开，用户必须填写绝对路径。
+也支持绝对路径（旧写法仍兼容）：
+
+```bash
+agtalk config set notify.plugins.macos.path /Users/me/.config/agtalk2/plugins/agtalk-notify-macos
+```
 
 ---
 
@@ -360,7 +371,7 @@ chmod +x ~/.config/agtalk2/plugins/agtalk-notify-macos
 配置：
 
 ```bash
-agtalk config set notify.plugins.macos.path /Users/me/.config/agtalk2/plugins/agtalk-notify-macos
+agtalk config set notify.plugins.macos.path agtalk-notify-macos
 agtalk config set notify.plugins.macos.timeout_ms 1000
 agtalk id join coder --notify plugin:macos
 ```

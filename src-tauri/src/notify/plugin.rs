@@ -8,7 +8,7 @@ use crate::identity::session_file::NotifyTarget;
 use crate::notify::{NotifyChannel, NotifyError, NotifyHint};
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -37,29 +37,36 @@ impl PluginChannel {
         Ok(entry)
     }
 
-    /// 校验插件路径是否可用。
-    pub fn validate_entry(entry: &NotifyPluginEntry) -> Result<(), NotifyError> {
-        let path = Path::new(&entry.path);
-        if !path.is_absolute() {
-            return Err(NotifyError::Other(format!(
-                "插件路径必须是绝对路径: {}",
-                entry.path
-            )));
+    /// 解析插件路径：
+    /// - 绝对路径按原样使用；
+    /// - 相对路径或纯文件名解析为 `<config_dir>/plugins/<path>`。
+    pub fn resolve_plugin_path(raw_path: &str) -> Result<PathBuf, NotifyError> {
+        let path = Path::new(raw_path);
+        if path.is_absolute() {
+            return Ok(path.to_path_buf());
         }
+        let plugins_dir = crate::paths::plugins_dir()
+            .map_err(|e| NotifyError::Other(format!("无法定位插件目录: {}", e)))?;
+        Ok(plugins_dir.join(raw_path))
+    }
+
+    /// 校验插件路径是否可用。
+    pub fn validate_entry(entry: &NotifyPluginEntry) -> Result<PathBuf, NotifyError> {
+        let path = Self::resolve_plugin_path(&entry.path)?;
         if !path.exists() {
             return Err(NotifyError::Other(format!(
                 "插件路径不存在: {}",
-                entry.path
+                path.display()
             )));
         }
-        let metadata = std::fs::metadata(path).map_err(NotifyError::Io)?;
+        let metadata = std::fs::metadata(&path).map_err(NotifyError::Io)?;
         if metadata.permissions().mode() & 0o111 == 0 {
             return Err(NotifyError::Other(format!(
                 "插件文件不可执行: {}",
-                entry.path
+                path.display()
             )));
         }
-        Ok(())
+        Ok(path)
     }
 }
 
@@ -82,7 +89,7 @@ impl NotifyChannel for PluginChannel {
         }
 
         let entry = self.resolve_entry()?;
-        Self::validate_entry(&entry)?;
+        let plugin_path = Self::validate_entry(&entry)?;
 
         let payload = build_payload(hint);
         let json = serde_json::to_vec(&payload)
@@ -91,7 +98,7 @@ impl NotifyChannel for PluginChannel {
         let timeout_ms = entry.timeout_ms.unwrap_or(1000);
         let timeout = Duration::from_millis(timeout_ms);
 
-        let mut child = Command::new(&entry.path)
+        let mut child = Command::new(&plugin_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -99,7 +106,9 @@ impl NotifyChannel for PluginChannel {
             .map_err(|e| {
                 NotifyError::Other(format!(
                     "无法启动插件 {} ({}): {}",
-                    self.name, entry.path, e
+                    self.name,
+                    plugin_path.display(),
+                    e
                 ))
             })?;
 
@@ -238,13 +247,41 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_relative_path() {
-        let entry = NotifyPluginEntry {
-            path: "./plugin".to_string(),
-            timeout_ms: None,
-        };
-        let err = PluginChannel::validate_entry(&entry).unwrap_err();
-        assert!(err.to_string().contains("绝对路径"));
+    fn resolve_plugin_path_uses_absolute_as_is() {
+        let path = PluginChannel::resolve_plugin_path("/usr/bin/plugin").unwrap();
+        assert_eq!(path, PathBuf::from("/usr/bin/plugin"));
+    }
+
+    #[test]
+    fn resolve_plugin_path_resolves_filename_to_plugins_dir() {
+        let tmp = TempDir::new().unwrap();
+        let prev = std::env::var_os(CONFIG_DIR_ENV);
+        std::env::set_var(CONFIG_DIR_ENV, tmp.path());
+
+        let path = PluginChannel::resolve_plugin_path("my-plugin").unwrap();
+        assert_eq!(path, tmp.path().join("plugins").join("my-plugin"));
+
+        if let Some(v) = prev {
+            std::env::set_var(CONFIG_DIR_ENV, v);
+        } else {
+            std::env::remove_var(CONFIG_DIR_ENV);
+        }
+    }
+
+    #[test]
+    fn resolve_plugin_path_resolves_relative_to_plugins_dir() {
+        let tmp = TempDir::new().unwrap();
+        let prev = std::env::var_os(CONFIG_DIR_ENV);
+        std::env::set_var(CONFIG_DIR_ENV, tmp.path());
+
+        let path = PluginChannel::resolve_plugin_path("subdir/my-plugin").unwrap();
+        assert_eq!(path, tmp.path().join("plugins").join("subdir/my-plugin"));
+
+        if let Some(v) = prev {
+            std::env::set_var(CONFIG_DIR_ENV, v);
+        } else {
+            std::env::remove_var(CONFIG_DIR_ENV);
+        }
     }
 
     #[test]
@@ -294,6 +331,52 @@ mod tests {
         assert_eq!(payload.from_name, "nora");
         assert_eq!(payload.agent_name, "codex");
         assert_eq!(payload.type_, "notify");
+
+        if let Some(v) = prev {
+            std::env::set_var(CONFIG_DIR_ENV, v);
+        } else {
+            std::env::remove_var(CONFIG_DIR_ENV);
+        }
+    }
+
+    #[test]
+    fn plugin_success_with_filename_resolves_to_plugins_dir() {
+        let tmp = TempDir::new().unwrap();
+        let prev = std::env::var_os(CONFIG_DIR_ENV);
+        std::env::set_var(CONFIG_DIR_ENV, tmp.path());
+
+        let plugins_dir = tmp.path().join("plugins");
+        std::fs::create_dir_all(&plugins_dir).unwrap();
+
+        let out_path = tmp.path().join("out.json");
+        let script = format!("#!/bin/sh\ncat > {}\n", out_path.to_string_lossy());
+        let plugin_path = plugins_dir.join("fake-plugin.sh");
+        std::fs::write(&plugin_path, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&plugin_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let mut plugins = HashMap::new();
+        plugins.insert(
+            "test".to_string(),
+            NotifyPluginEntry {
+                path: "fake-plugin.sh".to_string(),
+                timeout_ms: Some(1000),
+            },
+        );
+        setup_config(&tmp, plugins);
+
+        let channel = PluginChannel::new("test");
+        let target = NotifyTarget::Plugin {
+            name: "test".to_string(),
+        };
+        channel.inject(&target, &hint()).unwrap();
+
+        let written = std::fs::read_to_string(&out_path).unwrap();
+        let payload: NotifyPluginPayload = serde_json::from_str(&written).unwrap();
+        assert_eq!(payload.from_name, "nora");
 
         if let Some(v) = prev {
             std::env::set_var(CONFIG_DIR_ENV, v);

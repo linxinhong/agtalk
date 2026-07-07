@@ -107,6 +107,24 @@ pub fn ensure_global_memory_dir() -> Result<PathBuf, PathsError> {
     Ok(dir)
 }
 
+/// notify 插件目录：<config_dir>/plugins
+pub fn plugins_dir() -> Result<PathBuf, PathsError> {
+    Ok(config_dir()?.join("plugins"))
+}
+
+/// 确保 notify 插件目录存在，权限 0700
+pub fn ensure_plugins_dir() -> Result<PathBuf, PathsError> {
+    let dir = plugins_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    {
+        use std::fs::Permissions;
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, Permissions::from_mode(0o700))?;
+    }
+    Ok(dir)
+}
+
 /// 设置文件权限 0600
 pub fn set_permissions_0600(path: &Path) -> Result<(), PathsError> {
     #[cfg(unix)]
@@ -166,6 +184,33 @@ mod tests {
         std::env::set_var(CONFIG_DIR_ENV, "/tmp/agtalk-test");
         let dir = global_memory_dir().unwrap();
         assert_eq!(dir, std::path::PathBuf::from("/tmp/agtalk-test/memory"));
+        if let Some(p) = previous {
+            std::env::set_var(CONFIG_DIR_ENV, p);
+        } else {
+            std::env::remove_var(CONFIG_DIR_ENV);
+        }
+    }
+
+    #[test]
+    fn plugins_dir_ends_with_plugins() {
+        let previous = std::env::var_os(CONFIG_DIR_ENV);
+        std::env::remove_var(CONFIG_DIR_ENV);
+        let dir = plugins_dir().unwrap();
+        assert_eq!(dir.file_name().unwrap(), "plugins");
+        assert!(dir.parent().unwrap().ends_with("agtalk2"));
+        if let Some(p) = previous {
+            std::env::set_var(CONFIG_DIR_ENV, p);
+        } else {
+            std::env::remove_var(CONFIG_DIR_ENV);
+        }
+    }
+
+    #[test]
+    fn plugins_dir_respects_env_override() {
+        let previous = std::env::var_os(CONFIG_DIR_ENV);
+        std::env::set_var(CONFIG_DIR_ENV, "/tmp/agtalk-test");
+        let dir = plugins_dir().unwrap();
+        assert_eq!(dir, std::path::PathBuf::from("/tmp/agtalk-test/plugins"));
         if let Some(p) = previous {
             std::env::set_var(CONFIG_DIR_ENV, p);
         } else {

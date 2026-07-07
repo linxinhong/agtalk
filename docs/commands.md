@@ -137,7 +137,8 @@ plugin:<name>     调用全局配置中注册的本地插件
 插件配置示例：
 
 ```bash
-agtalk config set notify.plugins.macos.path /Users/me/.config/agtalk2/plugins/agtalk-notify-macos
+# 插件放在 ~/.config/agtalk2/plugins/，配置时只需写文件名
+agtalk config set notify.plugins.macos.path agtalk-notify-macos
 agtalk config set notify.plugins.macos.timeout_ms 1000
 agtalk id join coder --notify plugin:macos
 ```
