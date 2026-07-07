@@ -16,6 +16,7 @@ use std::process::ExitCode;
 #[derive(Parser)]
 #[command(name = "agtalk")]
 #[command(about = "本地 Agent 对话总线")]
+#[command(after_help = "Run `agtalk` without arguments for the agent quick guide.")]
 struct Cli {
     /// 指定当前命令使用的本地身份（name）
     #[arg(long = "as", global = true)]
@@ -82,7 +83,8 @@ pub(crate) enum IdCmd {
         intro: Option<String>,
         #[arg(short, long)]
         workspace: Option<String>,
-        #[arg(short, long, default_value = "auto")]
+        /// 打扰通道：auto | none | zellij | tmux | gui | webhook:<url>
+        #[arg(short, long, default_value = "auto", value_name = "CHANNEL")]
         notify: String,
     },
     /// 当前身份
@@ -130,19 +132,27 @@ pub(crate) enum MsgCmd {
     },
     /// 向 human 发询问/审批
     Ask {
+        /// 询问/审批的标题或主问题
         message: String,
+        /// 追加的细化问题，可多次指定（逗号分隔）
         #[arg(long, value_delimiter = ',')]
         question: Vec<String>,
+        /// 选项，可多次指定（逗号分隔），如 approve,reject
         #[arg(long, value_delimiter = ',')]
         option: Vec<String>,
+        /// 推荐选项，需在 --option 中
         #[arg(long)]
         recommended: Option<String>,
+        /// 仅允许单选
         #[arg(long)]
         single: bool,
+        /// 仅返回选择结果，不附加说明
         #[arg(long)]
         select_only: bool,
+        /// 发送后阻塞等待回复
         #[arg(long)]
         wait: bool,
+        /// 等待超时秒数
         #[arg(short, long)]
         timeout: Option<u64>,
     },
@@ -164,6 +174,7 @@ pub(crate) enum MsgCmd {
         since: Option<i64>,
     },
     /// 下载附件（预留）
+    #[command(hide = true)]
     Attachment { attachment_id: String },
 }
 
@@ -203,8 +214,9 @@ pub(crate) enum MemCmd {
     },
     /// 打包 memory/内置 guide 为 prompt
     Pack {
-        /// 位置参数 topic
+        /// memory topic，例如 agtalk/agent-guide
         topic_pos: Option<String>,
+        /// memory topic，例如 agtalk/agent-guide（与位置参数等效，优先）
         #[arg(short, long)]
         topic: Option<String>,
         #[arg(short, long)]
@@ -237,6 +249,7 @@ pub(crate) enum MemPlanCmd {
 #[derive(Subcommand)]
 pub(crate) enum ToolCmd {
     /// daemon 生命周期（预留 action）
+    #[command(hide = true)]
     Daemon {
         #[arg(short, long)]
         action: Option<String>,
