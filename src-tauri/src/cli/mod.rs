@@ -173,7 +173,7 @@ pub(crate) enum MsgCmd {
         #[arg(short, long)]
         since: Option<i64>,
     },
-    /// 下载附件（预留）
+    /// 下载附件（尚未实现）
     #[command(hide = true)]
     Attachment { attachment_id: String },
 }
@@ -248,7 +248,7 @@ pub(crate) enum MemPlanCmd {
 
 #[derive(Subcommand)]
 pub(crate) enum ToolCmd {
-    /// daemon 生命周期（预留 action）
+    /// daemon 生命周期（尚未实现）
     #[command(hide = true)]
     Daemon {
         #[arg(short, long)]
