@@ -22,9 +22,9 @@ if [ "$CMD" = "discover" ]; then
         exit 0
     fi
 
-    # If join passed an agent name, rename the current pane to it.
+    # If join passed an agent name, rename the target pane to it.
     if [ -n "$AGENT_NAME" ]; then
-        zellij --session "$SESSION" action rename-pane "$AGENT_NAME" >/dev/null 2>&1 || true
+        zellij --session "$SESSION" action rename-pane --pane-id "$PANE" "$AGENT_NAME" >/dev/null 2>&1 || true
     fi
 
     printf '{"version":1,"type":"notify_endpoint","channel":"zellij","ready":true,"endpoint":{"session":"%s","pane":"%s"},"message":"zellij session %s, pane %s"}\n' "$SESSION" "$PANE" "$SESSION" "$PANE"
