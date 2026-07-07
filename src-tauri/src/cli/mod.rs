@@ -177,9 +177,6 @@ pub(crate) enum MsgCmd {
         #[arg(short, long)]
         since: Option<i64>,
     },
-    /// 下载附件（尚未实现）
-    #[command(hide = true)]
-    Attachment { attachment_id: String },
 }
 
 #[derive(Subcommand)]
@@ -252,12 +249,6 @@ pub(crate) enum MemPlanCmd {
 
 #[derive(Subcommand)]
 pub(crate) enum ToolCmd {
-    /// daemon 生命周期（尚未实现）
-    #[command(hide = true)]
-    Daemon {
-        #[arg(short, long)]
-        action: Option<String>,
-    },
     /// 诊断当前环境
     Doctor {
         /// 输出完整检查矩阵
@@ -571,10 +562,6 @@ fn run(cli: Cli, json: bool) -> Result<(), CliError> {
                 } => {
                     let ctx = Context::current(as_name).map_err(CliError::from)?;
                     client::msg::wait(ctx, message_id, timeout, since, json)
-                }
-                MsgCmd::Attachment { attachment_id } => {
-                    let ctx = Context::current(as_name).map_err(CliError::from)?;
-                    client::msg::attachment(ctx, attachment_id, json)
                 }
             },
             Commands::Mem { cmd } => {

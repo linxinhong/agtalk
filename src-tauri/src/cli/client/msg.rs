@@ -157,15 +157,6 @@ pub fn wait_result(
     rt.block_on(wait_sse(ctx, msg_id, timeout, since))
 }
 
-pub fn attachment(_ctx: Context, _attachment_id: String, json: bool) -> Result<(), CliError> {
-    let resp = ServerMsg::Error {
-        code: "not_supported".into(),
-        message: "附件下载尚未实现".into(),
-    };
-    print_server_msg(json, &resp);
-    Ok(())
-}
-
 async fn wait_sse(
     ctx: Context,
     msg_id: Option<String>,

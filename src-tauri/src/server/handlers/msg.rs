@@ -300,11 +300,3 @@ pub fn handle_wait(
 ) -> ServerMsg {
     not_supported("服务端阻塞 wait")
 }
-
-pub fn handle_attachment(
-    _state: &AppState,
-    _headers: &HeaderMap,
-    _attachment_id: String,
-) -> ServerMsg {
-    not_supported("附件下载")
-}

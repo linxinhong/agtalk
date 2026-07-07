@@ -1,6 +1,6 @@
 //! CLI `tool` 命名空间客户端。
 
-use crate::cli::client::{get, post};
+use crate::cli::client::get;
 use crate::cli::context::Context;
 use crate::cli::output::{print_doctor_msg, print_server_msg, CliError};
 use crate::cli::ToolCmd;
@@ -15,21 +15,6 @@ pub fn dispatch(
     as_name: Option<&str>,
 ) -> Result<(), CliError> {
     match cmd {
-        ToolCmd::Daemon { action } => {
-            let Some(ctx) = ctx else {
-                return Err(CliError::new(
-                    "identity_required",
-                    "tool daemon 需要当前身份，请先执行 agtalk id join",
-                ));
-            };
-            let resp = post(
-                &ctx,
-                "/api/v1/tool/daemon",
-                serde_json::json!({ "action": action }),
-            )?;
-            print_server_msg(json, &resp);
-            Ok(())
-        }
         ToolCmd::Doctor { debug } => {
             let dot_agtalk = std::env::current_dir()
                 .map_err(|e| CliError::from(e.to_string()))?

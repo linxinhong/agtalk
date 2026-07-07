@@ -29,7 +29,6 @@ pub fn routes(state: AppState) -> Router {
         .route("/api/v1/msg/inbox", get(msg_inbox_handler))
         .route("/api/v1/msg/read", post(msg_read_handler))
         .route("/api/v1/msg/wait", post(msg_wait_handler))
-        .route("/api/v1/msg/attachment/:id", get(msg_attachment_handler))
         // mem
         .route("/api/v1/mem/plan", get(mem_plan_show_handler))
         .route("/api/v1/mem/plan", patch(mem_plan_update_handler))
@@ -40,7 +39,6 @@ pub fn routes(state: AppState) -> Router {
         .route("/api/v1/mem/list", get(mem_list_handler))
         .route("/api/v1/mem/pack", get(mem_pack_handler))
         // tool
-        .route("/api/v1/tool/daemon", post(tool_daemon_handler))
         .route("/api/v1/tool/doctor", post(tool_doctor_handler))
         .route("/api/v1/tool/version", get(tool_version_handler))
         .route("/api/v1/tool/path", get(tool_path_handler))
@@ -287,14 +285,6 @@ async fn msg_wait_handler(
     ))
 }
 
-async fn msg_attachment_handler(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-) -> (StatusCode, Json<ServerMsg>) {
-    json_response(msg::handle_attachment(&state, &headers, id))
-}
-
 // ---- mem ----
 
 async fn mem_plan_show_handler(
@@ -409,19 +399,6 @@ async fn mem_pack_handler(
 }
 
 // ---- tool ----
-
-#[derive(serde::Deserialize)]
-struct ToolDaemonBody {
-    #[serde(default)]
-    action: Option<String>,
-}
-
-async fn tool_daemon_handler(
-    State(state): State<AppState>,
-    Json(body): Json<ToolDaemonBody>,
-) -> (StatusCode, Json<ServerMsg>) {
-    json_response(tool::handle_daemon(&state, body.action))
-}
 
 async fn tool_doctor_handler(State(state): State<AppState>) -> (StatusCode, Json<ServerMsg>) {
     json_response(tool::handle_doctor(&state))

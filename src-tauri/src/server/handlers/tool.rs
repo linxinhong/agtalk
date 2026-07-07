@@ -1,19 +1,8 @@
 //! `/api/v1/tool/*` handler。
 
 use crate::proto::ServerMsg;
-use crate::server::handlers::not_supported;
 use crate::server::state::AppState;
 use crate::tool::DoctorContext;
-
-pub fn handle_daemon(_state: &AppState, action: Option<String>) -> ServerMsg {
-    match action.as_deref() {
-        None | Some("status") => {
-            let _running = crate::cli::daemon::is_running();
-            ServerMsg::Pong
-        }
-        _ => not_supported("tool daemon action"),
-    }
-}
 
 pub fn handle_doctor(state: &AppState) -> ServerMsg {
     let ctx = DoctorContext::new(
