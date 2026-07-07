@@ -18,6 +18,9 @@ use std::process::ExitCode;
 #[command(name = "agtalk")]
 #[command(about = "本地 Agent 对话总线")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
+#[command(
+    help_template = "{name} {version}\n{about}\n\nUsage: {usage}\n\nCommands:\n{subcommands}\n\nOptions:\n{options}\n\n{after_help}"
+)]
 #[command(after_help = "Run `agtalk` without arguments for the agent quick guide.")]
 struct Cli {
     /// 指定当前命令使用的本地身份（name）
