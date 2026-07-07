@@ -120,6 +120,13 @@ pub struct AgentHelpSection {
     pub examples: Vec<AgentHelpExample>,
 }
 
+/// agent help 的更多说明入口。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentHelpMore {
+    pub command: String,
+    pub description: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
@@ -293,6 +300,7 @@ pub enum ServerMsg {
     AgentHelp {
         text: String,
         full_docs: String,
+        more: Vec<AgentHelpMore>,
         sections: Vec<AgentHelpSection>,
     },
 

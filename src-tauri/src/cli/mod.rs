@@ -8,7 +8,7 @@ pub mod runner;
 
 use crate::cli::context::Context;
 use crate::cli::output::{print_server_msg, run_with_output, CliError};
-use crate::proto::{AgentHelpExample, AgentHelpSection, ServerMsg};
+use crate::proto::{AgentHelpExample, AgentHelpMore, AgentHelpSection, ServerMsg};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -46,7 +46,7 @@ enum Commands {
         #[command(subcommand)]
         cmd: MsgCmd,
     },
-    /// 记忆/协作状态（预留）
+    /// 记忆/协作状态
     Mem {
         #[command(subcommand)]
         cmd: MemCmd,
@@ -56,12 +56,12 @@ enum Commands {
         #[command(subcommand)]
         cmd: ToolCmd,
     },
-    /// 配置（预留）
+    /// 配置
     Config {
         #[command(subcommand)]
         cmd: ConfigCmd,
     },
-    /// 运行 YAML 编排（预留）
+    /// 运行 YAML 编排
     Run { file: Option<PathBuf> },
 }
 
@@ -169,12 +169,12 @@ pub(crate) enum MsgCmd {
 
 #[derive(Subcommand)]
 pub(crate) enum MemCmd {
-    /// 查看 plan（预留）
+    /// 查看 plan
     Plan {
         #[command(subcommand)]
         cmd: MemPlanCmd,
     },
-    /// 添加记忆（预留）
+    /// 添加记忆
     Add {
         text: String,
         #[arg(short, long)]
@@ -186,7 +186,7 @@ pub(crate) enum MemCmd {
         #[arg(short, long, value_delimiter = ',')]
         tag: Vec<String>,
     },
-    /// 搜索记忆（预留）
+    /// 搜索记忆
     Search {
         query: String,
         #[arg(short, long)]
@@ -194,14 +194,14 @@ pub(crate) enum MemCmd {
         #[arg(short, long)]
         limit: Option<usize>,
     },
-    /// 查看单条记忆（预留）
+    /// 查看单条记忆
     Show { id: String },
-    /// 列出记忆（预留）
+    /// 列出记忆
     List {
         #[arg(short, long)]
         topic: Option<String>,
     },
-    /// 打包记忆为 prompt（预留）
+    /// 打包 memory/内置 guide 为 prompt
     Pack {
         /// 位置参数 topic
         topic_pos: Option<String>,
@@ -255,13 +255,13 @@ pub(crate) enum ToolCmd {
 
 #[derive(Subcommand)]
 pub(crate) enum ConfigCmd {
-    /// 显示全部配置（预留）
+    /// 显示全部配置
     Show,
-    /// 读取配置项（预留）
+    /// 读取配置项
     Get { key: String },
-    /// 设置配置项（预留）
+    /// 设置配置项
     Set { key: String, value: String },
-    /// 显示配置文件路径（预留）
+    /// 显示配置文件路径
     Path,
 }
 
@@ -362,29 +362,49 @@ fn agent_help_message() -> ServerMsg {
         },
     ];
 
-    let text = format_agent_help_text(&sections);
+    let more = vec![
+        AgentHelpMore {
+            command: "agtalk --help".to_string(),
+            description: "full command tree".to_string(),
+        },
+        AgentHelpMore {
+            command: "agtalk <cmd> --help".to_string(),
+            description: "command flags".to_string(),
+        },
+        AgentHelpMore {
+            command: "agtalk mem pack agtalk/agent-guide".to_string(),
+            description: "full agent guide".to_string(),
+        },
+    ];
+
+    let text = format_agent_help_text(&more, &sections);
 
     ServerMsg::AgentHelp {
         text,
         full_docs: "agtalk mem pack agtalk/agent-guide".to_string(),
+        more,
         sections,
     }
 }
 
-fn format_agent_help_text(sections: &[AgentHelpSection]) -> String {
+fn format_agent_help_text(more: &[AgentHelpMore], sections: &[AgentHelpSection]) -> String {
     let mut lines = vec![
         "agtalk agent quick guide".to_string(),
         String::new(),
         "More:".to_string(),
-        "  agtalk mem pack agtalk/agent-guide".to_string(),
-        String::new(),
-        "Rules:".to_string(),
-        "  - Route only by UUID. Use id lookup to find address.".to_string(),
-        "  - name is display only, not routing.".to_string(),
-        "  - Before replying to user, run msg read.".to_string(),
-        "  - inbox_empty means no message, not failure.".to_string(),
-        "  - Use --json when parsing output.".to_string(),
     ];
+
+    for m in more {
+        lines.push(format!("  {:<38} {}", m.command, m.description));
+    }
+
+    lines.push(String::new());
+    lines.push("Rules:".to_string());
+    lines.push("  - Route only by UUID. Use id lookup to find address.".to_string());
+    lines.push("  - name is display only, not routing.".to_string());
+    lines.push("  - Before replying to user, run msg read.".to_string());
+    lines.push("  - inbox_empty means no message, not failure.".to_string());
+    lines.push("  - Use --json when parsing output.".to_string());
 
     for section in sections {
         lines.push(String::new());
@@ -630,9 +650,14 @@ mod tests {
             _ => panic!("expected AgentHelp"),
         };
         assert!(text.starts_with("agtalk agent quick guide"));
-        assert!(text.contains("More:\n  agtalk mem pack agtalk/agent-guide"));
+        assert!(text.contains("More:"));
+        assert!(text.contains("agtalk --help"));
+        assert!(text.contains("agtalk <cmd> --help"));
+        assert!(text.contains("agtalk mem pack agtalk/agent-guide"));
         assert!(text.contains("inbox_empty means no message, not failure"));
         assert!(!text.contains("agent-learning-handbook"));
+        // quick guide 不展开完整 Commands: 树
+        assert!(!text.contains("Commands:"));
     }
 
     #[test]
@@ -670,6 +695,15 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["type"], "agent_help");
         assert_eq!(parsed["full_docs"], "agtalk mem pack agtalk/agent-guide");
+
+        let more = parsed["more"].as_array().unwrap();
+        assert_eq!(more.len(), 3);
+        assert!(more.iter().any(|m| m["command"] == "agtalk --help"));
+        assert!(more.iter().any(|m| m["command"] == "agtalk <cmd> --help"));
+        assert!(more
+            .iter()
+            .any(|m| m["command"] == "agtalk mem pack agtalk/agent-guide"));
+
         let sections = parsed["sections"].as_array().unwrap();
         assert_eq!(sections.len(), 7);
         assert_eq!(sections[0]["title"], "Identity");
