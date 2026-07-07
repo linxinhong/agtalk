@@ -215,7 +215,7 @@ Android APK 无法访问本地 `.agtalk/` 文件系统，因此 Android BLE tran
 
 - 源文件：`docs/agent-usage.md`。
 - 编译时通过 `include_str!` 嵌入二进制。
-- 通过 `agtalk mem pack agtalk/agent-guide` 读取。
+- 通过 `agtalk --agent-guide` 读取。
 - 不写入任何 agent 本地 memory，不进入 `<config_dir>/memory/`，不进入 `agtalk.db`。
 
 #### 2.8.2 agent 本地 memory（私有真相源）
