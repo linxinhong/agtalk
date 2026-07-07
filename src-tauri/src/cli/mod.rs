@@ -103,6 +103,11 @@ pub(crate) enum IdCmd {
         #[arg(long)]
         purge: bool,
     },
+    /// 清理无效/未激活身份（默认 dry-run）
+    Cleanup {
+        #[arg(long)]
+        execute: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -542,6 +547,10 @@ fn run(cli: Cli, json: bool) -> Result<(), CliError> {
                 IdCmd::Leave { purge } => {
                     let ctx = Context::current(as_name).map_err(CliError::from)?;
                     client::id::leave(ctx, purge, json)
+                }
+                IdCmd::Cleanup { execute } => {
+                    let ctx = Context::daemon_only().map_err(CliError::from)?;
+                    client::id::cleanup(ctx, execute, json)
                 }
             },
             Commands::Msg { cmd } => match cmd {

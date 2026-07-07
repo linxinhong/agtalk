@@ -90,6 +90,14 @@ pub fn list(storage: &Storage, name_filter: Option<&str>) -> Result<Vec<Mailbox>
     Ok(rows)
 }
 
+/// 返回所有 mailbox（含已 leave），用于 cleanup 等管理操作。
+pub fn list_including_left(storage: &Storage) -> Result<Vec<Mailbox>, IdentityError> {
+    let conn = storage.conn();
+    let mut stmt = conn.prepare("SELECT * FROM mailboxes ORDER BY created_at")?;
+    let mapped = stmt.query_map([], Mailbox::from_row)?;
+    Ok(mapped.collect::<Result<_, _>>()?)
+}
+
 /// 将 mailbox 标记为已离开（软删除），保留历史消息。
 pub fn mark_left(storage: &Storage, address: &str) -> Result<(), IdentityError> {
     let conn = storage.conn();

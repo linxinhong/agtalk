@@ -198,6 +198,32 @@ agtalk id leave [--purge]
 - 移除 SQLite 中该 agent 的在线 mem 索引。
 - `--purge` 保留给“即使 session 已失效也删除本地凭证”的场景。
 
+### 5.5 id cleanup
+
+```bash
+agtalk id cleanup [--execute]
+```
+
+批量清理当前工作目录下无效或未激活的 agent 身份。默认 dry-run，只列出会被清理的项；加 `--execute` 才真正执行。
+
+清理范围：
+
+- **stale_mailbox**：DB 中有 mailbox 记录，但 `.agtalk/<name>/session.json` 缺失或 address 不匹配。
+- **stale_session**：`.agtalk/<name>/session.json` 存在，但 DB 中无对应活跃 mailbox。
+- **stale_pid_anchor**：`agents.json` 中指向的 session 已不存在。
+
+被清理的 mailbox 会标记为 `left`（保留历史消息），session 目录会被删除，stale pid anchor 会从 `agents.json` 移除。
+
+文本输出示例（dry-run）：
+
+```text
+dry run: the following items would be removed
+
+  - reviewer (550e8400-...): stale_mailbox
+  - orphan (00000000-...): stale_session
+  - reviewer (pid 99999): stale_pid_anchor
+```
+
 ---
 
 ## 6. msg：消息与询问
@@ -802,7 +828,7 @@ More:
 | `join` / `attach` | `id join` |
 | `me` / `whoami` | `id show` |
 | `peers` / `lookup` | `id lookup` |
-| `leave` / `cleanup` | `id leave` / `tool doctor` 提示清理 |
+| `leave` / `cleanup` | `id leave` / `id cleanup` |
 | `agent` | `msg send` / `msg reply` / `msg done` |
 | `human` | `msg ask` |
 | `inbox` | `msg inbox` |

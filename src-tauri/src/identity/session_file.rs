@@ -87,6 +87,24 @@ pub fn remove(dot_agtalk: &Path, name: &str) -> Result<(), IdentityError> {
     Ok(())
 }
 
+/// 列出 `.agtalk/` 下所有包含 `session.json` 的 agent name。
+pub fn list_session_names(dot_agtalk: &Path) -> Result<Vec<String>, IdentityError> {
+    let mut names = Vec::new();
+    if !dot_agtalk.exists() {
+        return Ok(names);
+    }
+    for entry in std::fs::read_dir(dot_agtalk)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() && path.join("session.json").is_file() {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                names.push(name.to_string());
+            }
+        }
+    }
+    Ok(names)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

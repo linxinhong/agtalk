@@ -23,6 +23,7 @@ pub fn routes(state: AppState) -> Router {
         // id
         .route("/api/v1/id/join", post(id_join_handler))
         .route("/api/v1/id/leave", post(id_leave_handler))
+        .route("/api/v1/id/cleanup", post(id_cleanup_handler))
         .route("/api/v1/id/me", get(id_me_handler))
         .route("/api/v1/id/lookup", get(id_lookup_handler))
         // msg
@@ -108,6 +109,19 @@ async fn id_leave_handler(
     Json(body): Json<IdLeaveBody>,
 ) -> (StatusCode, Json<ServerMsg>) {
     json_response(id::handle_leave(&state, &headers, body.purge))
+}
+
+#[derive(serde::Deserialize)]
+struct IdCleanupBody {
+    #[serde(default)]
+    execute: bool,
+}
+
+async fn id_cleanup_handler(
+    State(state): State<AppState>,
+    Json(body): Json<IdCleanupBody>,
+) -> (StatusCode, Json<ServerMsg>) {
+    json_response(id::handle_cleanup(&state, body.execute))
 }
 
 async fn id_me_handler(

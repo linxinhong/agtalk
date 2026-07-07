@@ -74,6 +74,30 @@ pub fn get_by_pid(dot_agtalk: &Path, pid: u32) -> Result<Option<AgentEntry>, Ide
     Ok(map.agents.get(&pid.to_string()).cloned())
 }
 
+/// 删除 agents.json 中所有 session 已经不存在的 pid entry。
+/// `valid_names` 是 `.agtalk/` 下仍有 session.json 的 agent name 集合。
+/// 返回被删除的 (pid, name) 列表。
+pub fn cleanup_stale_pids(
+    dot_agtalk: &Path,
+    valid_names: &[String],
+) -> Result<Vec<(u32, String)>, IdentityError> {
+    let mut map = read(dot_agtalk)?;
+    let valid: std::collections::HashSet<_> = valid_names.iter().cloned().collect();
+    let mut removed = Vec::new();
+    map.agents.retain(|pid_str, entry| {
+        if valid.contains(&entry.name) {
+            true
+        } else {
+            if let Ok(pid) = pid_str.parse::<u32>() {
+                removed.push((pid, entry.name.clone()));
+            }
+            false
+        }
+    });
+    write(dot_agtalk, &map)?;
+    Ok(removed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

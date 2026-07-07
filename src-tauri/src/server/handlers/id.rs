@@ -207,6 +207,131 @@ pub fn handle_leave(state: &AppState, headers: &HeaderMap, _purge: bool) -> Serv
     }
 }
 
+/// 批量清理无效/未激活身份。
+/// 默认 dry-run，返回候选列表；`execute=true` 时执行删除。
+pub fn handle_cleanup(state: &AppState, execute: bool) -> ServerMsg {
+    let mut removed: Vec<crate::proto::CleanupItem> = Vec::new();
+    let skipped: Vec<crate::proto::CleanupItem> = Vec::new();
+
+    // 1. 收集 DB 中所有 mailbox。
+    let mailboxes = match mailbox_db::list_including_left(&state.storage) {
+        Ok(mbs) => mbs,
+        Err(e) => {
+            return ServerMsg::Error {
+                code: "cleanup_failed".into(),
+                message: e.to_string(),
+            }
+        }
+    };
+    let mb_by_address: std::collections::HashMap<String, &mailbox_db::Mailbox> = mailboxes
+        .iter()
+        .map(|mb| (mb.address.clone(), mb))
+        .collect();
+    let _mb_by_name: std::collections::HashMap<String, &mailbox_db::Mailbox> =
+        mailboxes.iter().map(|mb| (mb.name.clone(), mb)).collect();
+
+    // 2. 收集文件系统中所有 session。
+    let session_names = match session_file_mod::list_session_names(&state.dot_agtalk) {
+        Ok(names) => names,
+        Err(e) => {
+            return ServerMsg::Error {
+                code: "cleanup_failed".into(),
+                message: e.to_string(),
+            }
+        }
+    };
+    let mut session_by_name: std::collections::HashMap<String, session_file_mod::SessionFile> =
+        std::collections::HashMap::new();
+    for name in &session_names {
+        if let Ok(session) = session_file_mod::read(&state.dot_agtalk, name) {
+            session_by_name.insert(name.clone(), session);
+        }
+    }
+
+    // 3. stale mailbox：DB 有记录，但 session 缺失或 address 不匹配。
+    for mb in &mailboxes {
+        let stale = match session_by_name.get(&mb.name) {
+            Some(session) if session.address == mb.address && mb.left_at.is_none() => false,
+            Some(_) => true,
+            None => true,
+        };
+        if stale {
+            let item = crate::proto::CleanupItem {
+                name: mb.name.clone(),
+                address: mb.address.clone(),
+                reason: "stale_mailbox".into(),
+            };
+            if execute {
+                // 统一标记 left，避免外键约束导致物理删除失败；同时清理 mem_index。
+                let _ = mailbox_db::mark_left(&state.storage, &mb.address);
+                crate::mem::index::remove(&state.storage, &mb.address);
+                removed.push(item);
+            } else {
+                removed.push(item);
+            }
+        }
+    }
+
+    // 4. stale session：session 存在，但 DB mailbox 缺失或已 left。
+    for (name, session) in &session_by_name {
+        let stale = !matches!(
+            mb_by_address.get(&session.address),
+            Some(mb) if mb.left_at.is_none() && mb.name == *name
+        );
+        if stale {
+            let item = crate::proto::CleanupItem {
+                name: name.clone(),
+                address: session.address.clone(),
+                reason: "stale_session".into(),
+            };
+            if execute {
+                let _ = session_file_mod::remove(&state.dot_agtalk, name);
+                removed.push(item);
+            } else {
+                removed.push(item);
+            }
+        }
+    }
+
+    // 5. stale pid anchor：agents.json 指向的 session 已不存在。
+    let valid_session_names: Vec<String> = session_by_name.keys().cloned().collect();
+    match agents_map::cleanup_stale_pids(&state.dot_agtalk, &valid_session_names) {
+        Ok(stale_pids) => {
+            for (pid, name) in stale_pids {
+                let address = session_by_name
+                    .get(&name)
+                    .map(|s| s.address.clone())
+                    .unwrap_or_default();
+                removed.push(crate::proto::CleanupItem {
+                    name: format!("{} (pid {})", name, pid),
+                    address,
+                    reason: "stale_pid_anchor".into(),
+                });
+            }
+        }
+        Err(e) => {
+            return ServerMsg::Error {
+                code: "cleanup_failed".into(),
+                message: e.to_string(),
+            }
+        }
+    }
+
+    if !execute {
+        ServerMsg::CleanupResult {
+            dry_run: true,
+            removed,
+            skipped,
+        }
+    } else {
+        ServerMsg::CleanupResult {
+            dry_run: false,
+            removed,
+            skipped,
+        }
+    }
+}
+
 pub fn handle_browser_join(
     state: &AppState,
     name: Option<String>,
@@ -685,6 +810,163 @@ mod tests {
                 assert!(!mb.notify_ready);
             }
             other => panic!("expected LookupResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cleanup_dry_run_lists_stale_mailbox() {
+        let (state, _tmp) = test_state();
+        let (pid, start_time) = current_pid_start_time();
+
+        handle_join(
+            &state,
+            Some("reviewer".into()),
+            Some("展示用 intro".into()),
+            "none".into(),
+            None,
+            pid,
+            start_time,
+        );
+
+        // 删除 session 但保留 DB mailbox，制造 stale mailbox
+        // 同时 agents.json 中的 pid anchor 也会变成 stale。
+        let session_path = state.dot_agtalk.join("reviewer").join("session.json");
+        std::fs::remove_file(session_path).unwrap();
+
+        let msg = handle_cleanup(&state, false);
+        match msg {
+            ServerMsg::CleanupResult {
+                dry_run,
+                removed,
+                skipped,
+            } => {
+                assert!(dry_run);
+                let reasons: Vec<_> = removed.iter().map(|i| i.reason.as_str()).collect();
+                assert!(reasons.contains(&"stale_mailbox"));
+                assert!(reasons.contains(&"stale_pid_anchor"));
+                assert!(skipped.is_empty());
+            }
+            other => panic!("expected CleanupResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cleanup_execute_removes_stale_mailbox() {
+        let (state, _tmp) = test_state();
+        let (pid, start_time) = current_pid_start_time();
+
+        handle_join(
+            &state,
+            Some("reviewer".into()),
+            Some("展示用 intro".into()),
+            "none".into(),
+            None,
+            pid,
+            start_time,
+        );
+
+        let session_path = state.dot_agtalk.join("reviewer").join("session.json");
+        std::fs::remove_file(session_path).unwrap();
+
+        let msg = handle_cleanup(&state, true);
+        match msg {
+            ServerMsg::CleanupResult {
+                dry_run,
+                removed,
+                skipped,
+            } => {
+                assert!(!dry_run);
+                let reasons: Vec<_> = removed.iter().map(|i| i.reason.as_str()).collect();
+                assert!(reasons.contains(&"stale_mailbox"));
+                assert!(reasons.contains(&"stale_pid_anchor"));
+                assert!(skipped.is_empty());
+            }
+            other => panic!("expected CleanupResult, got {:?}", other),
+        }
+
+        // 清理后 lookup 不应再返回 reviewer（mailbox 已被标记 left）
+        let msg = handle_lookup(&state, None);
+        match msg {
+            ServerMsg::LookupResult { mailboxes } => {
+                assert!(mailboxes.is_empty());
+            }
+            other => panic!("expected LookupResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cleanup_removes_stale_session() {
+        let (state, _tmp) = test_state();
+
+        // 直接写入一个无对应 mailbox 的 session 文件
+        let session = session_file::SessionFile {
+            address: "00000000-0000-0000-0000-000000000001".to_string(),
+            name: "orphan".to_string(),
+            workspace: "".to_string(),
+            intro: "no mailbox".to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            command: "".to_string(),
+            notify_channel: "none".to_string(),
+            notify_target: Default::default(),
+        };
+        session_file::write(&state.dot_agtalk, "orphan", &session).unwrap();
+
+        let msg = handle_cleanup(&state, true);
+        match msg {
+            ServerMsg::CleanupResult {
+                dry_run,
+                removed,
+                skipped,
+            } => {
+                assert!(!dry_run);
+                let reasons: Vec<_> = removed.iter().map(|i| i.reason.as_str()).collect();
+                assert!(reasons.contains(&"stale_session"));
+                assert!(skipped.is_empty());
+            }
+            other => panic!("expected CleanupResult, got {:?}", other),
+        }
+
+        assert!(session_file::read(&state.dot_agtalk, "orphan").is_err());
+    }
+
+    #[test]
+    fn cleanup_removes_stale_pid_anchors() {
+        let (state, _tmp) = test_state();
+        let (pid, start_time) = current_pid_start_time();
+
+        handle_join(
+            &state,
+            Some("reviewer".into()),
+            Some("展示用 intro".into()),
+            "none".into(),
+            None,
+            pid,
+            start_time,
+        );
+
+        // 删除 session，但保留指向 reviewer 的 pid anchor
+        let session_path = state.dot_agtalk.join("reviewer").join("session.json");
+        std::fs::remove_file(session_path).unwrap();
+        agents_map::register_pid(&state.dot_agtalk, 99999, "reviewer", start_time).unwrap();
+
+        let msg = handle_cleanup(&state, true);
+        match msg {
+            ServerMsg::CleanupResult {
+                dry_run,
+                removed,
+                skipped,
+            } => {
+                assert!(!dry_run);
+                let reasons: Vec<_> = removed.iter().map(|i| i.reason.as_str()).collect();
+                assert!(reasons.contains(&"stale_mailbox"));
+                assert!(reasons.contains(&"stale_pid_anchor"));
+                assert!(skipped.is_empty());
+
+                assert!(removed
+                    .iter()
+                    .any(|i| { i.reason == "stale_pid_anchor" && i.name.contains("99999") }));
+            }
+            other => panic!("expected CleanupResult, got {:?}", other),
         }
     }
 }

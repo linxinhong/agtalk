@@ -17,13 +17,13 @@ agtalk 是**本地 Agent 对话总线**。daemon 是唯一真相来源，CLI / G
 ## 2. 架构红线（不可违反）
 
 1. **路由只认 UUID**。`send(to=address)`，address 是 UUID。任何按 name 路由的代码都是错的。
-2. **name 不唯一，纯展示**。name 永远不进路由查询。消歧在调用方，用 lookup 返回的 intro+workspace。
+2. **name 不唯一，纯展示**。name 永远不进路由查询。消歧在调用方，用 lookup 返回的 address+intro。
 3. **身份载体 = 文件系统**（`.agtalk/<name>/session.json` + `agents.json`）。**禁止**让 agent 持有/记忆高熵 token 作为认证锚（compact 会丢）。认证链：PID → agents.json → name → session.json → UUID。
    - **浏览器扩展域例外**：扩展无法访问本地 `.agtalk/` 文件系统，因此由 daemon 通过 `POST /api/v1/browser/join` 颁发高熵 token，扩展仅存于 `chrome.storage.local`；daemon 在 `browser_sessions` 表校验该 token。该例外**仅限浏览器域**，不得扩展到 CLI/GUI/agent-agent 域。
 4. **SSE 是唯一推送机制**。**禁止**引入长轮询/短轮询/双机制并存。
 5. **消息推送前必须先持久化**（at-least-once）。event_id 单调，支持 Last-Event-ID 重放。
 6. **三域统一**：human/browser 不是特例，都是不同生命周期的 mailbox。
-7. **mailbox 生命周期 = 文件夹生命周期**。daemon 的 lookup 表是文件系统的镜像，不是独立真相源。消除身份用 `agtalk leave`（实时）+ 惰性清理（兜底）。
+7. **mailbox 生命周期 = 文件夹生命周期**。daemon 的 lookup 表是文件系统的镜像，不是独立真相源。消除身份用 `agtalk id leave`（实时）+ `agtalk id cleanup`（批量清理）+ 惰性清理（兜底）。
 8. **agent-first 身份选择**：`--as <name>` 与 `AGTALK_NAME=<name>` 只用于选择本地 `session.json`，不参与消息路由。`agtalk id join <name>` 是幂等的：session 存在则复用原 address，仅更新 PID/start_time 锚点；不存在才创建新 mailbox。
 
 ---
@@ -319,7 +319,7 @@ pnpm tauri dev -- gui
 # 常用 agent 命令
 agtalk                                 # agent 最小必读帮助
 agtalk --json                          # agent 最小必读帮助（JSON）
-agtalk id join <name> --intro ... --workspace ...
+agtalk id join <name> --intro ...
 agtalk id show
 agtalk --as <name> id show             # 指定本地身份
 AGTALK_NAME=<name> agtalk id show      # 通过环境变量指定身份

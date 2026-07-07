@@ -55,3 +55,13 @@ pub fn lookup(ctx: Context, name: Option<String>, json: bool) -> Result<(), CliE
     print_server_msg(json, &resp);
     Ok(())
 }
+
+pub fn cleanup(ctx: Context, execute: bool, json: bool) -> Result<(), CliError> {
+    let resp = post(
+        &ctx,
+        "/api/v1/id/cleanup",
+        serde_json::json!({ "execute": execute }),
+    )?;
+    print_server_msg(json, &resp);
+    Ok(())
+}

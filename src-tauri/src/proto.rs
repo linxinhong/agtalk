@@ -32,6 +32,14 @@ impl LookupMailbox {
     }
 }
 
+/// cleanup 单条结果项。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CleanupItem {
+    pub name: String,
+    pub address: String,
+    pub reason: String,
+}
+
 pub fn default_notify() -> String {
     "auto".to_string()
 }
@@ -179,6 +187,10 @@ pub enum ClientMsg {
     IdLeave {
         #[serde(default)]
         purge: bool,
+    },
+    IdCleanup {
+        #[serde(default)]
+        execute: bool,
     },
 
     // msg
@@ -348,6 +360,11 @@ pub enum ServerMsg {
     },
     LookupResult {
         mailboxes: Vec<LookupMailbox>,
+    },
+    CleanupResult {
+        dry_run: bool,
+        removed: Vec<CleanupItem>,
+        skipped: Vec<CleanupItem>,
     },
 
     // msg

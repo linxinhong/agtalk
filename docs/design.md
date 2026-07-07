@@ -106,6 +106,10 @@ Headers: X-AgTalk-Address, X-AgTalk-Pid, X-AgTalk-Start-Time
 
 GET /api/v1/id/lookup?name=nora  （或无参列全部）
 → {type: "lookup_result", mailboxes: [{address: UUID, name: "nora", intro: "前端 review"}, ...]}
+
+POST /api/v1/id/cleanup
+Body: {execute?: bool}
+→ {type: "cleanup_result", dry_run: bool, removed: [{name, address, reason}], skipped: [{name, address, reason}]}
 ```
 
 消息（msg）：
@@ -255,7 +259,7 @@ public_topics    TEXT
 ```
 
 - agent 上线（`id join`）时，daemon 从 `.agtalk/<name>/memory/` 读取并注册/刷新该索引。
-- agent 下线（`id leave`）或 session 失效、惰性清理时，daemon 移除该索引。
+- agent 下线（`id leave`）、`id cleanup` 清理或 session 失效、惰性清理时，daemon 移除该索引。
 - 离线 agent 的长期记忆仍在文件系统，但不再进入 daemon 的在线查询结果。
 - 其他 agent 通过 `GET /api/v1/mem/plan` / `mem plan status` 只能看到已注册的在线 agent 的公开 plan/context/status。
 
@@ -264,9 +268,10 @@ public_topics    TEXT
 mem 索引生命周期严格跟随 mailbox 生命周期：
 
 ```
-join  → 注册 mem 索引
-leave → 移除 mem 索引
-惰性清理 → 移除 mem 索引
+join        → 注册 mem 索引
+leave       → 移除 mem 索引
+id cleanup  → 移除 mem 索引
+惰性清理    → 移除 mem 索引
 ```
 
 SQLite 中的 mem 索引可随时从文件系统重建；agent 的长期记忆以 `.agtalk/<name>/memory/` 文件为准。

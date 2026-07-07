@@ -185,6 +185,42 @@ fn print_wait_result(messages: &[Message], body: &str) {
     }
 }
 
+fn print_cleanup_result(
+    dry_run: bool,
+    removed: &[crate::proto::CleanupItem],
+    skipped: &[crate::proto::CleanupItem],
+) {
+    if dry_run {
+        println!("dry run: the following items would be removed");
+    } else {
+        let removed_count = removed.len();
+        println!(
+            "removed {} item{}",
+            removed_count,
+            if removed_count == 1 { "" } else { "s" }
+        );
+    }
+
+    if !removed.is_empty() {
+        println!();
+        for item in removed {
+            println!("  - {} ({}): {}", item.name, item.address, item.reason);
+        }
+    }
+
+    if !skipped.is_empty() {
+        println!();
+        if dry_run {
+            println!("skipped (would remain active):");
+        } else {
+            println!("skipped:");
+        }
+        for item in skipped {
+            println!("  - {} ({}): {}", item.name, item.address, item.reason);
+        }
+    }
+}
+
 fn print_text_server_msg(msg: &ServerMsg) {
     match msg {
         ServerMsg::Pong => println!("pong"),
@@ -218,6 +254,13 @@ fn print_text_server_msg(msg: &ServerMsg) {
                     mb.address, mb.name, mb.notify, mb.intro
                 );
             }
+        }
+        ServerMsg::CleanupResult {
+            dry_run,
+            removed,
+            skipped,
+        } => {
+            print_cleanup_result(*dry_run, removed, skipped);
         }
         ServerMsg::InboxResult { messages } => {
             print_inbox(messages);
