@@ -734,11 +734,6 @@ agtalk --help       # 完整 CLI help
 ```text
 agtalk agent quick guide
 
-More:
-  agtalk --agent-guide     full agent guide
-  agtalk --help            full command tree
-  agtalk <cmd> --help      command flags
-
 Rules:
   - Route only by UUID. Use id lookup to find address.
   - name is display only, not routing.
@@ -772,6 +767,11 @@ Rules:
 
 7. Diagnose
   agtalk tool doctor
+
+More:
+  agtalk --agent-guide     full agent guide
+  agtalk --help            full command tree
+  agtalk <cmd> --help      command flags
 ```
 
 - `--json` 输出结构化 recipe，不输出长文本。

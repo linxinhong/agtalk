@@ -415,20 +415,13 @@ fn format_agent_help_text(more: &[AgentHelpMore], sections: &[AgentHelpSection])
     let mut lines = vec![
         "agtalk agent quick guide".to_string(),
         String::new(),
-        "More:".to_string(),
+        "Rules:".to_string(),
+        "  - Route only by UUID. Use id lookup to find address.".to_string(),
+        "  - name is display only, not routing.".to_string(),
+        "  - Before replying to user, run msg read.".to_string(),
+        "  - inbox_empty means no message, not failure.".to_string(),
+        "  - Use --json when parsing output.".to_string(),
     ];
-
-    for m in more {
-        lines.push(format!("  {:<38} {}", m.command, m.description));
-    }
-
-    lines.push(String::new());
-    lines.push("Rules:".to_string());
-    lines.push("  - Route only by UUID. Use id lookup to find address.".to_string());
-    lines.push("  - name is display only, not routing.".to_string());
-    lines.push("  - Before replying to user, run msg read.".to_string());
-    lines.push("  - inbox_empty means no message, not failure.".to_string());
-    lines.push("  - Use --json when parsing output.".to_string());
 
     for section in sections {
         lines.push(String::new());
@@ -439,6 +432,12 @@ fn format_agent_help_text(more: &[AgentHelpMore], sections: &[AgentHelpSection])
                 lines.push(format!("  # {}", note));
             }
         }
+    }
+
+    lines.push(String::new());
+    lines.push("More:".to_string());
+    for m in more {
+        lines.push(format!("  {:<38} {}", m.command, m.description));
     }
 
     lines.join("\n")
