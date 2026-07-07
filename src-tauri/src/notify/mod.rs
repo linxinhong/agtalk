@@ -88,6 +88,7 @@ pub struct NotifyHint {
     pub workspace: String,
     pub agent_name: String,
     pub agent_address: String,
+    pub message_id: String,
 }
 
 /// notify 通道抽象。
@@ -180,6 +181,7 @@ pub async fn trigger(
     dot_agtalk: &Path,
     to_address: &str,
     from_name: &str,
+    message_id: &str,
     limiter: &NotifyLimiter,
 ) -> Result<(), NotifyError> {
     if !limiter.check(to_address) {
@@ -203,6 +205,7 @@ pub async fn trigger(
         workspace: session.workspace.clone(),
         agent_name: session.name.clone(),
         agent_address: session.address.clone(),
+        message_id: message_id.to_string(),
     };
 
     // 第一次尝试。
@@ -239,8 +242,8 @@ pub async fn trigger(
 /// 构造注入文本。不包含正文，只含信号 + 取信命令模板。
 pub fn build_hint_text(hint: &NotifyHint) -> String {
     format!(
-        "[agtalk] 新消息来自 {}，运行 {} msg read 查看\n",
-        hint.from_name, hint.binary_path
+        "[agtalk:{}] | exec: {} --as {} msg read\n",
+        hint.message_id, hint.binary_path, hint.agent_name
     )
 }
 
@@ -300,10 +303,11 @@ mod tests {
             workspace: "projA".to_string(),
             agent_name: "codex".to_string(),
             agent_address: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            message_id: "msg-123".to_string(),
         };
         let text = build_hint_text(&hint);
-        assert!(text.contains("nora"));
-        assert!(text.contains("/usr/local/bin/agtalk msg read"));
+        assert!(text.contains("[agtalk:msg-123]"));
+        assert!(text.contains("exec: /usr/local/bin/agtalk --as codex msg read"));
         assert!(!text.contains("secret"));
     }
 

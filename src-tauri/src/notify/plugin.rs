@@ -379,6 +379,8 @@ pub struct NotifyPluginSendPayload {
     pub workspace: String,
     pub agent_name: String,
     pub agent_address: String,
+    /// 触发本次 notify 的消息 ID。
+    pub message_id: String,
 }
 
 fn build_send_payload(endpoint: &serde_json::Value, hint: &NotifyHint) -> NotifyPluginSendPayload {
@@ -400,6 +402,7 @@ fn build_send_payload(endpoint: &serde_json::Value, hint: &NotifyHint) -> Notify
         workspace: hint.workspace.clone(),
         agent_name: hint.agent_name.clone(),
         agent_address: hint.agent_address.clone(),
+        message_id: hint.message_id.clone(),
     }
 }
 
@@ -419,6 +422,7 @@ mod tests {
             workspace: "projA".to_string(),
             agent_name: "codex".to_string(),
             agent_address: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            message_id: "msg-123".to_string(),
         }
     }
 
@@ -486,6 +490,7 @@ mod tests {
         assert!(json.contains("nora"));
         assert!(json.contains("/usr/local/bin/agtalk --as codex msg read"));
         assert!(json.contains("[\"--as\",\"codex\",\"msg\",\"read\"]"));
+        assert!(json.contains("msg-123"));
         assert!(!json.contains("secret"));
         assert!(!json.contains("message body"));
     }

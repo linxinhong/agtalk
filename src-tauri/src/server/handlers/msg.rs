@@ -65,9 +65,12 @@ pub fn handle_send(
                 let dot = state.dot_agtalk.clone();
                 let to = to.clone();
                 let from_name = session.name.clone();
+                let message_id = msg.id.clone();
                 let limiter = state.notify_limiter.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = notify::trigger(&dot, &to, &from_name, &limiter).await {
+                    if let Err(e) =
+                        notify::trigger(&dot, &to, &from_name, &message_id, &limiter).await
+                    {
                         tracing::debug!("notify trigger skipped: {}", e);
                     }
                 });
@@ -112,9 +115,12 @@ pub fn handle_reply(
                 let dot = state.dot_agtalk.clone();
                 let to = msg.to_address.clone();
                 let from_name = session.name.clone();
+                let message_id = msg.id.clone();
                 let limiter = state.notify_limiter.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = notify::trigger(&dot, &to, &from_name, &limiter).await {
+                    if let Err(e) =
+                        notify::trigger(&dot, &to, &from_name, &message_id, &limiter).await
+                    {
                         tracing::debug!("notify trigger skipped: {}", e);
                     }
                 });
@@ -232,10 +238,12 @@ pub fn handle_ask(
             if notify {
                 let dot = state.dot_agtalk.clone();
                 let from_name = session.name.clone();
+                let message_id = msg.id.clone();
                 let limiter = state.notify_limiter.clone();
                 tokio::spawn(async move {
                     if let Err(e) =
-                        notify::trigger(&dot, &human_address, &from_name, &limiter).await
+                        notify::trigger(&dot, &human_address, &from_name, &message_id, &limiter)
+                            .await
                     {
                         tracing::debug!("notify trigger skipped: {}", e);
                     }

@@ -117,7 +117,8 @@ chmod +x ~/.local/bin/agtalk-notify-zellij
   "binary_path": "/usr/local/bin/agtalk",
   "workspace": "agtalk",
   "agent_name": "coder",
-  "agent_address": "550e8400-e29b-41d4-a716-446655440000"
+  "agent_address": "550e8400-e29b-41d4-a716-446655440000",
+  "message_id": "msg-123"
 }
 ```
 
@@ -135,8 +136,20 @@ chmod +x ~/.local/bin/agtalk-notify-zellij
 | `workspace` | 目标 agent workspace |
 | `agent_name` | 目标 agent 名称 |
 | `agent_address` | 目标 agent address UUID |
+| `message_id` | 触发本次 notify 的消息 ID |
 
-### 4.3 send --dry-run
+### 4.3 注入文本风格
+
+参考实现输出：
+
+```text
+[agtalk:msg-123] | exec: /usr/local/bin/agtalk --as coder msg read
+```
+
+- 前缀 `[agtalk:<message_id>]` 方便 agent 直接识别是哪条消息。
+- `exec:` 后接可直接执行的取信命令。
+
+### 4.4 send --dry-run
 
 只验证 `endpoint` 是否可达，不真正打扰用户。用于 `agtalk tool doctor`。
 

@@ -50,10 +50,10 @@ if [ "$CMD" = "send" ]; then
         exit 1
     fi
 
-    # Build the human-readable hint. The payload already contains no body/secret.
-    FROM_NAME=$(printf '%s' "$PAYLOAD" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("from_name","someone"))' 2>/dev/null || echo "someone")
+    # Build the hint. The payload already contains no body/secret.
+    MESSAGE_ID=$(printf '%s' "$PAYLOAD" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("message_id",""))' 2>/dev/null || true)
     READ_COMMAND=$(printf '%s' "$PAYLOAD" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("read_command","agtalk msg read"))' 2>/dev/null || echo "agtalk msg read")
-    TEXT="[agtalk] 新消息来自 ${FROM_NAME}，运行 ${READ_COMMAND} 查看"
+    TEXT="[agtalk:${MESSAGE_ID}] | exec: ${READ_COMMAND}"
 
     zellij --session "$SESSION" action write-chars --pane-id "$PANE" "$TEXT"
     exit 0

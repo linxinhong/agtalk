@@ -1279,6 +1279,7 @@ fn notify_checks(ctx: &DoctorContext, identity: &Option<ResolvedIdentity>) -> Ve
                                         workspace,
                                         agent_name: id.name.clone(),
                                         agent_address: id.address.clone(),
+                                        message_id: "doctor-dry-run".to_string(),
                                     };
                                     match plugin.send(endpoint, &dummy, true) {
                                         Ok(()) => {
