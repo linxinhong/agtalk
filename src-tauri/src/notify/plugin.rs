@@ -12,6 +12,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+const DEFAULT_PLUGIN_TIMEOUT_MS: u64 = 1000;
+const MIN_PLUGIN_TIMEOUT_MS: u64 = 100;
+const MAX_PLUGIN_TIMEOUT_MS: u64 = 10000;
+
 /// 插件通道实现。
 pub struct PluginChannel {
     name: String,
@@ -39,11 +43,20 @@ impl PluginChannel {
 
     /// 解析插件路径：
     /// - 绝对路径按原样使用；
-    /// - 相对路径或纯文件名解析为 `<config_dir>/plugins/<path>`。
+    /// - 相对路径或纯文件名解析为 `<config_dir>/plugins/<path>`，且禁止 `..` 逃逸。
     pub fn resolve_plugin_path(raw_path: &str) -> Result<PathBuf, NotifyError> {
         let path = Path::new(raw_path);
         if path.is_absolute() {
             return Ok(path.to_path_buf());
+        }
+        // 相对路径禁止包含 .. 组件，防止逃逸出插件目录。
+        for component in path.components() {
+            if matches!(component, std::path::Component::ParentDir) {
+                return Err(NotifyError::Other(format!(
+                    "插件相对路径禁止使用 '..': {}",
+                    raw_path
+                )));
+            }
         }
         let plugins_dir = crate::paths::plugins_dir()
             .map_err(|e| NotifyError::Other(format!("无法定位插件目录: {}", e)))?;
@@ -51,6 +64,8 @@ impl PluginChannel {
     }
 
     /// 校验插件路径是否可用。
+    /// 要求：文件存在、是普通文件、具有可执行权限；
+    /// 相对路径解析后必须位于 `<config_dir>/plugins/` 内。
     pub fn validate_entry(entry: &NotifyPluginEntry) -> Result<PathBuf, NotifyError> {
         let path = Self::resolve_plugin_path(&entry.path)?;
         if !path.exists() {
@@ -60,12 +75,46 @@ impl PluginChannel {
             )));
         }
         let metadata = std::fs::metadata(&path).map_err(NotifyError::Io)?;
+        if !metadata.is_file() {
+            return Err(NotifyError::Other(format!(
+                "插件路径不是可执行文件: {}",
+                path.display()
+            )));
+        }
         if metadata.permissions().mode() & 0o111 == 0 {
             return Err(NotifyError::Other(format!(
                 "插件文件不可执行: {}",
                 path.display()
             )));
         }
+
+        // 相对路径必须 canonicalize 后仍位于 plugins_dir 内。
+        if !Path::new(&entry.path).is_absolute() {
+            let plugins_dir = crate::paths::plugins_dir()
+                .map_err(|e| NotifyError::Other(format!("无法定位插件目录: {}", e)))?;
+            let canonical_plugins = std::fs::canonicalize(&plugins_dir).map_err(|e| {
+                NotifyError::Other(format!(
+                    "无法 canonicalize 插件目录 {}: {}",
+                    plugins_dir.display(),
+                    e
+                ))
+            })?;
+            let canonical_path = std::fs::canonicalize(&path).map_err(|e| {
+                NotifyError::Other(format!(
+                    "无法 canonicalize 插件路径 {}: {}",
+                    path.display(),
+                    e
+                ))
+            })?;
+            if !canonical_path.starts_with(&canonical_plugins) {
+                return Err(NotifyError::Other(format!(
+                    "插件路径解析后逃逸出插件目录: {} (插件目录: {})",
+                    canonical_path.display(),
+                    canonical_plugins.display()
+                )));
+            }
+        }
+
         Ok(path)
     }
 }
@@ -95,7 +144,10 @@ impl NotifyChannel for PluginChannel {
         let json = serde_json::to_vec(&payload)
             .map_err(|e| NotifyError::Other(format!("序列化插件 payload 失败: {}", e)))?;
 
-        let timeout_ms = entry.timeout_ms.unwrap_or(1000);
+        let timeout_ms = entry
+            .timeout_ms
+            .unwrap_or(DEFAULT_PLUGIN_TIMEOUT_MS)
+            .clamp(MIN_PLUGIN_TIMEOUT_MS, MAX_PLUGIN_TIMEOUT_MS);
         let timeout = Duration::from_millis(timeout_ms);
 
         let mut child = Command::new(&plugin_path)
@@ -186,7 +238,10 @@ pub struct NotifyPluginPayload {
     #[serde(rename = "type")]
     pub type_: String,
     pub from_name: String,
+    /// 人类可读的取信命令，带 `--as <agent_name>`。
     pub read_command: String,
+    /// 插件可直接执行的安全参数数组。
+    pub read_args: Vec<String>,
     pub binary_path: String,
     pub workspace: String,
     pub agent_name: String,
@@ -194,11 +249,19 @@ pub struct NotifyPluginPayload {
 }
 
 fn build_payload(hint: &NotifyHint) -> NotifyPluginPayload {
+    let read_args = vec![
+        "--as".to_string(),
+        hint.agent_name.clone(),
+        "msg".to_string(),
+        "read".to_string(),
+    ];
+    let read_command = format!("{} --as {} msg read", hint.binary_path, hint.agent_name);
     NotifyPluginPayload {
         version: 1,
         type_: "notify".to_string(),
         from_name: hint.from_name.clone(),
-        read_command: format!("{} msg read", hint.binary_path),
+        read_command,
+        read_args,
         binary_path: hint.binary_path.clone(),
         workspace: hint.workspace.clone(),
         agent_name: hint.agent_name.clone(),
@@ -241,7 +304,8 @@ mod tests {
         let payload = build_payload(&hint());
         let json = serde_json::to_string(&payload).unwrap();
         assert!(json.contains("nora"));
-        assert!(json.contains("/usr/local/bin/agtalk msg read"));
+        assert!(json.contains("/usr/local/bin/agtalk --as codex msg read"));
+        assert!(json.contains("[\"--as\",\"codex\",\"msg\",\"read\"]"));
         assert!(!json.contains("secret"));
         assert!(!json.contains("message body"));
     }
@@ -295,10 +359,67 @@ mod tests {
     }
 
     #[test]
+    fn resolve_plugin_path_rejects_parent_dir() {
+        let err = PluginChannel::resolve_plugin_path("../escape").unwrap_err();
+        assert!(err.to_string().contains("'..'"));
+    }
+
+    #[test]
+    fn validate_rejects_directory() {
+        let tmp = TempDir::new().unwrap();
+        let prev = std::env::var_os(CONFIG_DIR_ENV);
+        std::env::set_var(CONFIG_DIR_ENV, tmp.path());
+
+        let plugins_dir = tmp.path().join("plugins");
+        std::fs::create_dir_all(&plugins_dir).unwrap();
+        let plugin_dir = plugins_dir.join("not-a-file");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+
+        let entry = NotifyPluginEntry {
+            path: "not-a-file".to_string(),
+            timeout_ms: None,
+        };
+        // 路径存在但是目录，不是文件
+        let err = PluginChannel::validate_entry(&entry).unwrap_err();
+        assert!(err.to_string().contains("不是可执行文件"));
+
+        if let Some(v) = prev {
+            std::env::set_var(CONFIG_DIR_ENV, v);
+        } else {
+            std::env::remove_var(CONFIG_DIR_ENV);
+        }
+    }
+
+    #[test]
+    fn validate_rejects_non_executable_file() {
+        let tmp = TempDir::new().unwrap();
+        let prev = std::env::var_os(CONFIG_DIR_ENV);
+        std::env::set_var(CONFIG_DIR_ENV, tmp.path());
+
+        let plugins_dir = tmp.path().join("plugins");
+        std::fs::create_dir_all(&plugins_dir).unwrap();
+        let plugin_path = plugins_dir.join("not-executable.sh");
+        std::fs::write(&plugin_path, "#!/bin/sh\n").unwrap();
+
+        let entry = NotifyPluginEntry {
+            path: "not-executable.sh".to_string(),
+            timeout_ms: None,
+        };
+        let err = PluginChannel::validate_entry(&entry).unwrap_err();
+        assert!(err.to_string().contains("不可执行"));
+
+        if let Some(v) = prev {
+            std::env::set_var(CONFIG_DIR_ENV, v);
+        } else {
+            std::env::remove_var(CONFIG_DIR_ENV);
+        }
+    }
+
+    #[test]
     fn plugin_success_writes_payload_to_stdin() {
         let tmp = TempDir::new().unwrap();
-        std::env::set_var(CONFIG_DIR_ENV, tmp.path());
         let prev = std::env::var_os(CONFIG_DIR_ENV);
+        std::env::set_var(CONFIG_DIR_ENV, tmp.path());
 
         let out_path = tmp.path().join("out.json");
         let script = format!("#!/bin/sh\ncat > {}\n", out_path.to_string_lossy());
