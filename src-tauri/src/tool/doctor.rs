@@ -1269,14 +1269,9 @@ fn notify_checks(ctx: &DoctorContext, identity: &Option<ResolvedIdentity>) -> Ve
                                     }
 
                                     // dry-run
-                                    let workspace = session
-                                        .as_ref()
-                                        .map(|s| s.workspace.clone())
-                                        .unwrap_or_default();
                                     let dummy = NotifyHint {
                                         from_name: "doctor".to_string(),
                                         binary_path: "agtalk".to_string(),
-                                        workspace,
                                         agent_name: id.name.clone(),
                                         agent_address: id.address.clone(),
                                         message_id: "doctor-dry-run".to_string(),

@@ -17,7 +17,6 @@ pub fn handle_join(
     state: &AppState,
     name: Option<String>,
     intro: Option<String>,
-    workspace: Option<String>,
     notify: String,
     notify_endpoint: Option<serde_json::Value>,
     pid: u32,
@@ -30,18 +29,13 @@ pub fn handle_join(
     let name = name.unwrap_or_else(|| format!("agent-{}", short_id()));
     let existing_session = session_file_mod::read(&state.dot_agtalk, &name).ok();
 
-    let (address, final_intro, final_workspace, notify_channel, notify_target) =
+    let (address, final_intro, notify_channel, notify_target) =
         if let Some(ref session) = existing_session {
             let final_intro = intro.unwrap_or_else(|| session.intro.clone());
-            let final_workspace = workspace.unwrap_or_else(|| session.workspace.clone());
 
-            if let Err(e) = mailbox_db::revive(
-                &state.storage,
-                &session.address,
-                &name,
-                &final_intro,
-                &final_workspace,
-            ) {
+            if let Err(e) =
+                mailbox_db::revive(&state.storage, &session.address, &name, &final_intro, "")
+            {
                 return ServerMsg::Error {
                     code: "join_failed".into(),
                     message: e.to_string(),
@@ -68,34 +62,25 @@ pub fn handle_join(
             (
                 session.address.clone(),
                 final_intro,
-                final_workspace,
                 notify_channel,
                 notify_target,
             )
         } else {
             let final_intro = intro.unwrap_or_default();
-            let final_workspace = workspace.unwrap_or_default();
-            let address =
-                match mailbox_db::create(&state.storage, &name, &final_intro, &final_workspace) {
-                    Ok(addr) => addr,
-                    Err(e) => {
-                        return ServerMsg::Error {
-                            code: "join_failed".into(),
-                            message: e.to_string(),
-                        }
+            let address = match mailbox_db::create(&state.storage, &name, &final_intro, "") {
+                Ok(addr) => addr,
+                Err(e) => {
+                    return ServerMsg::Error {
+                        code: "join_failed".into(),
+                        message: e.to_string(),
                     }
-                };
+                }
+            };
 
             let (notify_channel, notify_target) =
                 resolve_notify(&notify, notify_endpoint.clone(), None);
 
-            (
-                address,
-                final_intro,
-                final_workspace,
-                notify_channel,
-                notify_target,
-            )
+            (address, final_intro, notify_channel, notify_target)
         };
 
     let command = std::env::current_exe()
@@ -105,7 +90,7 @@ pub fn handle_join(
     let session = SessionFile {
         address: address.clone(),
         name: name.clone(),
-        workspace: final_workspace,
+        workspace: "".to_string(),
         intro: final_intro,
         created_at: existing_session
             .map(|s| s.created_at)
@@ -129,18 +114,11 @@ pub fn handle_join(
     }
 
     let memory_path = state.dot_agtalk.join(&name).join("memory");
-    crate::mem::index::register(
-        &state.storage,
-        &address,
-        &name,
-        &session.workspace,
-        &memory_path,
-    );
+    crate::mem::index::register(&state.storage, &address, &name, "", &memory_path);
 
     ServerMsg::Identity {
         address,
         name,
-        workspace: session.workspace,
         intro: session.intro,
     }
 }
@@ -156,7 +134,6 @@ pub fn handle_show(state: &AppState, headers: &HeaderMap) -> ServerMsg {
     ServerMsg::Identity {
         address: session.address,
         name: session.name,
-        workspace: session.workspace,
         intro,
     }
 }
@@ -226,7 +203,6 @@ pub fn handle_leave(state: &AppState, headers: &HeaderMap, _purge: bool) -> Serv
     ServerMsg::IdentityLeft {
         address: session.address,
         name: session.name,
-        workspace: session.workspace,
         removed_session,
     }
 }
@@ -425,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn join_creates_identity_with_intro_and_workspace() {
+    fn join_creates_identity_with_intro() {
         let (state, _tmp) = test_state();
         let (pid, start_time) = current_pid_start_time();
 
@@ -433,7 +409,6 @@ mod tests {
             &state,
             Some("reviewer".into()),
             Some("设计评审专家".into()),
-            Some("agtalk".into()),
             "none".into(),
             None,
             pid,
@@ -444,12 +419,10 @@ mod tests {
             ServerMsg::Identity {
                 address,
                 name,
-                workspace,
                 intro,
             } => {
                 assert!(!address.is_empty());
                 assert_eq!(name, "reviewer");
-                assert_eq!(workspace, "agtalk");
                 assert_eq!(intro, "设计评审专家");
             }
             other => panic!("expected Identity, got {:?}", other),
@@ -457,7 +430,7 @@ mod tests {
 
         let session = session_file::read(&state.dot_agtalk, "reviewer").unwrap();
         assert_eq!(session.intro, "设计评审专家");
-        assert_eq!(session.workspace, "agtalk");
+        assert_eq!(session.workspace, "");
     }
 
     #[test]
@@ -469,7 +442,6 @@ mod tests {
             &state,
             Some("reviewer".into()),
             Some("初代 intro".into()),
-            Some("agtalk".into()),
             "none".into(),
             None,
             pid,
@@ -484,7 +456,6 @@ mod tests {
             &state,
             Some("reviewer".into()),
             Some("更新后的 intro".into()),
-            None,
             "none".into(),
             None,
             pid,
@@ -495,12 +466,10 @@ mod tests {
             ServerMsg::Identity {
                 address,
                 name,
-                workspace,
                 intro,
             } => {
                 assert_eq!(address, first_address);
                 assert_eq!(name, "reviewer");
-                assert_eq!(workspace, "agtalk");
                 assert_eq!(intro, "更新后的 intro");
             }
             other => panic!("expected Identity, got {:?}", other),
@@ -519,7 +488,6 @@ mod tests {
             &state,
             Some("reviewer".into()),
             Some("展示用 intro".into()),
-            Some("agtalk".into()),
             "none".into(),
             None,
             pid,
@@ -554,7 +522,6 @@ mod tests {
             &state,
             Some("reviewer".into()),
             Some("展示用 intro".into()),
-            Some("agtalk".into()),
             "plugin:zellij".into(),
             None,
             pid,
@@ -587,7 +554,6 @@ mod tests {
             &state,
             Some("reviewer".into()),
             Some("展示用 intro".into()),
-            Some("agtalk".into()),
             "plugin:macos".into(),
             None,
             pid,
@@ -618,7 +584,6 @@ mod tests {
             &state,
             Some("reviewer".into()),
             Some("展示用 intro".into()),
-            Some("agtalk".into()),
             "zellij".into(),
             None,
             pid,
@@ -651,7 +616,6 @@ mod tests {
             &state,
             Some("reviewer".into()),
             Some("展示用 intro".into()),
-            Some("agtalk".into()),
             "none".into(),
             None,
             pid,
@@ -702,7 +666,6 @@ mod tests {
             &state,
             Some("reviewer".into()),
             Some("展示用 intro".into()),
-            Some("agtalk".into()),
             "zellij".into(),
             None,
             pid,

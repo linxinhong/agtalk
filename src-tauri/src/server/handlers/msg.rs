@@ -381,7 +381,6 @@ mod tests {
             state,
             Some(name.into()),
             Some("intro".into()),
-            Some("w".into()),
             "none".into(),
             None,
             pid,

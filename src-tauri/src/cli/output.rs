@@ -195,21 +195,18 @@ fn print_text_server_msg(msg: &ServerMsg) {
         ServerMsg::Identity {
             address,
             name,
-            workspace,
             intro,
         } => {
             println!("address   : {}", address);
             println!("name      : {}", name);
-            println!("workspace : {}", workspace);
             println!("intro     : {}", intro);
         }
         ServerMsg::IdentityLeft {
             address,
             name,
-            workspace,
             removed_session,
         } => {
-            println!("left: {} {} {}", name, address, workspace);
+            println!("left: {} {}", name, address);
             if !removed_session {
                 println!("warning: session directory could not be removed");
             }
@@ -217,8 +214,8 @@ fn print_text_server_msg(msg: &ServerMsg) {
         ServerMsg::LookupResult { mailboxes } => {
             for mb in mailboxes {
                 println!(
-                    "{}\t{}\t{}\tnotify={}\t{}",
-                    mb.address, mb.name, mb.workspace, mb.notify, mb.intro
+                    "{}\t{}\tnotify={}\t{}",
+                    mb.address, mb.name, mb.notify, mb.intro
                 );
             }
         }
@@ -683,7 +680,6 @@ mod tests {
         let msg = ServerMsg::IdentityLeft {
             address: "550e8400-e29b-41d4-a716-446655440000".into(),
             name: "reviewer".into(),
-            workspace: "agtalk".into(),
             removed_session: true,
         };
         print_text_server_msg(&msg);

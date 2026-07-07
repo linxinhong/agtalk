@@ -115,7 +115,6 @@ chmod +x ~/.local/bin/agtalk-notify-zellij
   "read_command": "agtalk --as coder msg read",
   "read_args": ["--as", "coder", "msg", "read"],
   "binary_path": "/usr/local/bin/agtalk",
-  "workspace": "agtalk",
   "agent_name": "coder",
   "agent_address": "550e8400-e29b-41d4-a716-446655440000",
   "message_id": "msg-123",
@@ -134,7 +133,6 @@ chmod +x ~/.local/bin/agtalk-notify-zellij
 | `read_command` | 人类可读取信命令 |
 | `read_args` | 插件可直接执行的安全参数数组 |
 | `binary_path` | 当前 agtalk 二进制路径 |
-| `workspace` | 目标 agent workspace |
 | `agent_name` | 目标 agent 名称 |
 | `agent_address` | 目标 agent address UUID |
 | `message_id` | 触发本次 notify 的消息 ID |

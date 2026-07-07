@@ -90,8 +90,6 @@ pub(crate) enum IdCmd {
         name: Option<String>,
         #[arg(short, long)]
         intro: Option<String>,
-        #[arg(short, long)]
-        workspace: Option<String>,
         /// 打扰通道：auto | none | zellij | tmux | plugin:<name>
         #[arg(short, long, default_value = "auto", value_name = "CHANNEL")]
         notify: String,
@@ -312,8 +310,7 @@ fn agent_help_message() -> ServerMsg {
                     note: None,
                 },
                 AgentHelpExample {
-                    command: "agtalk id join <name> --intro \"<role>\" --workspace \"<project>\""
-                        .to_string(),
+                    command: "agtalk id join <name> --intro \"<role>\"".to_string(),
                     note: None,
                 },
             ],
@@ -527,12 +524,11 @@ fn run(cli: Cli, json: bool) -> Result<(), CliError> {
                 IdCmd::Join {
                     name,
                     intro,
-                    workspace,
                     notify,
                 } => {
                     let ctx = Context::pre_join().map_err(CliError::from)?;
                     let (notify, notify_endpoint) = resolve_notify(&notify, name.as_deref())?;
-                    client::id::join(ctx, name, intro, workspace, notify, notify_endpoint, json)
+                    client::id::join(ctx, name, intro, notify, notify_endpoint, json)
                 }
                 IdCmd::Show => {
                     let ctx = Context::current(as_name).map_err(CliError::from)?;

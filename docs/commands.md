@@ -113,14 +113,14 @@ daemon 是 agtalk 的唯一真相来源，不放进 `tool`。人类或启动脚�
 ### 5.1 id join
 
 ```bash
-agtalk id join [name] [--intro <text>] [--workspace <text>] [--notify <channel>]
+agtalk id join [name] [--intro <text>] [--notify <channel>]
 ```
 
-创建或复用当前 workspace 下的 agent 身份。
+创建或复用当前工作目录下的 agent 身份。
 
 - 如果 `.agtalk/<name>/session.json` 已存在，复用原 address，只重新绑定当前进程/会话锚点。
 - 如果不存在，创建新 mailbox、session、agents.json 记录。
-- `--intro` / `--workspace` 传入时更新展示元数据；未传入则保留旧值。
+- `--intro` 传入时更新展示元数据；未传入则保留旧值。
 - `--notify` 默认 `auto`。
 - 上线成功后注册或刷新 `.agtalk/<name>/memory/` 到 SQLite 的在线 mem 索引。
 
@@ -164,7 +164,6 @@ JSON 输出：
   "type": "identity",
   "address": "550e8400-e29b-41d4-a716-446655440000",
   "name": "codex-coder-Alex",
-  "workspace": "agtalk",
   "intro": "代码实现 agent"
 }
 ```
@@ -180,7 +179,7 @@ agtalk --json id lookup [name]
 
 - 无参：列出全部活跃 mailbox。
 - 有参：按 name 过滤。
-- 返回 address、name、intro、workspace、notify、notify_ready。
+- 返回 address、name、intro、notify、notify_ready。
 - `notify` 是目标 agent 注册时声明的打扰通道摘要：plugin:<name>、none、unknown。
 - `notify_ready=true` 表示目标有可用 notify 通道；agent 可据此决定是否发送后接 `wait`。
 - 不做按 name 路由。
@@ -759,7 +758,7 @@ Rules:
 
 1. Identity
   agtalk id show
-  agtalk id join <name> --intro "<role>" --workspace "<project>"
+  agtalk id join <name> --intro "<role>"
 
 2. Find target
   agtalk id lookup [name]

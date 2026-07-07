@@ -389,7 +389,6 @@ pub struct NotifyPluginSendPayload {
     /// 插件可直接执行的安全参数数组。
     pub read_args: Vec<String>,
     pub binary_path: String,
-    pub workspace: String,
     pub agent_name: String,
     pub agent_address: String,
     /// 触发本次 notify 的消息 ID。
@@ -423,7 +422,6 @@ fn build_send_payload(endpoint: &serde_json::Value, hint: &NotifyHint) -> Notify
         read_command,
         read_args,
         binary_path: hint.binary_path.clone(),
-        workspace: hint.workspace.clone(),
         agent_name: hint.agent_name.clone(),
         agent_address: hint.agent_address.clone(),
         message_id: hint.message_id.clone(),
@@ -444,7 +442,6 @@ mod tests {
         NotifyHint {
             from_name: "nora".to_string(),
             binary_path: "/usr/local/bin/agtalk".to_string(),
-            workspace: "projA".to_string(),
             agent_name: "codex".to_string(),
             agent_address: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             message_id: "msg-123".to_string(),

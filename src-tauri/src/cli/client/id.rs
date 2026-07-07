@@ -8,7 +8,6 @@ pub fn join(
     ctx: Context,
     name: Option<String>,
     intro: Option<String>,
-    workspace: Option<String>,
     notify: String,
     notify_endpoint: Option<serde_json::Value>,
     json: bool,
@@ -19,7 +18,6 @@ pub fn join(
         serde_json::json!({
             "name": name,
             "intro": intro,
-            "workspace": workspace,
             "notify": notify,
             "notify_endpoint": notify_endpoint,
             "pid": ctx.pid,

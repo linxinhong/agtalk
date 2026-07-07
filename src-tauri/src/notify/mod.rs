@@ -85,7 +85,6 @@ impl NotifyLimiter {
 pub struct NotifyHint {
     pub from_name: String,
     pub binary_path: String,
-    pub workspace: String,
     pub agent_name: String,
     pub agent_address: String,
     pub message_id: String,
@@ -202,7 +201,6 @@ pub async fn trigger(
     let hint = NotifyHint {
         from_name: from_name.to_string(),
         binary_path,
-        workspace: session.workspace.clone(),
         agent_name: session.name.clone(),
         agent_address: session.address.clone(),
         message_id: message_id.to_string(),
@@ -301,7 +299,6 @@ mod tests {
         let hint = NotifyHint {
             from_name: "nora".to_string(),
             binary_path: "/usr/local/bin/agtalk".to_string(),
-            workspace: "projA".to_string(),
             agent_name: "codex".to_string(),
             agent_address: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             message_id: "msg-123".to_string(),

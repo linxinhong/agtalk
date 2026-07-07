@@ -10,7 +10,6 @@ pub struct LookupMailbox {
     pub address: String,
     pub name: String,
     pub intro: String,
-    pub workspace: String,
     pub created_at: f64,
     pub left_at: Option<f64>,
     pub notify_channel: String,
@@ -24,7 +23,6 @@ impl LookupMailbox {
             address: mb.address.clone(),
             name: mb.name.clone(),
             intro: mb.intro.clone(),
-            workspace: mb.workspace.clone(),
             created_at: mb.created_at,
             left_at: mb.left_at,
             notify_channel,
@@ -168,8 +166,6 @@ pub enum ClientMsg {
         name: Option<String>,
         #[serde(default)]
         intro: Option<String>,
-        #[serde(default)]
-        workspace: Option<String>,
         #[serde(default)]
         notify: String,
         pid: u32,
@@ -343,13 +339,11 @@ pub enum ServerMsg {
     Identity {
         address: String,
         name: String,
-        workspace: String,
         intro: String,
     },
     IdentityLeft {
         address: String,
         name: String,
-        workspace: String,
         removed_session: bool,
     },
     LookupResult {

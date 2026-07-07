@@ -35,7 +35,7 @@ agtalk daemon start
 agtalk id show
 
 # 如果没有身份，创建一个
-agtalk id join <name> --intro "<你的角色/能力>" --workspace "<项目名>"
+agtalk id join <name> --intro "<你的角色/能力>"
 ```
 
 `id join` 是幂等的：同名 session 已存在则复用原 address，只更新当前进程锚点。
@@ -53,7 +53,7 @@ AGTALK_NAME=<name> agtalk id show
 agtalk id lookup [name]
 ```
 
-返回候选列表，每个候选包含 `address`、`name`、`intro`、`workspace`、`notify`、`notify_ready`。`notify` 是目标 agent 注册时声明的打扰通道摘要（zellij/tmux/plugin:<name>/none/unknown），`notify_ready=true` 表示对方有可用 notify 通道。你根据 `intro` + `workspace` 人工选择正确的 UUID。
+返回候选列表，每个候选包含 `address`、`name`、`intro`、`notify`、`notify_ready`。`notify` 是目标 agent 注册时声明的打扰通道摘要（zellij/tmux/plugin:<name>/none/unknown），`notify_ready=true` 表示对方有可用 notify 通道。你根据 `intro` 人工选择正确的 UUID。
 
 ### 4. 发送消息
 
@@ -99,7 +99,7 @@ agtalk tool doctor
 | 目的 | 命令 |
 |---|---|
 | 当前身份 / 恢复 | `agtalk id show` |
-| 创建/复用身份 | `agtalk id join <name> --intro "..." --workspace "..."` |
+| 创建/复用身份 | `agtalk id join <name> --intro "..."` |
 | 指定身份 | `agtalk --as <name> <cmd>` |
 | 查找目标 | `agtalk id lookup [name]` |
 | 发送消息 | `agtalk msg send <uuid> "<body>"` |

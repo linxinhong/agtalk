@@ -73,8 +73,6 @@ struct IdJoinBody {
     name: Option<String>,
     #[serde(default)]
     intro: Option<String>,
-    #[serde(default)]
-    workspace: Option<String>,
     #[serde(default = "crate::proto::default_notify")]
     notify: String,
     #[serde(default)]
@@ -91,7 +89,6 @@ async fn id_join_handler(
         &state,
         body.name,
         body.intro,
-        body.workspace,
         body.notify,
         body.notify_endpoint,
         body.pid,
@@ -849,7 +846,6 @@ mod tests {
         let body1 = serde_json::to_string(&serde_json::json!({
             "name": "nora",
             "intro": "前端",
-            "workspace": "projA",
             "notify": "none",
             "pid": cur_pid,
             "start_time": cur_start,
@@ -864,26 +860,20 @@ mod tests {
         let resp1 = app.clone().oneshot(join1).await.unwrap();
         assert_eq!(resp1.status(), StatusCode::OK);
 
-        let (addr1, workspace1, intro1) = match serde_json::from_slice::<ServerMsg>(
+        let (addr1, intro1) = match serde_json::from_slice::<ServerMsg>(
             &axum::body::to_bytes(resp1.into_body(), usize::MAX)
                 .await
                 .unwrap(),
         )
         .unwrap()
         {
-            ServerMsg::Identity {
-                address,
-                workspace,
-                intro,
-                ..
-            } => (address, workspace, intro),
+            ServerMsg::Identity { address, intro, .. } => (address, intro),
             other => panic!("expected Identity, got {:?}", other),
         };
 
         let body2 = serde_json::to_string(&serde_json::json!({
             "name": "nora",
             "intro": "后端",
-            "workspace": "projB",
             "notify": "none",
             "pid": cur_pid,
             "start_time": cur_start,
@@ -896,34 +886,27 @@ mod tests {
             .body(Body::from(body2))
             .unwrap();
         let resp2 = app.clone().oneshot(join2).await.unwrap();
-        let (addr2, workspace2, intro2) = match serde_json::from_slice::<ServerMsg>(
+        let (addr2, intro2) = match serde_json::from_slice::<ServerMsg>(
             &axum::body::to_bytes(resp2.into_body(), usize::MAX)
                 .await
                 .unwrap(),
         )
         .unwrap()
         {
-            ServerMsg::Identity {
-                address,
-                workspace,
-                intro,
-                ..
-            } => (address, workspace, intro),
+            ServerMsg::Identity { address, intro, .. } => (address, intro),
             other => panic!("expected Identity, got {:?}", other),
         };
 
         assert_eq!(addr1, addr2);
         assert_eq!(addr1, nora);
-        assert_eq!(workspace1, "projA");
         assert_eq!(intro1, "前端");
-        assert_eq!(workspace2, "projB");
         assert_eq!(intro2, "后端");
 
         let mb = mailbox_db::get_by_address(&state.storage, &addr1)
             .unwrap()
             .unwrap();
         assert_eq!(mb.intro, "后端");
-        assert_eq!(mb.workspace, "projB");
+        assert_eq!(mb.workspace, "");
     }
 
     #[tokio::test]

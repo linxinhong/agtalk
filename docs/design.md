@@ -93,8 +93,8 @@ NG canonical REST API 按领域组织，版本前缀 `/api/v1`。
 ```
 POST /api/v1/id/join
 Headers: X-AgTalk-Address, X-AgTalk-Pid, X-AgTalk-Start-Time
-Body: {name?, intro?, workspace?, notify?}
-→ {type: "identity", address: UUID, name: string, ...}
+Body: {name?, intro?, notify?}
+→ {type: "identity", address: UUID, name: string, intro: string}
 
 POST /api/v1/id/leave
 Headers: X-AgTalk-Address, X-AgTalk-Pid, X-AgTalk-Start-Time
@@ -105,7 +105,7 @@ Headers: X-AgTalk-Address, X-AgTalk-Pid, X-AgTalk-Start-Time
 → {type: "identity", address: UUID, name: string, ...}
 
 GET /api/v1/id/lookup?name=nora  （或无参列全部）
-→ {type: "lookup_result", mailboxes: [{address: UUID, name: "nora", intro: "前端 review", workspace: "projA"}, ...]}
+→ {type: "lookup_result", mailboxes: [{address: UUID, name: "nora", intro: "前端 review"}, ...]}
 ```
 
 消息（msg）：
@@ -688,7 +688,7 @@ agtalk/                             ← 本项目根
 
 - `.agtalk/<name>/session.json` 已存在 → 复用原 address，只重新绑定当前进程/会话锚点。
 - session.json 不存在 → 新建 mailbox、session、agents.json 记录。
-- 传入 `--intro` / `--workspace` 时更新展示元数据；未传入保留旧值。
+- 传入 `--intro` 时更新展示元数据；未传入保留旧值。
 - 若 session 存在但 DB 中 mailbox 被误标 `left_at` 或缺失，daemon 按 session 中的 address 恢复 mailbox 和 event sequence。
 
 这样 agent 可以在每轮任务开始时安全地执行 `id join <name>`，不用担心重复创建身份。
