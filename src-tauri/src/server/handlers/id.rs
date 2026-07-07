@@ -248,13 +248,16 @@ pub fn handle_cleanup(state: &AppState, execute: bool) -> ServerMsg {
         }
     }
 
-    // 3. stale mailbox：DB 有记录，但 session 缺失或 address 不匹配。
+    // 3. stale mailbox：DB 有活跃记录，但 session 缺失或 address 不匹配。
+    // 已 left 的 mailbox 跳过；它要么对应 stale_session，要么是正常历史保留。
     for mb in &mailboxes {
-        let stale = match session_by_name.get(&mb.name) {
-            Some(session) if session.address == mb.address && mb.left_at.is_none() => false,
-            Some(_) => true,
-            None => true,
-        };
+        if mb.left_at.is_some() {
+            continue;
+        }
+        let stale = !matches!(
+            session_by_name.get(&mb.name),
+            Some(session) if session.address == mb.address
+        );
         if stale {
             let item = crate::proto::CleanupItem {
                 name: mb.name.clone(),
