@@ -3,13 +3,18 @@
 //! 原则：只发信号 + 取信命令模板，绝不注入消息正文。
 
 use crate::identity::session_file::{self, NotifyTarget, SessionFile};
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 
 pub mod plugin;
 pub mod tmux;
 pub mod zellij;
+
+const DEFAULT_NOTIFY_COOLDOWN_MS: u64 = 1000;
 
 #[derive(Debug, Error)]
 pub enum NotifyError {
@@ -21,10 +26,46 @@ pub enum NotifyError {
     SessionNotFound,
     #[error("notify 通道未启用")]
     ChannelDisabled,
+    #[error("限流中")]
+    RateLimited,
     #[error("外部命令失败: {0}")]
     CommandFailed(String),
     #[error("{0}")]
     Other(String),
+}
+
+/// 按 address 限流，避免消息风暴产生大量插件进程。
+pub struct NotifyLimiter {
+    cooldown: Duration,
+    last: Mutex<HashMap<String, Instant>>,
+}
+
+impl NotifyLimiter {
+    pub fn new(cooldown: Duration) -> Self {
+        Self {
+            cooldown,
+            last: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// 默认 1000ms cooldown。
+    pub fn default_cooldown() -> Self {
+        Self::new(Duration::from_millis(DEFAULT_NOTIFY_COOLDOWN_MS))
+    }
+
+    /// 检查该 address 是否可以触发 notify。
+    /// 若在 cooldown 期内返回 false；否则更新 timestamp 返回 true。
+    pub fn should_notify(&self, address: &str) -> bool {
+        let now = Instant::now();
+        let mut map = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        match map.get(address) {
+            Some(last) if now.duration_since(*last) < self.cooldown => false,
+            _ => {
+                map.insert(address.to_string(), now);
+                true
+            }
+        }
+    }
 }
 
 /// 传给通道的提示信息。
@@ -46,7 +87,10 @@ pub trait NotifyChannel: Send + Sync {
 /// 支持 "zellij" / "tmux" / "plugin:<name>"。
 pub fn channel_from_name(name: &str) -> Option<Box<dyn NotifyChannel>> {
     if let Some(plugin_name) = name.strip_prefix("plugin:") {
-        return Some(Box::new(plugin::PluginChannel::new(plugin_name)));
+        return plugin::PluginChannel::new(plugin_name).ok().map(|c| {
+            let b: Box<dyn NotifyChannel> = Box::new(c);
+            b
+        });
     }
     match name {
         "zellij" => Some(Box::new(zellij::ZellijChannel)),
@@ -94,14 +138,20 @@ pub fn resolve_channel(raw: &str) -> (String, Option<Box<dyn NotifyChannel>>, No
         let channel = channel_from_name(&name);
         return (name, channel, target);
     }
-    if let Some(channel) = channel_from_name(raw) {
-        let target = if let Some(plugin_name) = raw.strip_prefix("plugin:") {
-            NotifyTarget::Plugin {
-                name: plugin_name.to_string(),
-            }
-        } else {
-            auto_detect().1 // 复用环境变量定位
+    if let Some(plugin_name) = raw.strip_prefix("plugin:") {
+        if plugin::validate_plugin_name(plugin_name).is_err() {
+            tracing::warn!("非法 notify 插件名 '{}', 降级为 none", plugin_name);
+            return ("none".to_string(), None, NotifyTarget::None);
+        }
+        let target = NotifyTarget::Plugin {
+            name: plugin_name.to_string(),
         };
+        let channel = channel_from_name(raw);
+        return (raw.to_string(), channel, target);
+    }
+
+    if let Some(channel) = channel_from_name(raw) {
+        let target = auto_detect().1; // 复用环境变量定位
         return (raw.to_string(), Some(channel), target);
     }
     // 未知通道降级为 none，不阻塞 join
@@ -116,7 +166,12 @@ pub async fn trigger(
     dot_agtalk: &Path,
     to_address: &str,
     from_name: &str,
+    limiter: &NotifyLimiter,
 ) -> Result<(), NotifyError> {
+    if !limiter.should_notify(to_address) {
+        return Err(NotifyError::RateLimited);
+    }
+
     let session = find_session_by_address(dot_agtalk, to_address)?;
 
     if session.notify_channel.eq_ignore_ascii_case("none") || session.notify_channel.is_empty() {
@@ -368,5 +423,37 @@ mod tests {
         assert_eq!(name, "none");
         assert!(channel.is_none());
         assert_eq!(target, NotifyTarget::None);
+    }
+
+    #[test]
+    fn resolve_channel_rejects_invalid_plugin_name() {
+        let (name, channel, target) = resolve_channel("plugin:foo/bar");
+        assert_eq!(name, "none");
+        assert!(channel.is_none());
+        assert_eq!(target, NotifyTarget::None);
+    }
+
+    #[test]
+    fn limiter_skips_duplicate_within_cooldown() {
+        let limiter = NotifyLimiter::new(Duration::from_millis(1000));
+        assert!(limiter.should_notify("a"));
+        assert!(!limiter.should_notify("a"));
+    }
+
+    #[test]
+    fn limiter_allows_after_cooldown() {
+        let limiter = NotifyLimiter::new(Duration::from_millis(10));
+        assert!(limiter.should_notify("a"));
+        assert!(!limiter.should_notify("a"));
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(limiter.should_notify("a"));
+    }
+
+    #[test]
+    fn limiter_per_address_isolated() {
+        let limiter = NotifyLimiter::new(Duration::from_millis(1000));
+        assert!(limiter.should_notify("a"));
+        assert!(limiter.should_notify("b"));
+        assert!(!limiter.should_notify("a"));
     }
 }

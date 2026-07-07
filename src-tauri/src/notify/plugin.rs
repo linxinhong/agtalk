@@ -15,6 +15,30 @@ use std::time::Duration;
 const DEFAULT_PLUGIN_TIMEOUT_MS: u64 = 1000;
 const MIN_PLUGIN_TIMEOUT_MS: u64 = 100;
 const MAX_PLUGIN_TIMEOUT_MS: u64 = 10000;
+const MAX_PLUGIN_NAME_LEN: usize = 64;
+
+/// 校验插件名是否合法。
+/// 只允许 ASCII 字母、数字、下划线、连字符；长度 1–64。
+pub fn validate_plugin_name(name: &str) -> Result<(), NotifyError> {
+    if name.is_empty() {
+        return Err(NotifyError::Other("插件名不能为空".to_string()));
+    }
+    if name.len() > MAX_PLUGIN_NAME_LEN {
+        return Err(NotifyError::Other(format!(
+            "插件名长度超过 {} 字符",
+            MAX_PLUGIN_NAME_LEN
+        )));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(NotifyError::Other(
+            "插件名只能包含 ASCII 字母、数字、下划线、连字符".to_string(),
+        ));
+    }
+    Ok(())
+}
 
 /// 插件通道实现。
 pub struct PluginChannel {
@@ -22,8 +46,10 @@ pub struct PluginChannel {
 }
 
 impl PluginChannel {
-    pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into() }
+    pub fn new(name: impl Into<String>) -> Result<Self, NotifyError> {
+        let name = name.into();
+        validate_plugin_name(&name)?;
+        Ok(Self { name })
     }
 
     /// 从全局配置读取插件定义。
@@ -441,7 +467,7 @@ mod tests {
         );
         setup_config(&tmp, plugins);
 
-        let channel = PluginChannel::new("test");
+        let channel = PluginChannel::new("test").unwrap();
         let target = NotifyTarget::Plugin {
             name: "test".to_string(),
         };
@@ -489,7 +515,7 @@ mod tests {
         );
         setup_config(&tmp, plugins);
 
-        let channel = PluginChannel::new("test");
+        let channel = PluginChannel::new("test").unwrap();
         let target = NotifyTarget::Plugin {
             name: "test".to_string(),
         };
@@ -530,7 +556,7 @@ mod tests {
         );
         setup_config(&tmp, plugins);
 
-        let channel = PluginChannel::new("fail");
+        let channel = PluginChannel::new("fail").unwrap();
         let target = NotifyTarget::Plugin {
             name: "fail".to_string(),
         };
@@ -568,7 +594,7 @@ mod tests {
         );
         setup_config(&tmp, plugins);
 
-        let channel = PluginChannel::new("slow");
+        let channel = PluginChannel::new("slow").unwrap();
         let target = NotifyTarget::Plugin {
             name: "slow".to_string(),
         };
@@ -580,5 +606,30 @@ mod tests {
         } else {
             std::env::remove_var(CONFIG_DIR_ENV);
         }
+    }
+
+    #[test]
+    fn validate_plugin_name_accepts_alphanumeric_dash_underscore() {
+        assert!(validate_plugin_name("macos-notify_1").is_ok());
+    }
+
+    #[test]
+    fn validate_plugin_name_rejects_path_separator() {
+        assert!(validate_plugin_name("foo/bar").is_err());
+        assert!(validate_plugin_name("foo\\bar").is_err());
+    }
+
+    #[test]
+    fn validate_plugin_name_rejects_empty_and_too_long() {
+        assert!(validate_plugin_name("").is_err());
+        let long = "a".repeat(65);
+        assert!(validate_plugin_name(&long).is_err());
+    }
+
+    #[test]
+    fn validate_plugin_name_rejects_special_chars() {
+        assert!(validate_plugin_name("foo:bar").is_err());
+        assert!(validate_plugin_name("foo bar").is_err());
+        assert!(validate_plugin_name("foo&bar").is_err());
     }
 }

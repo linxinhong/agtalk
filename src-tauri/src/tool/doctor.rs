@@ -1230,22 +1230,40 @@ fn notify_checks(ctx: &DoctorContext, identity: &Option<ResolvedIdentity>) -> Ve
                     }
                     Err(e) => {
                         let msg = e.to_string();
-                        let suggestion = if msg.contains("不存在")
+                        let (suggestion, command) = if msg.contains("不存在")
                             || msg.contains("不是可执行文件")
                             || msg.contains("不可执行")
                         {
-                            format!(
-                                "将可执行文件放入 {} 并在 config.json 中配置相对路径或绝对路径",
-                                crate::paths::plugins_dir()
-                                    .map(|p| p.to_string_lossy().into_owned())
-                                    .unwrap_or_else(|_| "<config_dir>/plugins".to_string())
+                            (
+                                format!(
+                                    "将可执行文件放入 {} 并在 config.json 中配置相对路径或绝对路径",
+                                    crate::paths::plugins_dir()
+                                        .map(|p| p.to_string_lossy().into_owned())
+                                        .unwrap_or_else(|_| "<config_dir>/plugins".to_string())
+                                ),
+                                Some(format!(
+                                    "agtalk config set notify.plugins.{}.path <name-or-abs-path>",
+                                    name
+                                )),
                             )
                         } else if msg.contains("'..'") || msg.contains("逃逸") {
-                            "插件相对路径禁止包含 '..'".to_string()
+                            (
+                                "插件相对路径禁止包含 '..'".to_string(),
+                                Some(format!(
+                                    "agtalk config set notify.plugins.{}.path <name-or-abs-path>",
+                                    name
+                                )),
+                            )
                         } else {
-                            format!(
-                                "agtalk config set notify.plugins.{}.path <name-or-abs-path>",
-                                name
+                            (
+                                format!(
+                                    "agtalk config set notify.plugins.{}.path <name-or-abs-path>",
+                                    name
+                                ),
+                                Some(format!(
+                                    "agtalk config set notify.plugins.{}.path <name-or-abs-path>",
+                                    name
+                                )),
                             )
                         };
                         checks.push(check(
@@ -1254,13 +1272,13 @@ fn notify_checks(ctx: &DoctorContext, identity: &Option<ResolvedIdentity>) -> Ve
                             "error",
                             format!("插件 {} 校验失败: {} (原始配置: {})", name, msg, entry.path),
                             Some(&suggestion),
-                            None,
+                            command.as_deref(),
                             serde_json::to_value(entry).unwrap_or_default(),
                         ));
                     }
                 },
                 None => {
-                    let suggestion = format!(
+                    let command = format!(
                         "agtalk config set notify.plugins.{}.path <name-or-abs-path>",
                         name
                     );
@@ -1269,8 +1287,8 @@ fn notify_checks(ctx: &DoctorContext, identity: &Option<ResolvedIdentity>) -> Ve
                         "notify.plugin",
                         "error",
                         format!("全局配置中未找到 notify 插件 '{}'", name),
-                        Some(&suggestion),
-                        None,
+                        Some(&command),
+                        Some(&command),
                         serde_json::Value::Null,
                     ));
                 }
@@ -1733,5 +1751,89 @@ mod tests {
             actions,
             vec!["agtalk daemon start", "agtalk id join tester"]
         );
+    }
+
+    #[test]
+    fn doctor_plugin_missing_sets_config_command() {
+        let tmp = TempDir::new().unwrap();
+        let (ctx, _guard) = test_ctx(&tmp);
+
+        let session = SessionFile {
+            address: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            name: "nora".to_string(),
+            workspace: "projA".to_string(),
+            intro: "前端".to_string(),
+            created_at: "2026-07-01T00:00:00Z".to_string(),
+            command: "agtalk".to_string(),
+            notify_channel: "plugin:missing".to_string(),
+            notify_target: NotifyTarget::Plugin {
+                name: "missing".to_string(),
+            },
+        };
+        session_file::write(&ctx.dot_agtalk, "nora", &session).unwrap();
+
+        let msg = run(ctx);
+        let checks = match msg {
+            ServerMsg::ToolDiagnosis { checks, .. } => checks,
+            other => panic!("expected ToolDiagnosis, got {:?}", other),
+        };
+
+        let plugin_check = find_check(&checks, "notify.plugin").unwrap();
+        assert_eq!(plugin_check.status, "error");
+        assert!(plugin_check
+            .command
+            .as_ref()
+            .unwrap()
+            .contains("agtalk config set notify.plugins.missing.path"));
+    }
+
+    #[test]
+    fn doctor_plugin_not_executable_sets_config_command() {
+        let tmp = TempDir::new().unwrap();
+        let (ctx, _guard) = test_ctx(&tmp);
+
+        let plugins_dir = tmp.path().join("plugins");
+        std::fs::create_dir_all(&plugins_dir).unwrap();
+        let plugin_path = plugins_dir.join("not-executable.sh");
+        std::fs::write(&plugin_path, "#!/bin/sh\n").unwrap();
+
+        let mut config = AgConfig::default();
+        config.http_port = 0;
+        config.notify.plugins.insert(
+            "bad".to_string(),
+            crate::config::NotifyPluginEntry {
+                path: "not-executable.sh".to_string(),
+                timeout_ms: None,
+            },
+        );
+        config.save().unwrap();
+
+        let session = SessionFile {
+            address: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            name: "nora".to_string(),
+            workspace: "projA".to_string(),
+            intro: "前端".to_string(),
+            created_at: "2026-07-01T00:00:00Z".to_string(),
+            command: "agtalk".to_string(),
+            notify_channel: "plugin:bad".to_string(),
+            notify_target: NotifyTarget::Plugin {
+                name: "bad".to_string(),
+            },
+        };
+        session_file::write(&ctx.dot_agtalk, "nora", &session).unwrap();
+
+        let msg = run(ctx);
+        let checks = match msg {
+            ServerMsg::ToolDiagnosis { checks, .. } => checks,
+            other => panic!("expected ToolDiagnosis, got {:?}", other),
+        };
+
+        let plugin_check = find_check(&checks, "notify.plugin").unwrap();
+        assert_eq!(plugin_check.status, "error");
+        assert!(plugin_check
+            .command
+            .as_ref()
+            .unwrap()
+            .contains("agtalk config set notify.plugins.bad.path"));
     }
 }
