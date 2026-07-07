@@ -243,9 +243,11 @@ notify 是 agtalk 解决"agent 会偷懒"的机制：daemon 有新消息时**主
 
 agent 跑在不同环境，notify 必须多通道，按 agent `join` 时声明的 `--notify <channel>` 选择：
 - `zellij` / `tmux`：write-chars / send-keys 注入（参考 agtalk-office notify.rs，已验证）。
-- `gui`：系统通知 + Tauri 弹窗（给人类或带 GUI 的 agent）。
-- `webhook:<url>`：POST 回调（给有 HTTP 端点的后台 agent）。
+- `plugin:<name>`：调用全局配置 `notify.plugins.<name>` 中注册的本地可执行文件。
 - `none`：不打扰，纯 pull。
+- `auto`：自动检测（zellij / tmux / none；不自动选择插件）。
+
+GUI 通知、系统通知、webhook 等通过 `plugin:<name>` 实现，不内置。
 
 ### 诚实标注局限
 

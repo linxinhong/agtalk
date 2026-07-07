@@ -1193,6 +1193,9 @@ fn notify_checks(ctx: &DoctorContext, identity: &Option<ResolvedIdentity>) -> Ve
         Some(NotifyTarget::Tmux { pane }) => {
             format!("tmux pane {}", pane)
         }
+        Some(NotifyTarget::Plugin { name }) => {
+            format!("plugin {}", name)
+        }
         _ => "none".to_string(),
     };
     checks.push(check(
@@ -1208,6 +1211,72 @@ fn notify_checks(ctx: &DoctorContext, identity: &Option<ResolvedIdentity>) -> Ve
         None,
         serde_json::to_value(&target).unwrap_or_default(),
     ));
+
+    // 插件通道额外检查全局配置
+    if let Some(NotifyTarget::Plugin { name }) = target.as_ref() {
+        match crate::config::AgConfig::load() {
+            Ok(config) => match config.notify.plugins.get(name) {
+                Some(entry) => {
+                    let path = std::path::Path::new(&entry.path);
+                    if !path.is_absolute() {
+                        checks.push(check(
+                            "notify",
+                            "notify.plugin",
+                            "error",
+                            format!("插件 {} 路径不是绝对路径: {}", name, entry.path),
+                            Some("使用绝对路径配置插件"),
+                            None,
+                            serde_json::to_value(entry).unwrap_or_default(),
+                        ));
+                    } else if !path.exists() {
+                        checks.push(check(
+                            "notify",
+                            "notify.plugin",
+                            "error",
+                            format!("插件 {} 路径不存在: {}", name, entry.path),
+                            Some("确认插件文件已安装"),
+                            None,
+                            serde_json::to_value(entry).unwrap_or_default(),
+                        ));
+                    } else {
+                        checks.push(check(
+                            "notify",
+                            "notify.plugin",
+                            "ok",
+                            format!("插件 {} 配置有效: {}", name, entry.path),
+                            None,
+                            None,
+                            serde_json::to_value(entry).unwrap_or_default(),
+                        ));
+                    }
+                }
+                None => {
+                    let suggestion =
+                        format!("agtalk config set notify.plugins.{}.path <abs-path>", name);
+                    checks.push(check(
+                        "notify",
+                        "notify.plugin",
+                        "error",
+                        format!("全局配置中未找到 notify 插件 '{}'", name),
+                        Some(&suggestion),
+                        None,
+                        serde_json::Value::Null,
+                    ));
+                }
+            },
+            Err(e) => {
+                checks.push(check(
+                    "notify",
+                    "notify.plugin",
+                    "error",
+                    format!("加载全局配置失败: {}", e),
+                    None,
+                    None,
+                    serde_json::Value::Null,
+                ));
+            }
+        }
+    }
 
     checks
 }

@@ -5,7 +5,7 @@ use crate::paths::{set_permissions_0600, set_permissions_0700};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// 终端/多路复用器定位信息，用于 notify 通道精准注入提示。
+/// 终端/多路复用器/插件定位信息，用于 notify 通道精准注入提示。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum NotifyTarget {
@@ -17,6 +17,9 @@ pub enum NotifyTarget {
     },
     Tmux {
         pane: String,
+    },
+    Plugin {
+        name: String,
     },
 }
 

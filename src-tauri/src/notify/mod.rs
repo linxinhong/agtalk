@@ -7,6 +7,7 @@ use std::path::Path;
 use std::process::Command;
 use thiserror::Error;
 
+pub mod plugin;
 pub mod tmux;
 pub mod zellij;
 
@@ -30,6 +31,9 @@ pub enum NotifyError {
 pub struct NotifyHint {
     pub from_name: String,
     pub binary_path: String,
+    pub workspace: String,
+    pub agent_name: String,
+    pub agent_address: String,
 }
 
 /// notify 通道抽象。
@@ -39,7 +43,11 @@ pub trait NotifyChannel: Send + Sync {
 }
 
 /// 根据名字获取通道实现。
+/// 支持 "zellij" / "tmux" / "plugin:<name>"。
 pub fn channel_from_name(name: &str) -> Option<Box<dyn NotifyChannel>> {
+    if let Some(plugin_name) = name.strip_prefix("plugin:") {
+        return Some(Box::new(plugin::PluginChannel::new(plugin_name)));
+    }
     match name {
         "zellij" => Some(Box::new(zellij::ZellijChannel)),
         "tmux" => Some(Box::new(tmux::TmuxChannel)),
@@ -87,7 +95,13 @@ pub fn resolve_channel(raw: &str) -> (String, Option<Box<dyn NotifyChannel>>, No
         return (name, channel, target);
     }
     if let Some(channel) = channel_from_name(raw) {
-        let target = auto_detect().1; // 复用环境变量定位
+        let target = if let Some(plugin_name) = raw.strip_prefix("plugin:") {
+            NotifyTarget::Plugin {
+                name: plugin_name.to_string(),
+            }
+        } else {
+            auto_detect().1 // 复用环境变量定位
+        };
         return (raw.to_string(), Some(channel), target);
     }
     // 未知通道降级为 none，不阻塞 join
@@ -117,6 +131,9 @@ pub async fn trigger(
     let hint = NotifyHint {
         from_name: from_name.to_string(),
         binary_path,
+        workspace: session.workspace.clone(),
+        agent_name: session.name.clone(),
+        agent_address: session.address.clone(),
     };
 
     channel.inject(&session.notify_target, &hint)
@@ -183,6 +200,9 @@ mod tests {
         let hint = NotifyHint {
             from_name: "nora".to_string(),
             binary_path: "/usr/local/bin/agtalk".to_string(),
+            workspace: "projA".to_string(),
+            agent_name: "codex".to_string(),
+            agent_address: "550e8400-e29b-41d4-a716-446655440000".to_string(),
         };
         let text = build_hint_text(&hint);
         assert!(text.contains("nora"));
@@ -328,5 +348,25 @@ mod tests {
         } else {
             std::env::remove_var("TMUX_PANE");
         }
+    }
+
+    #[test]
+    fn resolve_channel_plugin() {
+        let (name, _channel, target) = resolve_channel("plugin:macos");
+        assert_eq!(name, "plugin:macos");
+        assert_eq!(
+            target,
+            NotifyTarget::Plugin {
+                name: "macos".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_channel_unknown_becomes_none() {
+        let (name, channel, target) = resolve_channel("webhook");
+        assert_eq!(name, "none");
+        assert!(channel.is_none());
+        assert_eq!(target, NotifyTarget::None);
     }
 }

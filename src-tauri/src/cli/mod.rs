@@ -87,7 +87,7 @@ pub(crate) enum IdCmd {
         intro: Option<String>,
         #[arg(short, long)]
         workspace: Option<String>,
-        /// 打扰通道：auto | none | zellij | tmux | gui | webhook:<url>
+        /// 打扰通道：auto | none | zellij | tmux | plugin:<name>
         #[arg(short, long, default_value = "auto", value_name = "CHANNEL")]
         notify: String,
     },

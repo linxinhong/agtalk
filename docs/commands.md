@@ -127,12 +127,19 @@ agtalk id join [name] [--intro <text>] [--workspace <text>] [--notify <channel>]
 notify channel：
 
 ```text
-auto        自动检测 zellij/tmux，否则 none
-zellij      使用 zellij write-chars
-tmux        使用 tmux send-keys
-none        关闭打扰，仅 pull
-gui         预留
-webhook:<url> 预留
+auto              自动检测 zellij/tmux，否则 none
+zellij            使用 zellij write-chars
+tmux              使用 tmux send-keys
+none              关闭打扰，仅 pull
+plugin:<name>     调用全局配置中注册的本地插件
+```
+
+插件配置示例：
+
+```bash
+agtalk config set notify.plugins.macos.path /Users/me/.config/agtalk2/plugins/agtalk-notify-macos
+agtalk config set notify.plugins.macos.timeout_ms 1000
+agtalk id join coder --notify plugin:macos
 ```
 
 ### 5.2 id show
