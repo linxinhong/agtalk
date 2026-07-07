@@ -5,22 +5,31 @@ use crate::paths::{set_permissions_0600, set_permissions_0700};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// 终端/多路复用器/插件定位信息，用于 notify 通道精准注入提示。
+/// notify 通道定位信息，用于精准注入提示。
+///
+/// v2 只保留 `None` 与 `Plugin`：zellij/tmux 已迁出 core，由外部 notify plugin 通过
+/// `discover` 提供 endpoint，agtalk core 只负责透传。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum NotifyTarget {
     #[default]
     None,
-    Zellij {
-        session: String,
-        pane: String,
-    },
-    Tmux {
-        pane: String,
-    },
     Plugin {
         name: String,
+        /// 插件自定义的 endpoint 对象，由 plugin discover 输出、send 接收。
+        #[serde(default)]
+        endpoint: serde_json::Value,
     },
+}
+
+impl NotifyTarget {
+    /// 如果是 Plugin 变体，返回插件名；否则返回 None。
+    pub fn plugin_name(&self) -> Option<&str> {
+        match self {
+            NotifyTarget::Plugin { name, .. } => Some(name),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -95,9 +104,9 @@ mod tests {
             created_at: "2026-07-01T00:00:00Z".to_string(),
             command: "agtalk".to_string(),
             notify_channel: "auto".to_string(),
-            notify_target: NotifyTarget::Zellij {
-                session: "sess".to_string(),
-                pane: "1".to_string(),
+            notify_target: NotifyTarget::Plugin {
+                name: "zellij".to_string(),
+                endpoint: serde_json::json!({ "session": "sess", "pane": "1" }),
             },
         };
         write(&dot, "nora", &session).unwrap();

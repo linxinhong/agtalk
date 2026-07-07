@@ -46,23 +46,19 @@ pub fn handle_join(
                 };
             }
 
-            let (notify_channel, notify_target) = if notify.eq_ignore_ascii_case("auto") {
+            let base_channel = if notify.eq_ignore_ascii_case("auto") {
                 if session.notify_channel.is_empty()
                     || session.notify_channel.eq_ignore_ascii_case("auto")
                 {
-                    notify::auto_detect()
+                    None
                 } else {
-                    (
-                        session.notify_channel.clone(),
-                        session.notify_target.clone(),
-                    )
+                    Some(session.notify_channel.clone())
                 }
-            } else if notify.eq_ignore_ascii_case("none") {
-                ("none".to_string(), NotifyTarget::None)
             } else {
-                let (_, _, target) = notify::resolve_channel(&notify);
-                (notify, target)
+                Some(notify.clone())
             };
+            let (notify_channel, notify_target) =
+                resolve_notify(&base_channel.unwrap_or_else(|| "auto".to_string()));
 
             (
                 session.address.clone(),
@@ -85,14 +81,7 @@ pub fn handle_join(
                     }
                 };
 
-            let (notify_channel, notify_target) = if notify.eq_ignore_ascii_case("auto") {
-                notify::auto_detect()
-            } else if notify.eq_ignore_ascii_case("none") {
-                ("none".to_string(), NotifyTarget::None)
-            } else {
-                let (_, _, target) = notify::resolve_channel(&notify);
-                (notify, target)
-            };
+            let (notify_channel, notify_target) = resolve_notify(&notify);
 
             (
                 address,
@@ -286,6 +275,51 @@ fn validate_pid(pid: u32, start_time: u64) -> Result<(), String> {
     Ok(())
 }
 
+/// 统一解析 notify 参数：auto/none/plugin:<name>。
+/// 对 plugin 通道会调用 discover 获取 endpoint；若 discover 失败或插件不存在，
+/// 不阻塞 join，降级为 none。
+fn resolve_notify(notify: &str) -> (String, NotifyTarget) {
+    if notify.eq_ignore_ascii_case("none") {
+        return ("none".to_string(), NotifyTarget::None);
+    }
+    if notify.eq_ignore_ascii_case("auto") {
+        return notify::auto_detect();
+    }
+    if let Some(plugin_name) = notify.strip_prefix("plugin:") {
+        if let Some(channel) = notify::channel_from_name(notify) {
+            match channel.discover() {
+                Ok(Some(endpoint)) if endpoint.ready => {
+                    return (
+                        notify.to_string(),
+                        NotifyTarget::Plugin {
+                            name: plugin_name.to_string(),
+                            endpoint: endpoint.endpoint,
+                        },
+                    );
+                }
+                Ok(Some(endpoint)) => {
+                    tracing::warn!(
+                        "notify plugin {} discover 返回 not ready: {}",
+                        plugin_name,
+                        endpoint.message
+                    );
+                }
+                Ok(None) => {
+                    tracing::warn!("notify plugin {} discover 返回空", plugin_name);
+                }
+                Err(e) => {
+                    tracing::warn!("notify plugin {} discover 失败: {}", plugin_name, e);
+                }
+            }
+        }
+        // discover 失败或不 ready 时降级为 none，不阻塞 join。
+        return ("none".to_string(), NotifyTarget::None);
+    }
+    // 未知通道统一降级为 none。
+    tracing::warn!("未知 notify 通道 '{}', 降级为 none", notify);
+    ("none".to_string(), NotifyTarget::None)
+}
+
 fn short_id() -> String {
     Uuid::new_v4()
         .to_string()
@@ -305,6 +339,8 @@ mod tests {
     use crate::config::AgConfig;
     use crate::identity::session_file;
     use crate::storage::Storage;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
     use sysinfo::{Pid, System};
     use tempfile::TempDir;
@@ -315,6 +351,29 @@ mod tests {
         let storage = Storage::open_in_memory().unwrap();
         let state = AppState::new(storage, AgConfig::default(), dot);
         (state, tmp)
+    }
+
+    /// 创建临时 mock plugin 目录，把 `<tmp>/plugins` 加入 PATH，并写入 `agtalk-notify-<name>`。
+    /// 返回 (TempDir, prev_path)；调用方需用 `_tmp` 持有 TempDir，并在测试结束后恢复 PATH。
+    fn mock_plugin_env(name: &str) -> (TempDir, std::ffi::OsString) {
+        let tmp = TempDir::new().unwrap();
+        let plugins_dir = tmp.path().join("plugins");
+        std::fs::create_dir_all(&plugins_dir).unwrap();
+        let plugin_path = plugins_dir.join(format!("agtalk-notify-{}", name));
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1\" = \"discover\" ]; then echo '{{\"version\":1,\"type\":\"notify_endpoint\",\"channel\":\"{}\",\"ready\":true,\"endpoint\":{{\"pane\":\"1\"}},\"message\":\"ok\"}}'; fi\n",
+            name
+        );
+        std::fs::write(&plugin_path, script).unwrap();
+        #[cfg(unix)]
+        {
+            std::fs::set_permissions(&plugin_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let prev_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut paths = std::env::split_paths(&prev_path).collect::<Vec<_>>();
+        paths.push(plugins_dir);
+        std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+        (tmp, prev_path)
     }
 
     fn current_pid_start_time() -> (u32, u64) {
@@ -451,6 +510,7 @@ mod tests {
 
     #[test]
     fn lookup_includes_notify_zellij() {
+        let (_plugin_tmp, prev_path) = mock_plugin_env("zellij");
         let (state, _tmp) = test_state();
         let (pid, start_time) = current_pid_start_time();
 
@@ -459,7 +519,7 @@ mod tests {
             Some("reviewer".into()),
             Some("展示用 intro".into()),
             Some("agtalk".into()),
-            "zellij".into(),
+            "plugin:zellij".into(),
             pid,
             start_time,
         );
@@ -470,16 +530,19 @@ mod tests {
                 assert_eq!(mailboxes.len(), 1);
                 let mb = &mailboxes[0];
                 assert_eq!(mb.name, "reviewer");
-                assert_eq!(mb.notify_channel, "zellij");
-                assert_eq!(mb.notify, "zellij");
+                assert_eq!(mb.notify_channel, "plugin:zellij");
+                assert_eq!(mb.notify, "plugin:zellij");
                 assert!(mb.notify_ready);
             }
             other => panic!("expected LookupResult, got {:?}", other),
         }
+
+        std::env::set_var("PATH", prev_path);
     }
 
     #[test]
     fn lookup_includes_notify_plugin() {
+        let (_plugin_tmp, prev_path) = mock_plugin_env("macos");
         let (state, _tmp) = test_state();
         let (pid, start_time) = current_pid_start_time();
 
@@ -498,11 +561,14 @@ mod tests {
             ServerMsg::LookupResult { mailboxes } => {
                 assert_eq!(mailboxes.len(), 1);
                 let mb = &mailboxes[0];
+                assert_eq!(mb.notify_channel, "plugin:macos");
                 assert_eq!(mb.notify, "plugin:macos");
                 assert!(mb.notify_ready);
             }
             other => panic!("expected LookupResult, got {:?}", other),
         }
+
+        std::env::set_var("PATH", prev_path);
     }
 
     #[test]

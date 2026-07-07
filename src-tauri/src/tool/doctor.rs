@@ -5,6 +5,7 @@ use crate::identity::agents_map;
 use crate::identity::mailbox;
 use crate::identity::session_file::{self, NotifyTarget};
 use crate::notify;
+use crate::notify::NotifyHint;
 use crate::proto::{DiagnosisCheck, RootCause, ServerMsg};
 use crate::routing::inbox;
 use crate::tool::DoctorContext;
@@ -1119,12 +1120,12 @@ fn notify_checks(ctx: &DoctorContext, identity: &Option<ResolvedIdentity>) -> Ve
             "ok"
         },
         if detected_channel == "none" {
-            "未检测到 zellij/tmux 环境".to_string()
+            "未检测到可用 notify plugin".to_string()
         } else {
-            format!("检测到 {} 环境", detected_channel)
+            format!("检测到 {}", detected_channel)
         },
         if detected_channel == "none" {
-            Some("在 zellij/tmux 中运行 agent 可获得终端通知")
+            Some("安装 agtalk-notify-zellij / agtalk-notify-tmux 到 PATH 可获得终端通知")
         } else {
             None
         },
@@ -1187,14 +1188,8 @@ fn notify_checks(ctx: &DoctorContext, identity: &Option<ResolvedIdentity>) -> Ve
     }
 
     let target_desc = match &target {
-        Some(NotifyTarget::Zellij { session, pane }) => {
-            format!("zellij session {}, pane {}", session, pane)
-        }
-        Some(NotifyTarget::Tmux { pane }) => {
-            format!("tmux pane {}", pane)
-        }
-        Some(NotifyTarget::Plugin { name }) => {
-            format!("plugin {}", name)
+        Some(NotifyTarget::Plugin { name, endpoint }) => {
+            format!("plugin {} endpoint: {}", name, endpoint)
         }
         _ => "none".to_string(),
     };
@@ -1212,83 +1207,165 @@ fn notify_checks(ctx: &DoctorContext, identity: &Option<ResolvedIdentity>) -> Ve
         serde_json::to_value(&target).unwrap_or_default(),
     ));
 
-    // 插件通道额外检查全局配置
-    if let Some(NotifyTarget::Plugin { name }) = target.as_ref() {
-        match crate::config::AgConfig::load() {
-            Ok(config) => match config.notify.plugins.get(name) {
-                Some(entry) => match crate::notify::plugin::PluginChannel::validate_entry(entry) {
-                    Ok(path) => {
+    // 插件通道：检查 discover + send --dry-run
+    if let Some(NotifyTarget::Plugin { name, endpoint }) = target.as_ref() {
+        let join_notify_cmd = format!("agtalk id join {} --notify plugin:{}", id.name, name);
+        let set_plugin_path_cmd = format!(
+            "agtalk config set notify.plugins.{}.path <name-or-abs-path>",
+            name
+        );
+        match crate::notify::plugin::PluginChannel::new(name) {
+            Ok(plugin) => match plugin.resolve_binary() {
+                Ok(path) => match crate::notify::plugin::PluginChannel::validate_binary(&path) {
+                    Ok(()) => {
                         checks.push(check(
                             "notify",
-                            "notify.plugin",
+                            "notify.plugin.binary",
                             "ok",
-                            format!("插件 {} 配置有效: {}", name, path.display()),
+                            format!("插件 {} 二进制: {}", name, path.display()),
                             None,
                             None,
-                            serde_json::to_value(entry).unwrap_or_default(),
+                            serde_json::json!({ "path": path.to_string_lossy() }),
                         ));
+
+                        // discover
+                        match plugin.discover() {
+                            Ok(endpoint_result) => {
+                                if endpoint_result.ready {
+                                    checks.push(check(
+                                        "notify",
+                                        "notify.plugin.discover",
+                                        "ok",
+                                        format!(
+                                            "插件 {} discover ready: {}",
+                                            name, endpoint_result.message
+                                        ),
+                                        None,
+                                        None,
+                                        serde_json::to_value(&endpoint_result).unwrap_or_default(),
+                                    ));
+
+                                    // dry-run
+                                    let workspace = session
+                                        .as_ref()
+                                        .map(|s| s.workspace.clone())
+                                        .unwrap_or_default();
+                                    let dummy = NotifyHint {
+                                        from_name: "doctor".to_string(),
+                                        binary_path: "agtalk".to_string(),
+                                        workspace,
+                                        agent_name: id.name.clone(),
+                                        agent_address: id.address.clone(),
+                                    };
+                                    match plugin.send(endpoint, &dummy, true) {
+                                        Ok(()) => {
+                                            checks.push(check(
+                                                "notify",
+                                                "notify.plugin.dry_run",
+                                                "ok",
+                                                format!("插件 {} send --dry-run 成功", name),
+                                                None,
+                                                None,
+                                                serde_json::Value::Null,
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            checks.push(check(
+                                                "notify",
+                                                "notify.plugin.dry_run",
+                                                "error",
+                                                format!("插件 {} send --dry-run 失败: {}", name, e),
+                                                Some(
+                                                    "检查插件是否能在当前环境访问对应终端/session",
+                                                ),
+                                                None,
+                                                serde_json::Value::Null,
+                                            ));
+                                        }
+                                    }
+                                } else {
+                                    checks.push(check(
+                                        "notify",
+                                        "notify.plugin.discover",
+                                        "error",
+                                        format!(
+                                            "插件 {} discover 返回 not ready: {}",
+                                            name, endpoint_result.message
+                                        ),
+                                        Some("在对应终端环境内重新 join，或安装可用插件"),
+                                        Some(&join_notify_cmd),
+                                        serde_json::to_value(&endpoint_result).unwrap_or_default(),
+                                    ));
+                                }
+                            }
+                            Err(e) => {
+                                checks.push(check(
+                                    "notify",
+                                    "notify.plugin.discover",
+                                    "error",
+                                    format!("插件 {} discover 失败: {}", name, e),
+                                    Some("检查插件是否可执行、配置路径是否正确"),
+                                    Some(&set_plugin_path_cmd),
+                                    serde_json::Value::Null,
+                                ));
+                            }
+                        }
                     }
                     Err(e) => {
-                        let msg = e.to_string();
-                        let (suggestion, command) = if msg.contains("不存在")
-                            || msg.contains("不是可执行文件")
-                            || msg.contains("不可执行")
-                        {
-                            (
-                                format!(
-                                    "将可执行文件放入 {} 并在 config.json 中配置相对路径或绝对路径",
-                                    crate::paths::plugins_dir()
-                                        .map(|p| p.to_string_lossy().into_owned())
-                                        .unwrap_or_else(|_| "<config_dir>/plugins".to_string())
-                                ),
-                                Some(format!(
-                                    "agtalk config set notify.plugins.{}.path <name-or-abs-path>",
-                                    name
-                                )),
-                            )
-                        } else if msg.contains("'..'") || msg.contains("逃逸") {
-                            (
-                                "插件相对路径禁止包含 '..'".to_string(),
-                                Some(format!(
-                                    "agtalk config set notify.plugins.{}.path <name-or-abs-path>",
-                                    name
-                                )),
-                            )
-                        } else {
-                            (
-                                format!(
-                                    "agtalk config set notify.plugins.{}.path <name-or-abs-path>",
-                                    name
-                                ),
-                                Some(format!(
-                                    "agtalk config set notify.plugins.{}.path <name-or-abs-path>",
-                                    name
-                                )),
-                            )
-                        };
                         checks.push(check(
                             "notify",
-                            "notify.plugin",
+                            "notify.plugin.binary",
                             "error",
-                            format!("插件 {} 校验失败: {} (原始配置: {})", name, msg, entry.path),
-                            Some(&suggestion),
-                            command.as_deref(),
-                            serde_json::to_value(entry).unwrap_or_default(),
+                            format!("插件 {} 不可执行: {}", name, e),
+                            Some("检查文件权限或使用 chmod +x"),
+                            Some(&set_plugin_path_cmd),
+                            serde_json::Value::Null,
                         ));
                     }
                 },
-                None => {
-                    let command = format!(
-                        "agtalk config set notify.plugins.{}.path <name-or-abs-path>",
-                        name
-                    );
+                Err(e) => {
+                    let msg = e.to_string();
+                    let (suggestion, command) = if msg.contains("找不到") {
+                        (
+                            format!(
+                                "将可执行文件放入 {} 或在 PATH 中安装 agtalk-notify-{}",
+                                crate::paths::plugins_dir()
+                                    .map(|p| p.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|_| "<config_dir>/plugins".to_string()),
+                                name
+                            ),
+                            Some(format!(
+                                "agtalk config set notify.plugins.{}.path <name-or-abs-path>",
+                                name
+                            )),
+                        )
+                    } else if msg.contains("'..'") || msg.contains("逃逸") {
+                        (
+                            "插件相对路径禁止包含 '..'".to_string(),
+                            Some(format!(
+                                "agtalk config set notify.plugins.{}.path <name-or-abs-path>",
+                                name
+                            )),
+                        )
+                    } else {
+                        (
+                            format!(
+                                "agtalk config set notify.plugins.{}.path <name-or-abs-path>",
+                                name
+                            ),
+                            Some(format!(
+                                "agtalk config set notify.plugins.{}.path <name-or-abs-path>",
+                                name
+                            )),
+                        )
+                    };
                     checks.push(check(
                         "notify",
-                        "notify.plugin",
+                        "notify.plugin.binary",
                         "error",
-                        format!("全局配置中未找到 notify 插件 '{}'", name),
-                        Some(&command),
-                        Some(&command),
+                        format!("插件 {} 不可用: {}", name, msg),
+                        Some(&suggestion),
+                        command.as_deref(),
                         serde_json::Value::Null,
                     ));
                 }
@@ -1296,9 +1373,9 @@ fn notify_checks(ctx: &DoctorContext, identity: &Option<ResolvedIdentity>) -> Ve
             Err(e) => {
                 checks.push(check(
                     "notify",
-                    "notify.plugin",
+                    "notify.plugin.binary",
                     "error",
-                    format!("加载全局配置失败: {}", e),
+                    format!("非法插件名 {}: {}", name, e),
                     None,
                     None,
                     serde_json::Value::Null,
@@ -1768,6 +1845,7 @@ mod tests {
             notify_channel: "plugin:missing".to_string(),
             notify_target: NotifyTarget::Plugin {
                 name: "missing".to_string(),
+                endpoint: serde_json::Value::Null,
             },
         };
         session_file::write(&ctx.dot_agtalk, "nora", &session).unwrap();
@@ -1778,7 +1856,7 @@ mod tests {
             other => panic!("expected ToolDiagnosis, got {:?}", other),
         };
 
-        let plugin_check = find_check(&checks, "notify.plugin").unwrap();
+        let plugin_check = find_check(&checks, "notify.plugin.binary").unwrap();
         assert_eq!(plugin_check.status, "error");
         assert!(plugin_check
             .command
@@ -1818,6 +1896,7 @@ mod tests {
             notify_channel: "plugin:bad".to_string(),
             notify_target: NotifyTarget::Plugin {
                 name: "bad".to_string(),
+                endpoint: serde_json::Value::Null,
             },
         };
         session_file::write(&ctx.dot_agtalk, "nora", &session).unwrap();
@@ -1828,7 +1907,7 @@ mod tests {
             other => panic!("expected ToolDiagnosis, got {:?}", other),
         };
 
-        let plugin_check = find_check(&checks, "notify.plugin").unwrap();
+        let plugin_check = find_check(&checks, "notify.plugin.binary").unwrap();
         assert_eq!(plugin_check.status, "error");
         assert!(plugin_check
             .command

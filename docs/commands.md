@@ -127,17 +127,23 @@ agtalk id join [name] [--intro <text>] [--workspace <text>] [--notify <channel>]
 notify channel：
 
 ```text
-auto              自动检测 zellij/tmux，否则 none
-zellij            使用 zellij write-chars
-tmux              使用 tmux send-keys
+auto              依次尝试 plugin:zellij / plugin:tmux discover，否则 none
+plugin:<name>     调用外部 notify 插件（如 zellij、tmux、macos、webhook）
 none              关闭打扰，仅 pull
-plugin:<name>     调用全局配置中注册的本地插件
 ```
 
-插件配置示例：
+zellij/tmux 已迁出 agtalk core，需要安装对应 plugin 二进制：
 
 ```bash
-# 插件放在 ~/.config/agtalk2/plugins/，配置时只需写文件名
+# 方式一：安装到 PATH
+cp plugins/agtalk-notify-zellij ~/.local/bin/
+chmod +x ~/.local/bin/agtalk-notify-zellij
+agtalk id join coder --notify plugin:zellij
+
+# 方式二：放入配置目录并在 config 中注册
+mkdir -p ~/.config/agtalk2/plugins
+cp agtalk-notify-macos ~/.config/agtalk2/plugins/
+chmod +x ~/.config/agtalk2/plugins/agtalk-notify-macos
 agtalk config set notify.plugins.macos.path agtalk-notify-macos
 agtalk config set notify.plugins.macos.timeout_ms 1000
 agtalk id join coder --notify plugin:macos
@@ -176,7 +182,7 @@ agtalk --json id lookup [name]
 - 无参：列出全部活跃 mailbox。
 - 有参：按 name 过滤。
 - 返回 address、name、intro、workspace、notify、notify_ready。
-- `notify` 是目标 agent 注册时声明的打扰通道摘要：zellij、tmux、plugin:<name>、none、unknown。
+- `notify` 是目标 agent 注册时声明的打扰通道摘要：plugin:<name>、none、unknown。
 - `notify_ready=true` 表示目标有可用 notify 通道；agent 可据此决定是否发送后接 `wait`。
 - 不做按 name 路由。
 

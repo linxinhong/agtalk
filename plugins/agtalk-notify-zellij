@@ -1,0 +1,63 @@
+#!/bin/sh
+# agtalk notify plugin for zellij
+# Protocol: discover / send [--dry-run]
+
+set -e
+
+CMD="$1"
+
+if [ "$CMD" = "discover" ]; then
+    SESSION="${ZELLIJ_SESSION_NAME:-}"
+    PANE="${ZELLIJ_PANE_ID:-}"
+
+    if [ -z "$SESSION" ] || [ -z "$PANE" ]; then
+        printf '{"version":1,"type":"notify_endpoint","channel":"zellij","ready":false,"endpoint":{},"message":"not in a zellij session"}\n'
+        exit 0
+    fi
+
+    # Verify the session/pane is reachable from this shell.
+    if ! zellij --session "$SESSION" action list-panes >/dev/null 2>&1; then
+        printf '{"version":1,"type":"notify_endpoint","channel":"zellij","ready":false,"endpoint":{"session":"%s","pane":"%s"},"message":"zellij action not reachable from current context"}\n' "$SESSION" "$PANE"
+        exit 0
+    fi
+
+    printf '{"version":1,"type":"notify_endpoint","channel":"zellij","ready":true,"endpoint":{"session":"%s","pane":"%s"},"message":"zellij session %s, pane %s"}\n' "$SESSION" "$PANE" "$SESSION" "$PANE"
+    exit 0
+fi
+
+if [ "$CMD" = "send" ]; then
+    DRY_RUN=false
+    if [ "$2" = "--dry-run" ]; then
+        DRY_RUN=true
+    fi
+
+    # Read JSON payload from stdin.
+    PAYLOAD=$(cat)
+    ENDPOINT=$(printf '%s' "$PAYLOAD" | python3 -c 'import sys,json; print(json.dumps(json.load(sys.stdin).get("endpoint",{})))' 2>/dev/null || echo '{}')
+    SESSION=$(printf '%s' "$ENDPOINT" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("session",""))' 2>/dev/null || true)
+    PANE=$(printf '%s' "$ENDPOINT" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("pane",""))' 2>/dev/null || true)
+
+    if [ -z "$SESSION" ] || [ -z "$PANE" ]; then
+        echo "missing endpoint.session or endpoint.pane" >&2
+        exit 1
+    fi
+
+    if [ "$DRY_RUN" = true ]; then
+        if zellij --session "$SESSION" action list-panes >/dev/null 2>&1; then
+            exit 0
+        fi
+        echo "zellij session $SESSION not reachable" >&2
+        exit 1
+    fi
+
+    # Build the human-readable hint. The payload already contains no body/secret.
+    FROM_NAME=$(printf '%s' "$PAYLOAD" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("from_name","someone"))' 2>/dev/null || echo "someone")
+    READ_COMMAND=$(printf '%s' "$PAYLOAD" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("read_command","agtalk msg read"))' 2>/dev/null || echo "agtalk msg read")
+    TEXT="[agtalk] 新消息来自 ${FROM_NAME}，运行 ${READ_COMMAND} 查看"
+
+    zellij --session "$SESSION" action write-chars --pane-id "$PANE" "$TEXT"
+    exit 0
+fi
+
+echo "usage: $0 discover | send [--dry-run]" >&2
+exit 1

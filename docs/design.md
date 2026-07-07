@@ -483,19 +483,29 @@ agtalk 在 pull 层（SSE / `msg inbox`）之外，增加**打扰层（notify）
 ```
 agent 在终端里撞见这行 → 它的核心循环把它当输入 → 自然去执行 msg read → 拿到正文。这是 agtalk-office 已验证有效的模式。
 
-### 5.3 多通道：四种环境各自的触达方式
+### 5.3 多通道：通用 plugin 协议
 
-agent 可能跑在任何环境（终端+zellij/tmux、普通终端、GUI/IDE、后台进程），**没有任何单一通道能触达所有环境**。notify 必须多通道，按 agent 注册时声明的环境选择：
+agent 可能跑在任何环境（终端+zellij/tmux、普通终端、GUI/IDE、后台进程），**没有任何单一通道能触达所有环境**。v2 起，agtalk core 不再内置具体通道实现，而是通过**通用 notify plugin 协议**把"有消息"信号交给外部可执行插件处理。
 
 | agent 环境 | notify 通道 | 机制 | 局限 |
 |---|---|---|---|
-| 终端 + zellij | zellij write-chars | `zellij action write-chars` 注入到目标 pane | 依赖 ZELLIJ_SESSION_NAME/ZELLIJ_PANE_ID；agtalk-office 已实现 |
-| 终端 + tmux | tmux send-keys | `tmux send-keys -t <target>` 注入 | 依赖 TMUX_PANE；agtalk-office 已实现 |
-| 普通终端（无多路复用器） | **无标准方式** | — | **难点**：没有 API 往另一个终端进程的 stdin 写字。agtalk-office 对此无解（跳过）。v2 也不假装能解决，仅依赖 agent 自查（msg read）或建议用户在 zellij/tmux 里跑 agent |
-| GUI / IDE | 系统通知 + Tauri 弹窗 | OS 通知中心 / Tauri window 通知 | 需要前端展示组件；适合人类 agent 或带 GUI 的 agent |
-| 后台进程 | watch 文件 / HTTP 回调 | daemon 写 `<workdir>/.agtalk/notify.flag`，或 POST agent 注册的 webhook | agent 需主动监听文件/webhook |
+| 终端 + zellij | `plugin:zellij` | 外部插件 `agtalk-notify-zellij` 调用 `zellij action write-chars` | 需要插件二进制；daemon 作为后台进程时可能无法访问 active zellij session |
+| 终端 + tmux | `plugin:tmux` | 外部插件 `agtalk-notify-tmux` 调用 `tmux send-keys` | 需要插件二进制；依赖 TMUX_PANE |
+| 普通终端（无多路复用器） | **无标准方式** | — | **难点**：没有 API 往另一个终端进程的 stdin 写字。agtalk-office 对此无解（跳过）。v2 也不假装能解决，仅依赖 agent 自查（msg read）或安装对应 plugin |
+| GUI / IDE / 系统通知 / webhook | `plugin:<name>` | 用户自定义插件 | 由插件自行实现；agtalk core 不经 shell 执行 |
+| 后台进程 | `plugin:<name>` | watch 文件 / HTTP 回调 等 | agent 需主动监听 |
 
-**注册时声明环境**：agent `id join` 时通过 `--notify <channel>` 声明自己希望被打扰的通道（如 `zellij` / `tmux` / `gui` / `webhook:<url>` / `none`）。daemon 按此选择通道。未声明 = `none`（不打扰，纯 pull）。
+**注册时声明环境**：agent `id join` 时通过 `--notify <channel>` 声明通道：
+
+```bash
+agtalk id join coder --notify none
+agtalk id join coder --notify plugin:zellij
+agtalk id join coder --notify plugin:tmux
+agtalk id join coder --notify plugin:macos
+agtalk id join coder --notify auto          # 依次尝试 plugin:zellij -> plugin:tmux -> none
+```
+
+core 只识别 `none`、`plugin:<name>`、`auto`。`auto` 通过调用插件 `discover` 检测可用性，而不是读取环境变量。未声明 = `none`（不打扰，纯 pull）。
 
 ### 5.4 notify 与 pull 的关系（互补，非替代）
 
@@ -514,7 +524,8 @@ agent 可能跑在任何环境（终端+zellij/tmux、普通终端、GUI/IDE、�
 ### 5.5 安全约束（沿用 agtalk-office 的好设计）
 
 - notify 注入终端的文本**只含信号 + 命令模板，绝不含消息正文**（防 shell 注入）。
-- 外部 notify 命令插件（CommandPlugin）路径必须绝对，参数数组执行（不经 shell）。
+- 外部 notify 插件通过 `discover` / `send` 两阶段协议工作：join 时 discover 缓存 endpoint，send 失败时自动重新 discover 刷新。
+- 外部 notify 插件参数数组执行（不经 shell）；路径优先读取全局配置，相对路径/纯文件名解析到 `<config_dir>/plugins/`（禁止 `..` 逃逸），未配置时回退到 PATH 中的 `agtalk-notify-<name>`。
 - 注入的命令模板末尾 `agtalk msg read` 会读 stdin 等待正文——这是预期行为，但若 agent 当前 pane 在交互提示中（如 sudo 密码），该文本会被当输入。属功能固有风险，文档需说明。
 
 ---
@@ -704,11 +715,11 @@ AGTALK_NAME=<name> agtalk <cmd>
 
 `agtalk id join` 的 `--notify` 默认值为 `auto`：
 
-- 检测到 `ZELLIJ_SESSION_NAME` + `ZELLIJ_PANE_ID` → `zellij`。
-- 否则检测到 `TMUX` / `TMUX_PANE` → `tmux`。
-- 否则 `none`。
+- 依次调用 `agtalk-notify-zellij discover`、`agtalk-notify-tmux discover`。
+- 第一个返回 `ready=true` 的 plugin 被选中，endpoint 缓存到 `session.json`。
+- 都不可用则降级为 `none`。
 
-用户仍可显式 `--notify none` 关闭。notify 配置随 session.json 持久化，`msg send` / `msg reply` / `msg ask` 投递消息后异步触发。notify 失败只记日志，不影响消息投递。
+用户仍可显式 `--notify none` 关闭。notify 配置随 session.json 持久化，`msg send` / `msg reply` / `msg ask` 投递消息后异步触发。notify 失败时自动重新 discover 刷新 endpoint 并重试一次，仍失败只记日志，不影响消息投递。
 
 ### 10.4 session.json 扩展字段
 
@@ -717,11 +728,14 @@ AGTALK_NAME=<name> agtalk <cmd>
 ```json
 {
   "command": "<注册时当前 agtalk 二进制路径>",
-  "notify_channel": "zellij",
+  "notify_channel": "plugin:zellij",
   "notify_target": {
-    "type": "zellij",
-    "session": "...",
-    "pane": "..."
+    "type": "plugin",
+    "name": "zellij",
+    "endpoint": {
+      "session": "...",
+      "pane": "..."
+    }
   }
 }
 ```

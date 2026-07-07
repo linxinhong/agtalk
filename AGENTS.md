@@ -61,7 +61,7 @@ src-tauri/src/
   paths.rs        ← 配置目录、状态路径、权限工具
   commands.rs     ← Tauri 命令桥（薄，仅转发到各领域模块）
   mem/            ← 记忆/协作状态（plan、entries、pack）
-  notify/         ← 打扰层（zellij / tmux / auto 检测）
+  notify/         ← 打扰层（通用 plugin 协议：discover / send / auto 检测）
   tool/           ← 工具/诊断（doctor、version、path）
 ```
 
@@ -241,24 +241,45 @@ notify 是 agtalk 解决"agent 会偷懒"的机制：daemon 有新消息时**主
 
 ### 多通道实现
 
-agent 跑在不同环境，notify 必须多通道，按 agent `join` 时声明的 `--notify <channel>` 选择：
-- `zellij` / `tmux`：write-chars / send-keys 注入（参考 agtalk-office notify.rs，已验证）。
-- `plugin:<name>`：调用全局配置 `notify.plugins.<name>` 中注册的本地可执行文件。
-- `none`：不打扰，纯 pull。
-- `auto`：自动检测（zellij / tmux / none；不自动选择插件）。
+v2 起，zellij/tmux 等终端通知不再内置于 agtalk core，而是通过**通用 notify plugin 协议**实现。agtalk core 只负责：
 
-GUI 通知、系统通知、webhook 等通过 `plugin:<name>` 实现，不内置。
+1. 按 `plugin:<name>` 查找可执行插件（配置 path 优先，否则 PATH 中的 `agtalk-notify-<name>`）。
+2. join / auto 时调用插件的 `discover` 子命令，获取并缓存 endpoint 到 `session.json`。
+3. 收到消息时调用插件的 `send` 子命令执行提醒；失败时自动重新 `discover` 刷新 endpoint 并重试一次。
+4. `agtalk tool doctor` 调用 `discover` + `send --dry-run` 诊断可用性。
+
+用户注册身份时选择通道：
+
+- `none`：不打扰，纯 pull。
+- `plugin:<name>`：调用对应外部插件。
+- `auto`：依次尝试 `plugin:zellij`、`plugin:tmux`，都不可用则降级为 `none`。
+
+GUI 通知、系统通知、webhook、IDE 通知、BLE 等全部通过 `plugin:<name>` 实现，不内置。
+
+### 通用 plugin 协议
+
+插件必须支持：
+
+```bash
+<plugin> discover        # stdout 输出 JSON endpoint
+<plugin> send [--dry-run] # stdin 读 JSON payload，执行提醒或只验证
+```
+
+- discover 输出 schema 见 `docs/notify-plugin.md` §4.1。
+- send 输入 schema 见 `docs/notify-plugin.md` §4.2。
+- agtalk core 对 `endpoint` 对象完全透传，不解析具体字段。
 
 ### 诚实标注局限
 
-- **"普通终端（无多路复用器）"无标准注入方式**——不假装能解决。文档明确：该环境下 notify 不生效，agent 需自查（`agtalk msg read`）或建议用户在 zellij/tmux 里跑 agent。agtalk-office 对此也无解。
-- 注入命令模板末尾（如 `agtalk msg read`）会读 stdin——若 agent pane 当前在交互提示中（sudo 密码/REPL），文本会被当输入。属固有风险，须在用户文档说明。
+- **普通终端（无多路复用器且无可用 plugin）**无标准注入方式——不假装能解决。文档明确：该环境下 notify 不生效，agent 需自查（`agtalk msg read`）或安装对应 plugin。
+- 终端注入命令模板末尾（如 `agtalk msg read`）会读 stdin——若 agent pane 当前在交互提示中（sudo 密码/REPL），文本会被当输入。属固有风险，须在用户文档说明。
+- daemon 作为独立后台进程时，可能无法访问当前 shell 的 zellij session；此时 plugin discover 会返回 `ready=false`，通知降级为纯 pull。
 
 ### 扩展性
 
-- notify 通道用 trait（`NotifyChannel`）抽象，每个通道一个实现。新增通道不改 daemon 核心。
-- 外部 notify 命令插件默认放在 `<config_dir>/plugins/`；配置中 `path` 为相对路径或纯文件名时，自动解析到该目录。
-- 外部 notify 命令插件参数数组执行（不经 shell）。
+- notify 通道用 trait（`NotifyChannel`）抽象。新增通道只需提供符合协议的插件二进制，不改 daemon 核心。
+- 外部 notify 插件默认放在 `<config_dir>/plugins/`；配置中 `path` 为相对路径或纯文件名时，自动解析到该目录；也支持绝对路径；未配置时在 PATH 中查找 `agtalk-notify-<name>`。
+- 外部 notify 插件参数数组执行（不经 shell）。
 
 ---
 
@@ -348,7 +369,7 @@ CI 已配置在 `.github/workflows/ci.yml`，必须保持绿色。提交前本�
 - daemon 监听仅 `127.0.0.1`，不对外。
 - 认证锚点是文件系统（能读 session.json 的同 uid 进程即被信任），daemon 叠加 PID+start_time 校验。
 - notify（终端通知）只注入**短 ID 或可读名**，**禁止注入消息正文**到终端（防注入）。
-- 外部 notify 命令插件路径必须绝对，参数数组执行（不经 shell）。
+- 外部 notify 命令插件参数数组执行（不经 shell）。路径优先读取全局配置；相对路径/纯文件名解析到 `<config_dir>/plugins/`，禁止 `..` 逃逸；未配置时回退到 PATH 中的 `agtalk-notify-<name>`。
 
 ---
 

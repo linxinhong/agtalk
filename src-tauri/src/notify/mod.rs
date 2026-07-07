@@ -1,8 +1,12 @@
 //! 打扰层（notify）：daemon 主动把"有消息"信号推到 agent 执行环境。
 //!
 //! 原则：只发信号 + 取信命令模板，绝不注入消息正文。
+//!
+//! v2 架构：agtalk core 只负责调用外部 notify plugin 的 `discover`/`send` 子命令。
+//! zellij/tmux 等具体实现已迁出 core，作为独立可执行插件。
 
 use crate::identity::session_file::{self, NotifyTarget, SessionFile};
+use crate::notify::plugin::{PluginChannel, PluginEndpoint};
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
@@ -11,10 +15,10 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 
 pub mod plugin;
-pub mod tmux;
-pub mod zellij;
 
 const DEFAULT_NOTIFY_COOLDOWN_MS: u64 = 1000;
+/// auto 检测时尝试的 plugin 通道，按优先级排序。
+const AUTO_PLUGIN_CANDIDATES: &[&str] = &["zellij", "tmux"];
 
 #[derive(Debug, Error)]
 pub enum NotifyError {
@@ -89,54 +93,56 @@ pub struct NotifyHint {
 /// notify 通道抽象。
 pub trait NotifyChannel: Send + Sync {
     fn name(&self) -> &'static str;
-    fn inject(&self, target: &NotifyTarget, hint: &NotifyHint) -> Result<(), NotifyError>;
+    /// 调用插件 discover，返回当前可用 endpoint。
+    fn discover(&self) -> Result<Option<PluginEndpoint>, NotifyError>;
+    /// 执行提醒（或 dry-run 验证）。
+    fn send(
+        &self,
+        target: &NotifyTarget,
+        hint: &NotifyHint,
+        dry_run: bool,
+    ) -> Result<(), NotifyError>;
 }
 
 /// 根据名字获取通道实现。
-/// 支持 "zellij" / "tmux" / "plugin:<name>"。
+/// 支持 "plugin:<name>" / "none"。
 pub fn channel_from_name(name: &str) -> Option<Box<dyn NotifyChannel>> {
     if let Some(plugin_name) = name.strip_prefix("plugin:") {
-        return plugin::PluginChannel::new(plugin_name).ok().map(|c| {
+        return PluginChannel::new(plugin_name).ok().map(|c| {
             let b: Box<dyn NotifyChannel> = Box::new(c);
             b
         });
     }
-    match name {
-        "zellij" => Some(Box::new(zellij::ZellijChannel)),
-        "tmux" => Some(Box::new(tmux::TmuxChannel)),
-        _ => None,
-    }
+    None
 }
 
-/// 自动检测当前终端环境，返回 (channel_name, target)。
+/// 自动检测当前环境，返回第一个 ready 的 plugin 通道。
 ///
-/// 优先级：zellij > tmux > none。
+/// 依次尝试 plugin:zellij、plugin:tmux；都不可用则返回 ("none", NotifyTarget::None)。
 pub fn auto_detect() -> (String, NotifyTarget) {
-    if let (Ok(session), Ok(pane)) = (
-        std::env::var("ZELLIJ_SESSION_NAME"),
-        std::env::var("ZELLIJ_PANE_ID"),
-    ) {
-        return ("zellij".to_string(), NotifyTarget::Zellij { session, pane });
+    for candidate in AUTO_PLUGIN_CANDIDATES {
+        let channel_name = format!("plugin:{}", candidate);
+        let Some(channel) = channel_from_name(&channel_name) else {
+            continue;
+        };
+        match channel.discover() {
+            Ok(Some(endpoint)) if endpoint.ready => {
+                return (
+                    channel_name,
+                    NotifyTarget::Plugin {
+                        name: candidate.to_string(),
+                        endpoint: endpoint.endpoint,
+                    },
+                );
+            }
+            _ => continue,
+        }
     }
-
-    if let Ok(pane) = std::env::var("TMUX_PANE") {
-        return ("tmux".to_string(), NotifyTarget::Tmux { pane });
-    }
-    if std::env::var("TMUX").is_ok() {
-        // TMUX_PANE 不一定有，尝试 tmux 自身查询当前 pane
-        return (
-            "tmux".to_string(),
-            NotifyTarget::Tmux {
-                pane: "%".to_string(),
-            },
-        );
-    }
-
     ("none".to_string(), NotifyTarget::None)
 }
 
 /// 解析用户输入的 --notify 值。
-/// "auto" 走自动检测；"none" 禁用；具体通道名返回对应实现。
+/// "auto" 走自动检测；"none" 禁用；plugin:<name> 返回对应实现。
 pub fn resolve_channel(raw: &str) -> (String, Option<Box<dyn NotifyChannel>>, NotifyTarget) {
     let raw = raw.trim();
     if raw.eq_ignore_ascii_case("none") {
@@ -148,22 +154,19 @@ pub fn resolve_channel(raw: &str) -> (String, Option<Box<dyn NotifyChannel>>, No
         return (name, channel, target);
     }
     if let Some(plugin_name) = raw.strip_prefix("plugin:") {
-        if plugin::validate_plugin_name(plugin_name).is_err() {
+        if PluginChannel::new(plugin_name).is_err() {
             tracing::warn!("非法 notify 插件名 '{}', 降级为 none", plugin_name);
             return ("none".to_string(), None, NotifyTarget::None);
         }
         let target = NotifyTarget::Plugin {
             name: plugin_name.to_string(),
+            endpoint: serde_json::Value::Null,
         };
         let channel = channel_from_name(raw);
         return (raw.to_string(), channel, target);
     }
-
-    if let Some(channel) = channel_from_name(raw) {
-        let target = auto_detect().1; // 复用环境变量定位
-        return (raw.to_string(), Some(channel), target);
-    }
-    // 未知通道降级为 none，不阻塞 join
+    // 未知通道降级为 none，不阻塞 join。
+    tracing::warn!("未知 notify 通道 '{}', 降级为 none", raw);
     ("none".to_string(), None, NotifyTarget::None)
 }
 
@@ -171,6 +174,7 @@ pub fn resolve_channel(raw: &str) -> (String, Option<Box<dyn NotifyChannel>>, No
 ///
 /// 流程：扫描 `.agtalk/*/` 找到 address 匹配的 session，读 notify 配置，注入提示。
 /// 只有在注入成功后才会记录 cooldown；session 缺失、channel disabled、插件失败等都不消耗 cooldown。
+/// 对 plugin 通道，send 失败时会自动重新 discover 并刷新 endpoint 重试一次。
 /// 失败只返回错误，由调用方决定是否记录日志。
 pub async fn trigger(
     dot_agtalk: &Path,
@@ -201,7 +205,33 @@ pub async fn trigger(
         agent_address: session.address.clone(),
     };
 
-    channel.inject(&session.notify_target, &hint)?;
+    // 第一次尝试。
+    if let Err(e) = channel.send(&session.notify_target, &hint, false) {
+        // plugin 通道失败时尝试刷新 endpoint 重试一次。
+        if let Some(plugin) = channel_from_name(&session.notify_channel) {
+            if let Ok(Some(endpoint)) = plugin.discover() {
+                if endpoint.ready {
+                    let refreshed = NotifyTarget::Plugin {
+                        name: session
+                            .notify_target
+                            .plugin_name()
+                            .unwrap_or_default()
+                            .to_string(),
+                        endpoint: endpoint.endpoint,
+                    };
+                    channel.send(&refreshed, &hint, false)?;
+                    // 写回 session.json。
+                    let mut updated = session.clone();
+                    updated.notify_target = refreshed;
+                    let _ = session_file::write(dot_agtalk, &session.name, &updated);
+                    limiter.record(to_address);
+                    return Ok(());
+                }
+            }
+        }
+        return Err(e);
+    }
+
     limiter.record(to_address);
     Ok(())
 }
@@ -288,10 +318,10 @@ mod tests {
             intro: "前端".to_string(),
             created_at: "2026-07-01T00:00:00Z".to_string(),
             command: "agtalk".to_string(),
-            notify_channel: "zellij".to_string(),
-            notify_target: NotifyTarget::Zellij {
-                session: "sess".to_string(),
-                pane: "1".to_string(),
+            notify_channel: "plugin:zellij".to_string(),
+            notify_target: NotifyTarget::Plugin {
+                name: "zellij".to_string(),
+                endpoint: serde_json::json!({ "session": "sess", "pane": "1" }),
             },
         };
         session_file::write(&dot, "nora", &session).unwrap();
@@ -300,121 +330,11 @@ mod tests {
     }
 
     #[test]
-    fn auto_detect_zellij() {
-        let prev_session = std::env::var_os("ZELLIJ_SESSION_NAME");
-        let prev_pane = std::env::var_os("ZELLIJ_PANE_ID");
-        let prev_tmux = std::env::var_os("TMUX");
-        let prev_tmux_pane = std::env::var_os("TMUX_PANE");
-
-        std::env::remove_var("TMUX");
-        std::env::remove_var("TMUX_PANE");
-        std::env::set_var("ZELLIJ_SESSION_NAME", "test-session");
-        std::env::set_var("ZELLIJ_PANE_ID", "p1");
-
-        let (name, target) = auto_detect();
-        assert_eq!(name, "zellij");
-        assert_eq!(
-            target,
-            NotifyTarget::Zellij {
-                session: "test-session".to_string(),
-                pane: "p1".to_string(),
-            }
-        );
-
-        if let Some(v) = prev_session {
-            std::env::set_var("ZELLIJ_SESSION_NAME", v);
-        } else {
-            std::env::remove_var("ZELLIJ_SESSION_NAME");
-        }
-        if let Some(v) = prev_pane {
-            std::env::set_var("ZELLIJ_PANE_ID", v);
-        } else {
-            std::env::remove_var("ZELLIJ_PANE_ID");
-        }
-        if let Some(v) = prev_tmux {
-            std::env::set_var("TMUX", v);
-        } else {
-            std::env::remove_var("TMUX");
-        }
-        if let Some(v) = prev_tmux_pane {
-            std::env::set_var("TMUX_PANE", v);
-        } else {
-            std::env::remove_var("TMUX_PANE");
-        }
-    }
-
-    #[test]
-    fn auto_detect_tmux() {
-        let prev_session = std::env::var_os("ZELLIJ_SESSION_NAME");
-        let prev_pane = std::env::var_os("ZELLIJ_PANE_ID");
-        let prev_tmux_pane = std::env::var_os("TMUX_PANE");
-
-        std::env::remove_var("ZELLIJ_SESSION_NAME");
-        std::env::remove_var("ZELLIJ_PANE_ID");
-        std::env::set_var("TMUX_PANE", "%0");
-
-        let (name, target) = auto_detect();
-        assert_eq!(name, "tmux");
-        assert_eq!(
-            target,
-            NotifyTarget::Tmux {
-                pane: "%0".to_string(),
-            }
-        );
-
-        if let Some(v) = prev_session {
-            std::env::set_var("ZELLIJ_SESSION_NAME", v);
-        } else {
-            std::env::remove_var("ZELLIJ_SESSION_NAME");
-        }
-        if let Some(v) = prev_pane {
-            std::env::set_var("ZELLIJ_PANE_ID", v);
-        } else {
-            std::env::remove_var("ZELLIJ_PANE_ID");
-        }
-        if let Some(v) = prev_tmux_pane {
-            std::env::set_var("TMUX_PANE", v);
-        } else {
-            std::env::remove_var("TMUX_PANE");
-        }
-    }
-
-    #[test]
-    fn auto_detect_none() {
-        let prev_session = std::env::var_os("ZELLIJ_SESSION_NAME");
-        let prev_pane = std::env::var_os("ZELLIJ_PANE_ID");
-        let prev_tmux = std::env::var_os("TMUX");
-        let prev_tmux_pane = std::env::var_os("TMUX_PANE");
-
-        std::env::remove_var("ZELLIJ_SESSION_NAME");
-        std::env::remove_var("ZELLIJ_PANE_ID");
-        std::env::remove_var("TMUX");
-        std::env::remove_var("TMUX_PANE");
-
-        let (name, target) = auto_detect();
+    fn resolve_channel_none() {
+        let (name, channel, target) = resolve_channel("none");
         assert_eq!(name, "none");
+        assert!(channel.is_none());
         assert_eq!(target, NotifyTarget::None);
-
-        if let Some(v) = prev_session {
-            std::env::set_var("ZELLIJ_SESSION_NAME", v);
-        } else {
-            std::env::remove_var("ZELLIJ_SESSION_NAME");
-        }
-        if let Some(v) = prev_pane {
-            std::env::set_var("ZELLIJ_PANE_ID", v);
-        } else {
-            std::env::remove_var("ZELLIJ_PANE_ID");
-        }
-        if let Some(v) = prev_tmux {
-            std::env::set_var("TMUX", v);
-        } else {
-            std::env::remove_var("TMUX");
-        }
-        if let Some(v) = prev_tmux_pane {
-            std::env::set_var("TMUX_PANE", v);
-        } else {
-            std::env::remove_var("TMUX_PANE");
-        }
     }
 
     #[test]
@@ -425,13 +345,14 @@ mod tests {
             target,
             NotifyTarget::Plugin {
                 name: "macos".to_string(),
+                endpoint: serde_json::Value::Null,
             }
         );
     }
 
     #[test]
     fn resolve_channel_unknown_becomes_none() {
-        let (name, channel, target) = resolve_channel("webhook");
+        let (name, channel, target) = resolve_channel("zellij");
         assert_eq!(name, "none");
         assert!(channel.is_none());
         assert_eq!(target, NotifyTarget::None);
@@ -463,11 +384,8 @@ mod tests {
     #[test]
     fn limiter_failed_attempt_does_not_consume_cooldown() {
         let limiter = NotifyLimiter::new(Duration::from_millis(1000));
-        // 模拟一次失败的 notify 尝试：check 通过，但没有 record
         assert!(limiter.check("a"));
-        // 失败后下一次尝试仍应通过
         assert!(limiter.check("a"));
-        // 成功后 record，才进入 cooldown
         limiter.record("a");
         assert!(!limiter.check("a"));
     }
