@@ -159,6 +159,9 @@ pub(crate) enum MsgCmd {
         /// 等待超时秒数
         #[arg(short, long)]
         timeout: Option<u64>,
+        /// 是否触发 notify 打扰层（默认 true）
+        #[arg(long)]
+        notify: Option<bool>,
     },
     /// 收件箱
     Inbox {
@@ -171,6 +174,8 @@ pub(crate) enum MsgCmd {
     Read { message_id: Option<String> },
     /// 阻塞等待消息（SSE 封装，带超时必返回）
     Wait {
+        /// 自己刚发送出去的消息 ID（msg send / msg ask 返回的 id）；省略则等待下一条发给当前 agent 的消息
+        #[arg(value_name = "SENT-MSG-ID")]
         message_id: Option<String>,
         #[arg(short, long)]
         timeout: Option<u64>,
@@ -344,8 +349,8 @@ fn agent_help_message() -> ServerMsg {
             title: "Wait / ask human".to_string(),
             examples: vec![
                 AgentHelpExample {
-                    command: "agtalk msg wait [msg-id] --timeout 30".to_string(),
-                    note: None,
+                    command: "agtalk msg wait [sent-msg-id] --timeout 30".to_string(),
+                    note: Some("<sent-msg-id> is the id returned by msg send / msg ask".to_string()),
                 },
                 AgentHelpExample {
                     command: "agtalk msg ask \"<question>\" --option approve --option reject --wait --timeout 60".to_string(),
@@ -532,6 +537,7 @@ fn run(cli: Cli, json: bool) -> Result<(), CliError> {
                     select_only,
                     wait,
                     timeout,
+                    notify,
                 } => {
                     let ctx = Context::current(as_name).map_err(CliError::from)?;
                     client::msg::ask(
@@ -544,6 +550,7 @@ fn run(cli: Cli, json: bool) -> Result<(), CliError> {
                         select_only,
                         wait,
                         timeout,
+                        notify,
                         json,
                     )
                 }

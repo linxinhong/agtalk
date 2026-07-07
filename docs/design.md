@@ -413,7 +413,7 @@ daemon → agent 的推送底层是 **SSE（Server-Sent Events）**，没有长�
 - daemon 暴露 `GET /events`（127.0.0.1）SSE 端点，按自己的 UUID 过滤推送。
 - **常驻进程**（GUI、浏览器扩展 background）直接 fetch 持续订阅。
 - **有 HTTP 工具能力的 agent**（如 codex / claude code）有两种消费方式：
-  - **官方封装 `agtalk msg wait <msg-id> [--timeout] [--since]`**（推荐）：agtalk 替 agent 封装 SSE 连接 + 身份认证 + Last-Event-ID 续传 + 命中目标即退 + 超时返回。agent 调一个会返回的命令即可，不用自己拼 curl/记 id/带认证。
+  - **官方封装 `agtalk msg wait <sent-msg-id> [--timeout] [--since]`**（推荐）：agtalk 替 agent 封装 SSE 连接 + 身份认证 + Last-Event-ID 续传 + 命中目标即退 + 超时返回。`<sent-msg-id>` 是自己刚发出去的消息 ID（`msg send` / `msg ask` 返回）。
   - **自己 curl / fetch**（想精细控制时）：fetch → 解析 SSE 流 → 命中目标后 abort，务必带超时。
 - 支持 `Last-Event-ID` 断线续传。
 
@@ -742,7 +742,7 @@ agtalk --json msg ask
 agtalk --json msg reply
 agtalk --json msg inbox
 agtalk --json msg read
-agtalk --json msg wait <msg-id> --timeout 30
+agtalk --json msg wait <sent-msg-id> --timeout 30
 ```
 
 错误在 `--json` 模式下统一输出到 stderr：

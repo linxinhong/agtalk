@@ -34,7 +34,12 @@ pub enum NotifyError {
     Other(String),
 }
 
-/// 按 address 限流，避免消息风暴产生大量插件进程。
+/// 按 address 限流 notify 信号的成功触发，避免消息风暴产生大量插件进程/终端注入。
+///
+/// 使用方式：
+/// - `check(address)`：只读检查，返回 true 表示不在 cooldown 期内。
+/// - 执行 notify 注入。
+/// - `record(address)`：仅在注入成功后调用，更新 cooldown 时间戳。
 pub struct NotifyLimiter {
     cooldown: Duration,
     last: Mutex<HashMap<String, Instant>>,
@@ -53,18 +58,22 @@ impl NotifyLimiter {
         Self::new(Duration::from_millis(DEFAULT_NOTIFY_COOLDOWN_MS))
     }
 
-    /// 检查该 address 是否可以触发 notify。
-    /// 若在 cooldown 期内返回 false；否则更新 timestamp 返回 true。
-    pub fn should_notify(&self, address: &str) -> bool {
+    /// 只读检查该 address 是否可以触发 notify。
+    /// 若在 cooldown 期内返回 false；否则返回 true。不更新 timestamp。
+    pub fn check(&self, address: &str) -> bool {
+        let now = Instant::now();
+        let map = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        !matches!(
+            map.get(address),
+            Some(last) if now.duration_since(*last) < self.cooldown
+        )
+    }
+
+    /// 在 notify 成功注入后调用，更新该 address 的 cooldown 时间戳。
+    pub fn record(&self, address: &str) {
         let now = Instant::now();
         let mut map = self.last.lock().unwrap_or_else(|e| e.into_inner());
-        match map.get(address) {
-            Some(last) if now.duration_since(*last) < self.cooldown => false,
-            _ => {
-                map.insert(address.to_string(), now);
-                true
-            }
-        }
+        map.insert(address.to_string(), now);
     }
 }
 
@@ -161,6 +170,7 @@ pub fn resolve_channel(raw: &str) -> (String, Option<Box<dyn NotifyChannel>>, No
 /// 触发一次 notify。
 ///
 /// 流程：扫描 `.agtalk/*/` 找到 address 匹配的 session，读 notify 配置，注入提示。
+/// 只有在注入成功后才会记录 cooldown；session 缺失、channel disabled、插件失败等都不消耗 cooldown。
 /// 失败只返回错误，由调用方决定是否记录日志。
 pub async fn trigger(
     dot_agtalk: &Path,
@@ -168,7 +178,7 @@ pub async fn trigger(
     from_name: &str,
     limiter: &NotifyLimiter,
 ) -> Result<(), NotifyError> {
-    if !limiter.should_notify(to_address) {
+    if !limiter.check(to_address) {
         return Err(NotifyError::RateLimited);
     }
 
@@ -191,7 +201,9 @@ pub async fn trigger(
         agent_address: session.address.clone(),
     };
 
-    channel.inject(&session.notify_target, &hint)
+    channel.inject(&session.notify_target, &hint)?;
+    limiter.record(to_address);
+    Ok(())
 }
 
 /// 构造注入文本。不包含正文，只含信号 + 取信命令模板。
@@ -434,26 +446,47 @@ mod tests {
     }
 
     #[test]
-    fn limiter_skips_duplicate_within_cooldown() {
+    fn limiter_check_does_not_update_timestamp() {
         let limiter = NotifyLimiter::new(Duration::from_millis(1000));
-        assert!(limiter.should_notify("a"));
-        assert!(!limiter.should_notify("a"));
+        assert!(limiter.check("a"));
+        assert!(limiter.check("a"));
+    }
+
+    #[test]
+    fn limiter_record_enables_cooldown() {
+        let limiter = NotifyLimiter::new(Duration::from_millis(1000));
+        assert!(limiter.check("a"));
+        limiter.record("a");
+        assert!(!limiter.check("a"));
+    }
+
+    #[test]
+    fn limiter_failed_attempt_does_not_consume_cooldown() {
+        let limiter = NotifyLimiter::new(Duration::from_millis(1000));
+        // 模拟一次失败的 notify 尝试：check 通过，但没有 record
+        assert!(limiter.check("a"));
+        // 失败后下一次尝试仍应通过
+        assert!(limiter.check("a"));
+        // 成功后 record，才进入 cooldown
+        limiter.record("a");
+        assert!(!limiter.check("a"));
     }
 
     #[test]
     fn limiter_allows_after_cooldown() {
         let limiter = NotifyLimiter::new(Duration::from_millis(10));
-        assert!(limiter.should_notify("a"));
-        assert!(!limiter.should_notify("a"));
+        assert!(limiter.check("a"));
+        limiter.record("a");
+        assert!(!limiter.check("a"));
         std::thread::sleep(Duration::from_millis(20));
-        assert!(limiter.should_notify("a"));
+        assert!(limiter.check("a"));
     }
 
     #[test]
     fn limiter_per_address_isolated() {
         let limiter = NotifyLimiter::new(Duration::from_millis(1000));
-        assert!(limiter.should_notify("a"));
-        assert!(limiter.should_notify("b"));
-        assert!(!limiter.should_notify("a"));
+        limiter.record("a");
+        assert!(!limiter.check("a"));
+        assert!(limiter.check("b"));
     }
 }

@@ -28,7 +28,7 @@ agtalk id show
 agtalk id lookup [name]
 agtalk msg send <address-uuid> "<message>"
 agtalk msg read                      # 取未读消息
-agtalk msg wait <msg-id> --timeout 30  # 短期等特定回复
+agtalk msg wait <sent-msg-id> --timeout 30  # 短期等特定回复
 
 # 5. 多步编排（可选）：把常用流程写成 YAML
 #    默认读取 .agtalk/runs/<name>.yaml

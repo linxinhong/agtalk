@@ -115,8 +115,8 @@ fn print_text_server_msg(msg: &ServerMsg) {
         ServerMsg::LookupResult { mailboxes } => {
             for mb in mailboxes {
                 println!(
-                    "{}\t{}\t{}\t{}",
-                    mb.address, mb.name, mb.workspace, mb.intro
+                    "{}\t{}\t{}\tnotify={}\t{}",
+                    mb.address, mb.name, mb.workspace, mb.notify, mb.intro
                 );
             }
         }

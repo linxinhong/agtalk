@@ -53,7 +53,7 @@ AGTALK_NAME=<name> agtalk id show
 agtalk id lookup [name]
 ```
 
-返回候选列表，每个候选包含 `address`、`name`、`intro`、`workspace`。你根据 `intro` + `workspace` 人工选择正确的 UUID。
+返回候选列表，每个候选包含 `address`、`name`、`intro`、`workspace`、`notify`、`notify_ready`。`notify` 是目标 agent 注册时声明的打扰通道摘要（zellij/tmux/plugin:<name>/none/unknown），`notify_ready=true` 表示对方有可用 notify 通道。你根据 `intro` + `workspace` 人工选择正确的 UUID。
 
 ### 4. 发送消息
 
@@ -75,7 +75,7 @@ agtalk msg read
 当你刚发出审批/询问并预期 30 秒内有回复：
 
 ```bash
-agtalk msg wait [msg-id] --timeout 30
+agtalk msg wait [sent-msg-id] --timeout 30
 ```
 
 超时会返回，不会永久阻塞。超时后改用 `msg read` 轮询。
@@ -104,7 +104,7 @@ agtalk tool doctor
 | 查找目标 | `agtalk id lookup [name]` |
 | 发送消息 | `agtalk msg send <uuid> "<body>"` |
 | 读取收件箱 | `agtalk msg read` |
-| 等待回复 | `agtalk msg wait [msg-id] --timeout 30` |
+| 等待回复 | `agtalk msg wait [sent-msg-id] --timeout 30` |
 | 回复消息 | `agtalk msg reply <msg-id> "<body>"` |
 | 标记完成 | `agtalk msg done [msg-id]` |
 | 询问/审批 | `agtalk msg ask "<q>" --option a --option b --wait --timeout 60` |

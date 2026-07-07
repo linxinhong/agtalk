@@ -175,7 +175,9 @@ agtalk --json id lookup [name]
 
 - 无参：列出全部活跃 mailbox。
 - 有参：按 name 过滤。
-- 返回 address、name、intro、workspace。
+- 返回 address、name、intro、workspace、notify、notify_ready。
+- `notify` 是目标 agent 注册时声明的打扰通道摘要：zellij、tmux、plugin:<name>、none、unknown。
+- `notify_ready=true` 表示目标有可用 notify 通道；agent 可据此决定是否发送后接 `wait`。
 - 不做按 name 路由。
 
 ### 5.4 id leave
@@ -286,13 +288,14 @@ agtalk msg read <msg-id>
 ### 6.7 msg wait
 
 ```bash
-agtalk msg wait [msg-id] --timeout <sec> [--since <event-id>]
+agtalk msg wait [sent-msg-id] --timeout <sec> [--since <event-id>]
 ```
 
 短期等待消息，底层使用 SSE。
 
-- 无 `msg-id`：收到下一条发给当前 agent 的消息即返回。
-- 有 `msg-id`：等待 `reply_to_id == msg-id` 的回复。
+- `<sent-msg-id>` 是自己刚发送出去的消息 ID（`msg send` 返回的 id 或 `msg ask` 返回的 message_id）。
+- 无 `sent-msg-id`：收到下一条发给当前 agent 的消息即返回。
+- 有 `sent-msg-id`：等待 `reply_to_id == sent-msg-id` 的回复。
 - 必须有 timeout，避免占住 agent turn。
 
 ### 6.8 msg attachment
@@ -766,7 +769,7 @@ Rules:
   # If inbox_empty: continue normal work.
 
 5. Wait / ask human
-  agtalk msg wait [msg-id] --timeout 30
+  agtalk msg wait [sent-msg-id] --timeout 30
   agtalk msg ask "<question>" --option approve --option reject --wait --timeout 60
 
 6. Memory / plan

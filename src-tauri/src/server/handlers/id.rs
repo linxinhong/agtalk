@@ -168,12 +168,47 @@ pub fn handle_show(state: &AppState, headers: &HeaderMap) -> ServerMsg {
 
 pub fn handle_lookup(state: &AppState, name: Option<String>) -> ServerMsg {
     match crate::routing::lookup::lookup(&state.storage, name.as_deref()) {
-        Ok(mbs) => ServerMsg::LookupResult { mailboxes: mbs },
+        Ok(mbs) => {
+            let mailboxes = mbs
+                .iter()
+                .map(|mb| build_lookup_mailbox(&state.dot_agtalk, mb))
+                .collect();
+            ServerMsg::LookupResult { mailboxes }
+        }
         Err(e) => ServerMsg::Error {
             code: "lookup_failed".into(),
             message: e.to_string(),
         },
     }
+}
+
+fn build_lookup_mailbox(
+    dot_agtalk: &std::path::Path,
+    mb: &crate::identity::mailbox::Mailbox,
+) -> crate::proto::LookupMailbox {
+    let (channel, notify, ready) = match crate::identity::session_file::read(dot_agtalk, &mb.name) {
+        Ok(session) if session.address == mb.address => {
+            let ready = !session.notify_channel.eq_ignore_ascii_case("none")
+                && !session.notify_channel.is_empty();
+            let notify = notify_summary(&session.notify_channel);
+            (session.notify_channel, notify, ready)
+        }
+        _ => ("unknown".to_string(), "unknown".to_string(), false),
+    };
+    crate::proto::LookupMailbox::from_mailbox(mb, channel, notify, ready)
+}
+
+fn notify_summary(channel: &str) -> String {
+    if channel.eq_ignore_ascii_case("none") || channel.is_empty() {
+        return "none".to_string();
+    }
+    if channel.eq_ignore_ascii_case("zellij") || channel.eq_ignore_ascii_case("tmux") {
+        return channel.to_lowercase();
+    }
+    if channel.starts_with("plugin:") {
+        return channel.to_string();
+    }
+    "unknown".to_string()
 }
 
 pub fn handle_leave(state: &AppState, headers: &HeaderMap, _purge: bool) -> ServerMsg {
@@ -411,6 +446,125 @@ mod tests {
                 assert_eq!(intro, "展示用 intro");
             }
             other => panic!("expected Identity, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lookup_includes_notify_zellij() {
+        let (state, _tmp) = test_state();
+        let (pid, start_time) = current_pid_start_time();
+
+        handle_join(
+            &state,
+            Some("reviewer".into()),
+            Some("展示用 intro".into()),
+            Some("agtalk".into()),
+            "zellij".into(),
+            pid,
+            start_time,
+        );
+
+        let msg = handle_lookup(&state, Some("reviewer".into()));
+        match msg {
+            ServerMsg::LookupResult { mailboxes } => {
+                assert_eq!(mailboxes.len(), 1);
+                let mb = &mailboxes[0];
+                assert_eq!(mb.name, "reviewer");
+                assert_eq!(mb.notify_channel, "zellij");
+                assert_eq!(mb.notify, "zellij");
+                assert!(mb.notify_ready);
+            }
+            other => panic!("expected LookupResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lookup_includes_notify_plugin() {
+        let (state, _tmp) = test_state();
+        let (pid, start_time) = current_pid_start_time();
+
+        handle_join(
+            &state,
+            Some("reviewer".into()),
+            Some("展示用 intro".into()),
+            Some("agtalk".into()),
+            "plugin:macos".into(),
+            pid,
+            start_time,
+        );
+
+        let msg = handle_lookup(&state, Some("reviewer".into()));
+        match msg {
+            ServerMsg::LookupResult { mailboxes } => {
+                assert_eq!(mailboxes.len(), 1);
+                let mb = &mailboxes[0];
+                assert_eq!(mb.notify, "plugin:macos");
+                assert!(mb.notify_ready);
+            }
+            other => panic!("expected LookupResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lookup_stale_session_returns_unknown_notify() {
+        let (state, _tmp) = test_state();
+        let (pid, start_time) = current_pid_start_time();
+
+        handle_join(
+            &state,
+            Some("reviewer".into()),
+            Some("展示用 intro".into()),
+            Some("agtalk".into()),
+            "zellij".into(),
+            pid,
+            start_time,
+        );
+
+        // 篡改 session address，使其与 mailbox address 不匹配
+        let mut session = session_file::read(&state.dot_agtalk, "reviewer").unwrap();
+        session.address = "00000000-0000-0000-0000-000000000000".to_string();
+        session_file::write(&state.dot_agtalk, "reviewer", &session).unwrap();
+
+        let msg = handle_lookup(&state, Some("reviewer".into()));
+        match msg {
+            ServerMsg::LookupResult { mailboxes } => {
+                assert_eq!(mailboxes.len(), 1);
+                let mb = &mailboxes[0];
+                assert_eq!(mb.notify, "unknown");
+                assert!(!mb.notify_ready);
+            }
+            other => panic!("expected LookupResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lookup_missing_session_returns_unknown_notify() {
+        let (state, _tmp) = test_state();
+        let (pid, start_time) = current_pid_start_time();
+
+        handle_join(
+            &state,
+            Some("reviewer".into()),
+            Some("展示用 intro".into()),
+            Some("agtalk".into()),
+            "zellij".into(),
+            pid,
+            start_time,
+        );
+
+        // 删除 session 文件，模拟 session 缺失
+        let session_path = state.dot_agtalk.join("reviewer").join("session.json");
+        std::fs::remove_file(session_path).unwrap();
+
+        let msg = handle_lookup(&state, Some("reviewer".into()));
+        match msg {
+            ServerMsg::LookupResult { mailboxes } => {
+                assert_eq!(mailboxes.len(), 1);
+                let mb = &mailboxes[0];
+                assert_eq!(mb.notify, "unknown");
+                assert!(!mb.notify_ready);
+            }
+            other => panic!("expected LookupResult, got {:?}", other),
         }
     }
 }

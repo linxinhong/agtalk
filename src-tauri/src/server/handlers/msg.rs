@@ -17,7 +17,7 @@ pub fn handle_send(
     body: String,
     _subject: Option<String>,
     _files: Vec<String>,
-    _notify: Option<bool>,
+    notify: Option<bool>,
     more: bool,
 ) -> ServerMsg {
     let session = match authenticate_req(state, headers) {
@@ -61,15 +61,17 @@ pub fn handle_send(
                     message: msg.clone(),
                 },
             );
-            let dot = state.dot_agtalk.clone();
-            let to = to.clone();
-            let from_name = session.name.clone();
-            let limiter = state.notify_limiter.clone();
-            tokio::spawn(async move {
-                if let Err(e) = notify::trigger(&dot, &to, &from_name, &limiter).await {
-                    tracing::debug!("notify trigger skipped: {}", e);
-                }
-            });
+            if notify.unwrap_or(true) {
+                let dot = state.dot_agtalk.clone();
+                let to = to.clone();
+                let from_name = session.name.clone();
+                let limiter = state.notify_limiter.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = notify::trigger(&dot, &to, &from_name, &limiter).await {
+                        tracing::debug!("notify trigger skipped: {}", e);
+                    }
+                });
+            }
             ServerMsg::Ok { id: msg.id }
         }
         Err(e) => ServerMsg::Error {
@@ -85,7 +87,7 @@ pub fn handle_reply(
     message_id: String,
     body: String,
     _files: Vec<String>,
-    _notify: Option<bool>,
+    notify: Option<bool>,
 ) -> ServerMsg {
     let session = match authenticate_req(state, headers) {
         Ok(s) => s,
@@ -106,15 +108,17 @@ pub fn handle_reply(
                     message: msg.clone(),
                 },
             );
-            let dot = state.dot_agtalk.clone();
-            let to = msg.to_address.clone();
-            let from_name = session.name.clone();
-            let limiter = state.notify_limiter.clone();
-            tokio::spawn(async move {
-                if let Err(e) = notify::trigger(&dot, &to, &from_name, &limiter).await {
-                    tracing::debug!("notify trigger skipped: {}", e);
-                }
-            });
+            if notify.unwrap_or(true) {
+                let dot = state.dot_agtalk.clone();
+                let to = msg.to_address.clone();
+                let from_name = session.name.clone();
+                let limiter = state.notify_limiter.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = notify::trigger(&dot, &to, &from_name, &limiter).await {
+                        tracing::debug!("notify trigger skipped: {}", e);
+                    }
+                });
+            }
             ServerMsg::Ok { id: msg.id }
         }
         Err(e) => ServerMsg::Error {
@@ -167,6 +171,7 @@ pub fn handle_done(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn handle_ask(
     state: &AppState,
     headers: &HeaderMap,
@@ -175,6 +180,7 @@ pub fn handle_ask(
     options: AskOptions,
     _wait: bool,
     _timeout: Option<u64>,
+    notify: bool,
 ) -> ServerMsg {
     let session = match authenticate_req(state, headers) {
         Ok(s) => s,
@@ -223,14 +229,18 @@ pub fn handle_ask(
                     message: msg.clone(),
                 },
             );
-            let dot = state.dot_agtalk.clone();
-            let from_name = session.name.clone();
-            let limiter = state.notify_limiter.clone();
-            tokio::spawn(async move {
-                if let Err(e) = notify::trigger(&dot, &human_address, &from_name, &limiter).await {
-                    tracing::debug!("notify trigger skipped: {}", e);
-                }
-            });
+            if notify {
+                let dot = state.dot_agtalk.clone();
+                let from_name = session.name.clone();
+                let limiter = state.notify_limiter.clone();
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        notify::trigger(&dot, &human_address, &from_name, &limiter).await
+                    {
+                        tracing::debug!("notify trigger skipped: {}", e);
+                    }
+                });
+            }
             ServerMsg::AskResult { message_id: msg.id }
         }
         Err(e) => ServerMsg::Error {
@@ -302,4 +312,101 @@ pub fn handle_wait(
     _since: Option<i64>,
 ) -> ServerMsg {
     not_supported("服务端阻塞 wait")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AgConfig;
+    use crate::server::handlers::id;
+    use crate::storage::Storage;
+    use tempfile::TempDir;
+
+    fn test_state() -> (AppState, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        let dot = tmp.path().join(".agtalk");
+        let storage = Storage::open_in_memory().unwrap();
+        let state = AppState::new(storage, AgConfig::default(), dot);
+        (state, tmp)
+    }
+
+    fn join(state: &AppState, name: &str) -> String {
+        let pid = std::process::id();
+        let start_time = current_pid_start_time();
+        match id::handle_join(
+            state,
+            Some(name.into()),
+            Some("intro".into()),
+            Some("w".into()),
+            "none".into(),
+            pid,
+            start_time,
+        ) {
+            ServerMsg::Identity { address, .. } => address,
+            other => panic!("expected Identity, got {:?}", other),
+        }
+    }
+
+    fn current_pid_start_time() -> u64 {
+        use sysinfo::{Pid, System};
+        let pid = std::process::id();
+        let mut sys = System::new_all();
+        sys.refresh_processes();
+        sys.process(Pid::from(pid as usize))
+            .map(|p| p.start_time())
+            .unwrap_or(1)
+    }
+
+    fn auth_headers_for(state: &AppState, name: &str) -> HeaderMap {
+        let session = crate::identity::session_file::read(&state.dot_agtalk, name).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("X-AgTalk-Address", session.address.parse().unwrap());
+        headers
+    }
+
+    #[tokio::test]
+    async fn send_default_returns_ok() {
+        let (state, _tmp) = test_state();
+        join(&state, "sender");
+        let recv_addr = join(&state, "recv");
+
+        let headers = auth_headers_for(&state, "sender");
+        let msg = handle_send(
+            &state,
+            &headers,
+            recv_addr,
+            "hi".into(),
+            None,
+            vec![],
+            None,
+            false,
+        );
+        match msg {
+            ServerMsg::Ok { id } => assert!(!id.is_empty()),
+            other => panic!("expected Ok, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn send_with_notify_false_returns_ok() {
+        let (state, _tmp) = test_state();
+        join(&state, "sender");
+        let recv_addr = join(&state, "recv");
+
+        let headers = auth_headers_for(&state, "sender");
+        let msg = handle_send(
+            &state,
+            &headers,
+            recv_addr,
+            "hi".into(),
+            None,
+            vec![],
+            Some(false),
+            false,
+        );
+        match msg {
+            ServerMsg::Ok { id } => assert!(!id.is_empty()),
+            other => panic!("expected Ok, got {:?}", other),
+        }
+    }
 }

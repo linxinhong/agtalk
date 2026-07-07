@@ -14,6 +14,10 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use tokio_stream::Stream;
 
+fn default_notify_true() -> bool {
+    true
+}
+
 pub fn routes(state: AppState) -> Router {
     Router::new()
         // id
@@ -213,6 +217,8 @@ struct MsgAskBody {
     wait: bool,
     #[serde(default)]
     timeout: Option<u64>,
+    #[serde(default = "default_notify_true")]
+    notify: bool,
 }
 
 async fn msg_ask_handler(
@@ -228,6 +234,7 @@ async fn msg_ask_handler(
         body.options,
         body.wait,
         body.timeout,
+        body.notify,
     ))
 }
 

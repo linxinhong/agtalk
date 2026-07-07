@@ -87,6 +87,7 @@ pub fn ask(
     select_only: bool,
     wait: bool,
     timeout: Option<u64>,
+    notify: Option<bool>,
     json: bool,
 ) -> Result<(), CliError> {
     let resp = post(
@@ -104,6 +105,7 @@ pub fn ask(
             },
             "wait": wait,
             "timeout": timeout,
+            "notify": notify,
         }),
     )?;
     print_server_msg(json, &resp);

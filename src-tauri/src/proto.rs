@@ -4,6 +4,36 @@ use crate::identity::mailbox::Mailbox;
 use crate::routing::Message;
 use serde::{Deserialize, Serialize};
 
+/// id lookup 返回的 mailbox 视图，包含目标 agent 的 notify 摘要。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LookupMailbox {
+    pub address: String,
+    pub name: String,
+    pub intro: String,
+    pub workspace: String,
+    pub created_at: f64,
+    pub left_at: Option<f64>,
+    pub notify_channel: String,
+    pub notify: String,
+    pub notify_ready: bool,
+}
+
+impl LookupMailbox {
+    pub fn from_mailbox(mb: &Mailbox, notify_channel: String, notify: String, ready: bool) -> Self {
+        Self {
+            address: mb.address.clone(),
+            name: mb.name.clone(),
+            intro: mb.intro.clone(),
+            workspace: mb.workspace.clone(),
+            created_at: mb.created_at,
+            left_at: mb.left_at,
+            notify_channel,
+            notify,
+            notify_ready: ready,
+        }
+    }
+}
+
 pub fn default_notify() -> String {
     "auto".to_string()
 }
@@ -191,6 +221,8 @@ pub enum ClientMsg {
         wait: bool,
         #[serde(default)]
         timeout: Option<u64>,
+        #[serde(default)]
+        notify: bool,
     },
     MsgInbox {
         #[serde(default)]
@@ -315,7 +347,7 @@ pub enum ServerMsg {
         intro: String,
     },
     LookupResult {
-        mailboxes: Vec<Mailbox>,
+        mailboxes: Vec<LookupMailbox>,
     },
 
     // msg
