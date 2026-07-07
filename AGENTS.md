@@ -402,26 +402,44 @@ agtalk msg read
 
 **这个检查必须在每轮任务后都执行，不能跳过。** 它是 agent 工作循环的一部分，开销很小（一次秒级命令），但确保 agtalk 消息不会"躺在 daemon 里没人取"。
 
-### 12.3 典型循环
+### 12.3 主动发消息后的等待约定
+
+如果本轮刚通过 `agtalk msg send` / `agtalk msg ask` 主动发出一条**期待对方回复**的消息，不要立刻 `agtalk msg read` 后就结束；应先等待一次：
+
+```bash
+agtalk msg wait <msg-id> --timeout 30
+```
+
+行为：
+- **30 秒内有回复**：先处理回复，再决定是否继续等待、继续执行或回复用户。
+- **超时**（错误码 `timeout`）：不阻塞，告知用户已发送但对方暂未回复，或继续当前任务。
+- **不期待立即回复**（广播、通知、交办后台任务）：不需要 wait，仍按 12.2 在回复用户前执行 `agtalk msg read`。
+
+### 12.4 典型循环
 
 ```
 agent 标准循环：
   1. 接收用户/上游消息
   2. 调工具完成任务（含可能调 agtalk send 发消息给其他 agent/human）
-  3. 【必做】agtalk msg read   ← 检查 agtalk 收件箱
+  3. 如果刚发送了期待回复的 agtalk 消息：
+       agtalk msg wait <msg-id> --timeout 30
+       有回复 → 处理回复
+       timeout → 继续，不要无限等
+  4. 【必做】agtalk msg read   ← 检查 agtalk 收件箱
        有新消息 → 处理（可能触发新一轮循环）
        无新消息 → 继续
-  4. 回复用户
+  5. 回复用户
 ```
 
-### 12.4 局限（必须知晓）
+### 12.5 局限（必须知晓）
 
 - **不是实时的**：如果 agent 正在执行一个长任务（如几分钟的代码生成），中途来的 agtalk 消息要等任务完成才被发现。这是不可避免的——agent 不会中断当前任务。
 - **约定不是强制**：这是行为约定，依赖 agent 遵守。配合 notify（design §5）的打扰信号，能显著提高 agent 遵守率（notify 让它"意识到该查"，本约定让它"真的查"）。
-- **需要时可用 wait 替代**：当 agent 明确在等某条特定回复（如刚发了审批请求等人类响应）且预期 30 秒内有结果，可用 `agtalk wait <msg-id> --timeout 30` 阻塞等，而不是反复 `msg read`。
+- **wait 只适合短等待**：当 agent 明确在等某条特定回复且预期 30 秒内有结果，可用 `agtalk msg wait <msg-id> --timeout 30`；超过 30 秒应回到 `msg read` 工作循环，不要长时间阻塞。
 
-### 12.5 给 agent 实现者/skill 编写者的指引
+### 12.6 给 agent 实现者/skill 编写者的指引
 
 - 把"每轮任务后 `agtalk msg read`"写进 agent 的系统提示或 skill（见 `skills/agtalk-bridge/`）。
+- 把"主动发送期待回复的消息后，先 `agtalk msg wait <msg-id> --timeout 30`"写进 agent 的系统提示或 skill。
 - 在 agent 的工作循环代码里（若有），把 `msg read` 检查放在"回复用户前"的固定位置。
 - 不要依赖 agent"自觉"——把这条作为明确指令写入 prompt/skill，而非含糊建议。
