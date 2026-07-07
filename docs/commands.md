@@ -132,22 +132,21 @@ plugin:<name>     调用外部 notify 插件（如 zellij、tmux、macos、webho
 none              关闭打扰，仅 pull
 ```
 
-zellij/tmux 已迁出 agtalk core，需要安装对应 plugin 二进制：
+zellij/tmux 已迁出 agtalk core，需要安装对应 plugin 二进制到 `<config_dir>/plugins/`：
 
 ```bash
-# 方式一：安装到 PATH
-cp plugins/agtalk-notify-zellij ~/.local/bin/
-chmod +x ~/.local/bin/agtalk-notify-zellij
+mkdir -p ~/.config/agtalk2/plugins
+
+cp plugins/agtalk-notify-zellij ~/.config/agtalk2/plugins/
+chmod +x ~/.config/agtalk2/plugins/agtalk-notify-zellij
 agtalk id join coder --notify plugin:zellij
 
-# 方式二：放入配置目录并在 config 中注册
-mkdir -p ~/.config/agtalk2/plugins
-cp agtalk-notify-macos ~/.config/agtalk2/plugins/
-chmod +x ~/.config/agtalk2/plugins/agtalk-notify-macos
-agtalk config set notify.plugins.macos.path agtalk-notify-macos
-agtalk config set notify.plugins.macos.timeout_ms 1000
-agtalk id join coder --notify plugin:macos
+cp plugins/agtalk-notify-tmux ~/.config/agtalk2/plugins/
+chmod +x ~/.config/agtalk2/plugins/agtalk-notify-tmux
+agtalk id join coder --notify plugin:tmux
 ```
+
+如果插件放在其他目录，再用 `agtalk config set notify.plugins.<name>.path <abs-path>` 显式登记。
 
 ### 5.2 id show
 

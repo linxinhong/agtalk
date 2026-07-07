@@ -26,7 +26,7 @@ agtalk id join coder --notify plugin:macos      # 自定义插件
 agtalk id join coder --notify auto              # 自动尝试 plugin:zellij -> plugin:tmux -> none
 ```
 
-**注意**：v2 已移除 core 内置 `zellij` / `tmux` 通道。要使用终端通知，必须安装对应 plugin 并在 PATH 或配置中可用。
+**注意**：v2 已移除 core 内置 `zellij` / `tmux` 通道。要使用终端通知，必须把对应 plugin 安装到 `<config_dir>/plugins/`（通常为 `~/.config/agtalk2/plugins/`），或在 PATH 中提供 `agtalk-notify-<name>`。
 
 ---
 
@@ -39,19 +39,26 @@ agtalk id join coder --notify auto              # 自动尝试 plugin:zellij -> 
    - 相对路径/纯文件名：解析为 `<config_dir>/plugins/<path>`，禁止 `..` 逃逸。
 2. 若配置未指定，在 PATH 中查找 `agtalk-notify-<name>`。
 
-示例：
+**推荐做法**：直接放入 `<config_dir>/plugins/`，无需在 config.json 中登记：
 
 ```bash
-# 方式一：放入约定目录并配置
 mkdir -p ~/.config/agtalk2/plugins
-cp agtalk-notify-macos ~/.config/agtalk2/plugins/
-chmod +x ~/.config/agtalk2/plugins/agtalk-notify-macos
-agtalk config set notify.plugins.macos.path agtalk-notify-macos
+cp agtalk-notify-zellij ~/.config/agtalk2/plugins/
+chmod +x ~/.config/agtalk2/plugins/agtalk-notify-zellij
+# 无需配置，agtalk 自动在 ~/.config/agtalk2/plugins/ 发现
+```
 
-# 方式二：安装到 PATH
+也支持显式配置（例如插件不在 `<config_dir>/plugins/` 而是在其他目录）：
+
+```bash
+agtalk config set notify.plugins.macos.path /opt/agtalk/plugins/agtalk-notify-macos
+```
+
+或安装到 PATH 作为备选：
+
+```bash
 cp agtalk-notify-zellij ~/.local/bin/
 chmod +x ~/.local/bin/agtalk-notify-zellij
-# 无需配置，自动发现
 ```
 
 ---
@@ -160,21 +167,23 @@ chmod +x ~/.local/bin/agtalk-notify-zellij
 - `plugins/agtalk-notify-zellij`
 - `plugins/agtalk-notify-tmux`
 
-它们不是 agtalk core 编译产物，agent 可自行复制到 PATH 或 `<config_dir>/plugins/`。
+它们不是 agtalk core 编译产物，agent 可自行复制到 `<config_dir>/plugins/` 或 PATH。
 
 ### 6.1 zellij 安装
 
 ```bash
-cp plugins/agtalk-notify-zellij ~/.local/bin/
-chmod +x ~/.local/bin/agtalk-notify-zellij
+mkdir -p ~/.config/agtalk2/plugins
+cp plugins/agtalk-notify-zellij ~/.config/agtalk2/plugins/
+chmod +x ~/.config/agtalk2/plugins/agtalk-notify-zellij
 agtalk id join coder --notify plugin:zellij
 ```
 
 ### 6.2 tmux 安装
 
 ```bash
-cp plugins/agtalk-notify-tmux ~/.local/bin/
-chmod +x ~/.local/bin/agtalk-notify-tmux
+mkdir -p ~/.config/agtalk2/plugins
+cp plugins/agtalk-notify-tmux ~/.config/agtalk2/plugins/
+chmod +x ~/.config/agtalk2/plugins/agtalk-notify-tmux
 agtalk id join coder --notify plugin:tmux
 ```
 

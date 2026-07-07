@@ -1328,7 +1328,7 @@ fn notify_checks(ctx: &DoctorContext, identity: &Option<ResolvedIdentity>) -> Ve
                     let (suggestion, command) = if msg.contains("找不到") {
                         (
                             format!(
-                                "将可执行文件放入 {} 或在 PATH 中安装 agtalk-notify-{}",
+                                "将可执行文件放入 {}（推荐）或在 PATH 中安装 agtalk-notify-{}",
                                 crate::paths::plugins_dir()
                                     .map(|p| p.to_string_lossy().into_owned())
                                     .unwrap_or_else(|_| "<config_dir>/plugins".to_string()),

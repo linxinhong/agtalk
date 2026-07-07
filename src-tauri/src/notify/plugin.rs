@@ -92,7 +92,8 @@ impl PluginChannel {
 
     /// 解析插件二进制路径：
     /// 1. 若全局配置 `notify.plugins.<name>.path` 存在，按现有规则解析；
-    /// 2. 否则在 PATH 中查找 `agtalk-notify-<name>`。
+    /// 2. 否则在 `<config_dir>/plugins/` 中查找 `agtalk-notify-<name>`；
+    /// 3. 否则在 PATH 中查找 `agtalk-notify-<name>`。
     pub fn resolve_binary(&self) -> Result<PathBuf, NotifyError> {
         // 优先全局配置。
         if let Ok(config) = AgConfig::load() {
@@ -101,12 +102,21 @@ impl PluginChannel {
             }
         }
 
-        // 回退到 PATH 中的固定前缀二进制。
         let binary_name = format!("agtalk-notify-{}", self.name);
+
+        // 默认约定目录：`<config_dir>/plugins/agtalk-notify-<name>`。
+        if let Ok(plugins_dir) = crate::paths::plugins_dir() {
+            let default_path = plugins_dir.join(&binary_name);
+            if default_path.exists() {
+                return Ok(default_path);
+            }
+        }
+
+        // 回退到 PATH 中的固定前缀二进制。
         match which::which(&binary_name) {
             Ok(path) => Ok(path),
             Err(_) => Err(NotifyError::Other(format!(
-                "找不到 notify 插件 '{}': 未在全局配置中定义，且 PATH 中不存在 {}",
+                "找不到 notify 插件 '{}': 未在全局配置中定义，且 ~/.config/agtalk2/plugins/ 与 PATH 中均不存在 {}",
                 self.name, binary_name
             ))),
         }

@@ -243,7 +243,7 @@ notify 是 agtalk 解决"agent 会偷懒"的机制：daemon 有新消息时**主
 
 v2 起，zellij/tmux 等终端通知不再内置于 agtalk core，而是通过**通用 notify plugin 协议**实现。agtalk core 只负责：
 
-1. 按 `plugin:<name>` 查找可执行插件（配置 path 优先，否则 PATH 中的 `agtalk-notify-<name>`）。
+1. 按 `plugin:<name>` 查找可执行插件：优先读取全局配置 `notify.plugins.<name>.path`；未配置时默认在 `<config_dir>/plugins/` 中查找 `agtalk-notify-<name>`；最后回退到 PATH。
 2. join / auto 时调用插件的 `discover` 子命令，获取并缓存 endpoint 到 `session.json`。
 3. 收到消息时调用插件的 `send` 子命令执行提醒；失败时自动重新 `discover` 刷新 endpoint 并重试一次。
 4. `agtalk tool doctor` 调用 `discover` + `send --dry-run` 诊断可用性。
@@ -278,7 +278,7 @@ GUI 通知、系统通知、webhook、IDE 通知、BLE 等全部通过 `plugin:<
 ### 扩展性
 
 - notify 通道用 trait（`NotifyChannel`）抽象。新增通道只需提供符合协议的插件二进制，不改 daemon 核心。
-- 外部 notify 插件默认放在 `<config_dir>/plugins/`；配置中 `path` 为相对路径或纯文件名时，自动解析到该目录；也支持绝对路径；未配置时在 PATH 中查找 `agtalk-notify-<name>`。
+- 外部 notify 插件默认放在 `<config_dir>/plugins/`（如 `~/.config/agtalk2/plugins/`），文件名为 `agtalk-notify-<name>`；配置中 `path` 为相对路径或纯文件名时，自动解析到该目录；也支持绝对路径；未配置时回退到 PATH 中的 `agtalk-notify-<name>`。
 - 外部 notify 插件参数数组执行（不经 shell）。
 
 ---
