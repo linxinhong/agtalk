@@ -247,7 +247,6 @@ pub fn handle_cleanup(state: &AppState, execute: bool) -> ServerMsg {
             session_by_name.insert(name.clone(), session);
         }
     }
-
     // 3. stale mailbox：DB 有活跃记录，但 session 缺失或 address 不匹配。
     // 已 left 的 mailbox 跳过；它要么对应 stale_session，要么是正常历史保留。
     for mb in &mailboxes {
@@ -930,6 +929,47 @@ mod tests {
         }
 
         assert!(session_file::read(&state.dot_agtalk, "orphan").is_err());
+    }
+
+    #[test]
+    fn cleanup_removes_stale_session_when_mailbox_left() {
+        let (state, _tmp) = test_state();
+        let (pid, start_time) = current_pid_start_time();
+
+        handle_join(
+            &state,
+            Some("reviewer".into()),
+            Some("展示用 intro".into()),
+            "none".into(),
+            None,
+            pid,
+            start_time,
+        );
+
+        // 把 mailbox 标记为 left，但保留 session，制造 stale_session。
+        let session = session_file::read(&state.dot_agtalk, "reviewer").unwrap();
+        crate::identity::mailbox::mark_left(&state.storage, &session.address).unwrap();
+
+        let msg = handle_cleanup(&state, true);
+        match msg {
+            ServerMsg::CleanupResult {
+                dry_run,
+                removed,
+                skipped,
+            } => {
+                assert!(!dry_run);
+                let reasons: Vec<_> = removed.iter().map(|i| i.reason.as_str()).collect();
+                assert!(
+                    reasons.contains(&"stale_session"),
+                    "expected stale_session in {:?}",
+                    reasons
+                );
+                assert!(skipped.is_empty());
+            }
+            other => panic!("expected CleanupResult, got {:?}", other),
+        }
+
+        assert!(session_file::read(&state.dot_agtalk, "reviewer").is_err());
     }
 
     #[test]
