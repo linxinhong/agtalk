@@ -1,6 +1,7 @@
 //! CLI 输出封装：统一处理文本与 --json 两种模式。
 
 use crate::proto::{DiagnosisCheck, RootCause, RunStepResult, ServerMsg};
+use crate::routing::{short_id_of, Message};
 use console::Style;
 use serde::Serialize;
 use std::process::ExitCode;
@@ -147,6 +148,43 @@ pub fn print_doctor_msg(json: bool, debug: bool, msg: &ServerMsg) {
     }
 }
 
+fn print_inbox(messages: &[Message]) {
+    let count = messages.len();
+    println!("{} message{}", count, if count == 1 { "" } else { "s" });
+    if messages.is_empty() {
+        return;
+    }
+    println!();
+    for (idx, m) in messages.iter().enumerate() {
+        print_message_summary(m, Some(idx + 1));
+        if idx + 1 < messages.len() {
+            println!();
+        }
+    }
+}
+
+fn print_message_summary(m: &Message, index: Option<usize>) {
+    let short = short_id_of(&m.id);
+    let prefix = index.map(|i| format!("[{}] ", i)).unwrap_or_default();
+    println!("{}{}  from {}", prefix, short, m.from_name);
+    println!(
+        "    type: {}    status: {}    event: {}",
+        m.content_type, m.status, m.event_id
+    );
+    println!("    reply: agtalk msg reply {} \"<body>\"", short);
+    println!("    done:  agtalk msg done {}", short);
+    println!();
+    println!("{}", m.body);
+}
+
+fn print_wait_result(messages: &[Message], body: &str) {
+    if let Some(first) = messages.first() {
+        print_message_summary(first, None);
+    } else {
+        println!("{}", body);
+    }
+}
+
 fn print_text_server_msg(msg: &ServerMsg) {
     match msg {
         ServerMsg::Pong => println!("pong"),
@@ -185,21 +223,13 @@ fn print_text_server_msg(msg: &ServerMsg) {
             }
         }
         ServerMsg::InboxResult { messages } => {
-            for m in messages {
-                println!(
-                    "{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                    m.id, m.event_id, m.from_name, m.from_address, m.content_type, m.status, m.body
-                );
-            }
+            print_inbox(messages);
         }
         ServerMsg::MsgDetail(m) => {
-            println!("{}", serde_json::to_string_pretty(m).unwrap_or_default());
+            print_message_summary(m, None);
         }
         ServerMsg::WaitResult { messages, body } => {
-            if let Some(first) = messages.first() {
-                println!("from: {} <{}>", first.from_name, first.from_address);
-            }
-            println!("{}", body);
+            print_wait_result(messages, body);
         }
         ServerMsg::AskResult { message_id } => {
             println!("{}", message_id);
@@ -656,7 +686,46 @@ mod tests {
             workspace: "agtalk".into(),
             removed_session: true,
         };
-        // 简单验证 print 不 panic；格式由 print_text_server_msg 保证。
+        print_text_server_msg(&msg);
+    }
+
+    #[test]
+    fn inbox_text_uses_short_id_and_summary() {
+        let msg = ServerMsg::InboxResult {
+            messages: vec![Message {
+                id: "6f0d4353-f4b2-46ab-afb6-8c7f6af02049".into(),
+                to_address: "to".into(),
+                to_name: "to".into(),
+                from_address: "from".into(),
+                from_name: "notify-receiver-zellij".into(),
+                body: "test notify via zellij plugin".into(),
+                content_type: "text".into(),
+                reply_to_id: None,
+                metadata: "{}".into(),
+                event_id: 1,
+                status: "read".into(),
+                created_at: 0.0,
+            }],
+        };
+        print_text_server_msg(&msg);
+    }
+
+    #[test]
+    fn msg_detail_text_uses_summary() {
+        let msg = ServerMsg::MsgDetail(Message {
+            id: "6f0d4353-f4b2-46ab-afb6-8c7f6af02049".into(),
+            to_address: "to".into(),
+            to_name: "to".into(),
+            from_address: "from".into(),
+            from_name: "notify-receiver-zellij".into(),
+            body: "test notify via zellij plugin".into(),
+            content_type: "text".into(),
+            reply_to_id: None,
+            metadata: "{}".into(),
+            event_id: 1,
+            status: "read".into(),
+            created_at: 0.0,
+        });
         print_text_server_msg(&msg);
     }
 

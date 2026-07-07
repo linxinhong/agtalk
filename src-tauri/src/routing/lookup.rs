@@ -3,7 +3,7 @@
 use super::{Message, RoutingError};
 use crate::identity::mailbox;
 use crate::storage::Storage;
-use rusqlite::OptionalExtension;
+use rusqlite::{params, OptionalExtension};
 
 pub fn lookup(
     storage: &Storage,
@@ -11,6 +11,38 @@ pub fn lookup(
 ) -> Result<Vec<mailbox::Mailbox>, RoutingError> {
     let mbs = mailbox::list(storage, name_filter)?;
     Ok(mbs)
+}
+
+const MIN_SHORT_ID_LEN: usize = 8;
+
+/// 将短 ID 前缀解析为完整 UUID。
+/// 搜索范围限定为该 address 收到或发出的消息。
+/// 0 条 → MessageNotFound；≥2 条 → MessageIdAmbiguous。
+pub fn resolve_id(
+    storage: &Storage,
+    address: &str,
+    short_id: &str,
+) -> Result<String, RoutingError> {
+    if short_id.len() < MIN_SHORT_ID_LEN {
+        return Err(RoutingError::MessageIdTooShort(short_id.to_string()));
+    }
+
+    let conn = storage.conn();
+    let mut stmt = conn.prepare(
+        "SELECT id FROM messages WHERE (to_address = ?1 OR from_address = ?1) AND id LIKE ?2 || '%'",
+    )?;
+    let ids: Vec<String> = stmt
+        .query_map(params![address, short_id], |row| row.get::<_, String>(0))?
+        .collect::<Result<_, _>>()?;
+
+    match ids.len() {
+        0 => Err(RoutingError::MessageNotFound(short_id.to_string())),
+        1 => Ok(ids.into_iter().next().unwrap()),
+        count => Err(RoutingError::MessageIdAmbiguous {
+            short_id: short_id.to_string(),
+            count,
+        }),
+    }
 }
 
 /// 查询单条消息详情（不标记已读）。
@@ -58,4 +90,79 @@ pub fn detail_and_mark_read(
     }
 
     Ok(msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::Storage;
+
+    fn insert_message(storage: &Storage, id: &str, to: &str, from: &str, event_id: i64) {
+        // 用 revive 确保以 address 为键的 mailbox + event_sequences 存在。
+        crate::identity::mailbox::revive(storage, to, "recv", "", "").unwrap();
+        crate::identity::mailbox::revive(storage, from, "send", "", "").unwrap();
+        let conn = storage.conn();
+        conn.execute(
+            "INSERT INTO messages (id, to_address, to_name, from_address, from_name, body, content_type, reply_to_id, metadata, event_id, status, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', ?11)",
+            params![id, to, "recv", from, "send", "body", "text", Option::<String>::None, "{}", event_id, 1.0],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn resolve_id_exact_uuid() {
+        let storage = Storage::open_in_memory().unwrap();
+        let id = "6f0d4353-f4b2-46ab-afb6-8c7f6af02049";
+        insert_message(&storage, id, "addr-a", "addr-b", 1);
+
+        let resolved = resolve_id(&storage, "addr-a", id).unwrap();
+        assert_eq!(resolved, id);
+    }
+
+    #[test]
+    fn resolve_id_short_prefix() {
+        let storage = Storage::open_in_memory().unwrap();
+        let id = "6f0d4353-f4b2-46ab-afb6-8c7f6af02049";
+        insert_message(&storage, id, "addr-a", "addr-b", 1);
+
+        let resolved = resolve_id(&storage, "addr-a", "6f0d4353").unwrap();
+        assert_eq!(resolved, id);
+    }
+
+    #[test]
+    fn resolve_id_too_short() {
+        let storage = Storage::open_in_memory().unwrap();
+        let err = resolve_id(&storage, "addr-a", "6f0d435").unwrap_err();
+        assert!(matches!(err, RoutingError::MessageIdTooShort(_)));
+    }
+
+    #[test]
+    fn resolve_id_not_found() {
+        let storage = Storage::open_in_memory().unwrap();
+        let err = resolve_id(&storage, "addr-a", "6f0d4353").unwrap_err();
+        assert!(matches!(err, RoutingError::MessageNotFound(_)));
+    }
+
+    #[test]
+    fn resolve_id_ambiguous() {
+        let storage = Storage::open_in_memory().unwrap();
+        insert_message(
+            &storage,
+            "6f0d4353-f4b2-46ab-afb6-8c7f6af02049",
+            "addr-a",
+            "addr-b",
+            1,
+        );
+        insert_message(
+            &storage,
+            "6f0d4353-aaaa-46ab-afb6-8c7f6af02049",
+            "addr-a",
+            "addr-b",
+            2,
+        );
+
+        let err = resolve_id(&storage, "addr-a", "6f0d4353").unwrap_err();
+        assert!(matches!(err, RoutingError::MessageIdAmbiguous { .. }));
+    }
 }

@@ -118,8 +118,9 @@ pub(crate) enum MsgCmd {
         #[arg(long)]
         more: bool,
     },
-    /// 回复消息
+    /// 回复消息（message_id 支持短 ID 或完整 UUID）
     Reply {
+        #[arg(value_name = "MSG-ID")]
         message_id: String,
         body: String,
         #[arg(short, long)]
@@ -127,8 +128,9 @@ pub(crate) enum MsgCmd {
         #[arg(long)]
         notify: Option<bool>,
     },
-    /// 标记消息完成
+    /// 标记消息完成（message_id 支持短 ID 或完整 UUID；省略则取最新一条）
     Done {
+        #[arg(value_name = "MSG-ID")]
         message_id: Option<String>,
         #[arg(short, long)]
         body: Option<String>,
@@ -171,11 +173,14 @@ pub(crate) enum MsgCmd {
         #[arg(short, long)]
         limit: Option<usize>,
     },
-    /// 读取消息；无参数时读取所有未读并标记为 read
-    Read { message_id: Option<String> },
-    /// 阻塞等待消息（SSE 封装，带超时必返回）
+    /// 读取消息；无参数时读取所有未读并标记为 read；message_id 支持短 ID 或完整 UUID
+    Read {
+        #[arg(value_name = "MSG-ID")]
+        message_id: Option<String>,
+    },
+    /// 阻塞等待消息（SSE 封装，带超时必返回）；message_id 支持短 ID 或完整 UUID
     Wait {
-        /// 自己刚发送出去的消息 ID（msg send / msg ask 返回的 id）；省略则等待下一条发给当前 agent 的消息
+        /// 自己刚发送出去的消息 ID（msg send / msg ask 返回的 id），支持短 ID；省略则等待下一条发给当前 agent 的消息
         #[arg(value_name = "SENT-MSG-ID")]
         message_id: Option<String>,
         #[arg(short, long)]

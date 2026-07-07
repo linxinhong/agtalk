@@ -143,7 +143,7 @@ pub fn wait(
     json: bool,
 ) -> Result<(), CliError> {
     let msg = wait_result(ctx, msg_id, timeout, since)?;
-    print_wait_msg(json, &msg);
+    crate::cli::output::print_server_msg(json, &msg);
     Ok(())
 }
 
@@ -209,7 +209,12 @@ async fn wait_sse(
                     if let Ok(msg) = serde_json::from_str::<crate::routing::Message>(&event.data) {
                         let matched = msg_id
                             .as_ref()
-                            .map(|id| msg.reply_to_id.as_deref() == Some(id.as_str()))
+                            .map(|id| {
+                                msg.reply_to_id
+                                    .as_deref()
+                                    .map(|rt| rt.starts_with(id))
+                                    .unwrap_or(false)
+                            })
                             .unwrap_or(true);
                         if matched {
                             let more = is_more_coming(&msg.metadata);
@@ -235,19 +240,6 @@ async fn wait_sse(
     }
 
     Err(CliError::new("timeout", "wait timeout".to_string()))
-}
-
-fn print_wait_msg(json: bool, msg: &ServerMsg) {
-    if json {
-        println!("{}", serde_json::to_string(msg).unwrap_or_default());
-        return;
-    }
-    if let ServerMsg::WaitResult { messages, body } = msg {
-        if let Some(first) = messages.first() {
-            println!("from: {} <{}>", first.from_name, first.from_address);
-        }
-        println!("{}", body);
-    }
 }
 
 fn is_more_coming(metadata: &str) -> bool {

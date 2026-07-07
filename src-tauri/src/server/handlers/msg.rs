@@ -96,9 +96,18 @@ pub fn handle_reply(
         Ok(s) => s,
         Err(e) => return e,
     };
+    let resolved = match lookup::resolve_id(&state.storage, &session.address, &message_id) {
+        Ok(full_id) => full_id,
+        Err(e) => {
+            return ServerMsg::Error {
+                code: routing_error_code(&e).into(),
+                message: e.to_string(),
+            }
+        }
+    };
     match reply::reply(
         &state.storage,
-        &message_id,
+        &resolved,
         &session.address,
         &session.name,
         &body,
@@ -147,7 +156,15 @@ pub fn handle_done(
     };
 
     let target_id = match message_id {
-        Some(id) => id,
+        Some(id) => match lookup::resolve_id(&state.storage, &session.address, &id) {
+            Ok(full_id) => full_id,
+            Err(e) => {
+                return ServerMsg::Error {
+                    code: routing_error_code(&e).into(),
+                    message: e.to_string(),
+                }
+            }
+        },
         None => {
             // 未指定 message_id 时，取最新一条未完成的
             match lookup::detail_and_mark_read(&state.storage, &session.address, "-") {
@@ -279,10 +296,19 @@ pub fn handle_read(state: &AppState, headers: &HeaderMap, message_id: Option<Str
     };
 
     if let Some(id) = message_id {
-        match lookup::detail_and_mark_read(&state.storage, &session.address, &id) {
+        let resolved = match lookup::resolve_id(&state.storage, &session.address, &id) {
+            Ok(full_id) => full_id,
+            Err(e) => {
+                return ServerMsg::Error {
+                    code: routing_error_code(&e).into(),
+                    message: e.to_string(),
+                }
+            }
+        };
+        match lookup::detail_and_mark_read(&state.storage, &session.address, &resolved) {
             Ok(Some(msg)) => ServerMsg::MsgDetail(msg),
             Ok(None) => ServerMsg::Error {
-                code: "not_found".into(),
+                code: "message_not_found".into(),
                 message: "消息不存在".into(),
             },
             Err(e) => ServerMsg::Error {
@@ -320,6 +346,16 @@ pub fn handle_wait(
     _since: Option<i64>,
 ) -> ServerMsg {
     not_supported("服务端阻塞 wait")
+}
+
+fn routing_error_code(e: &crate::routing::RoutingError) -> &'static str {
+    use crate::routing::RoutingError;
+    match e {
+        RoutingError::MessageNotFound(_) => "message_not_found",
+        RoutingError::MessageIdTooShort(_) => "message_id_too_short",
+        RoutingError::MessageIdAmbiguous { .. } => "message_id_ambiguous",
+        _ => "msg_failed",
+    }
 }
 
 #[cfg(test)]
@@ -416,6 +452,152 @@ mod tests {
         match msg {
             ServerMsg::Ok { id } => assert!(!id.is_empty()),
             other => panic!("expected Ok, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn read_with_short_id() {
+        let (state, _tmp) = test_state();
+        join(&state, "sender");
+        let recv_addr = join(&state, "recv");
+
+        let sender_headers = auth_headers_for(&state, "sender");
+        let send_resp = handle_send(
+            &state,
+            &sender_headers,
+            recv_addr.clone(),
+            "hello short id".into(),
+            None,
+            vec![],
+            Some(false),
+            false,
+        );
+        let sent_id = match send_resp {
+            ServerMsg::Ok { id } => id,
+            other => panic!("expected Ok, got {:?}", other),
+        };
+        let short_id = &sent_id[..8];
+
+        let recv_headers = auth_headers_for(&state, "recv");
+        let read_resp = handle_read(&state, &recv_headers, Some(short_id.to_string()));
+        match read_resp {
+            ServerMsg::MsgDetail(msg) => assert_eq!(msg.id, sent_id),
+            other => panic!("expected MsgDetail, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reply_with_short_id() {
+        let (state, _tmp) = test_state();
+        join(&state, "sender");
+        let recv_addr = join(&state, "recv");
+
+        let sender_headers = auth_headers_for(&state, "sender");
+        handle_send(
+            &state,
+            &sender_headers,
+            recv_addr.clone(),
+            "hello".into(),
+            None,
+            vec![],
+            Some(false),
+            false,
+        );
+
+        let recv_headers = auth_headers_for(&state, "recv");
+        let inbox_resp = handle_inbox(&state, &recv_headers, Default::default());
+        let first_id = match inbox_resp {
+            ServerMsg::InboxResult { messages } => messages[0].id.clone(),
+            other => panic!("expected InboxResult, got {:?}", other),
+        };
+        let short_id = &first_id[..8];
+
+        let reply_resp = handle_reply(
+            &state,
+            &recv_headers,
+            short_id.to_string(),
+            "ok".into(),
+            vec![],
+            Some(false),
+        );
+        match reply_resp {
+            ServerMsg::Ok { id } => assert!(!id.is_empty()),
+            other => panic!("expected Ok, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn done_with_short_id() {
+        let (state, _tmp) = test_state();
+        join(&state, "sender");
+        let recv_addr = join(&state, "recv");
+
+        let sender_headers = auth_headers_for(&state, "sender");
+        handle_send(
+            &state,
+            &sender_headers,
+            recv_addr.clone(),
+            "hello".into(),
+            None,
+            vec![],
+            Some(false),
+            false,
+        );
+
+        let recv_headers = auth_headers_for(&state, "recv");
+        let inbox_resp = handle_inbox(&state, &recv_headers, Default::default());
+        let first_id = match inbox_resp {
+            ServerMsg::InboxResult { messages } => messages[0].id.clone(),
+            other => panic!("expected InboxResult, got {:?}", other),
+        };
+        let short_id = &first_id[..8];
+
+        let done_resp = handle_done(
+            &state,
+            &recv_headers,
+            Some(short_id.to_string()),
+            None,
+            vec![],
+        );
+        match done_resp {
+            ServerMsg::Ok { id } => assert_eq!(id, first_id),
+            other => panic!("expected Ok, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn read_short_id_ambiguous_returns_error() {
+        let (state, _tmp) = test_state();
+        join(&state, "sender");
+        let recv_addr = join(&state, "recv");
+
+        let sender_addr = crate::identity::session_file::read(&state.dot_agtalk, "sender")
+            .unwrap()
+            .address;
+        // 直接插入两条前缀相同的消息（UUID v4 前 8 位不可控）。
+        for (i, id) in [
+            "6f0d4353-1111-46ab-afb6-8c7f6af02049",
+            "6f0d4353-2222-46ab-afb6-8c7f6af02049",
+        ]
+        .iter()
+        .enumerate()
+        {
+            state
+                .storage
+                .conn()
+                .execute(
+                    "INSERT INTO messages (id, to_address, to_name, from_address, from_name, body, content_type, reply_to_id, metadata, event_id, status, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', ?11)",
+                    rusqlite::params![id, &recv_addr, "recv", &sender_addr, "sender", "hi", "text", Option::<String>::None, "{}", (i + 1) as i64, 1.0],
+                )
+                .unwrap();
+        }
+
+        let recv_headers = auth_headers_for(&state, "recv");
+        let read_resp = handle_read(&state, &recv_headers, Some("6f0d4353".into()));
+        match read_resp {
+            ServerMsg::Error { code, .. } => assert_eq!(code, "message_id_ambiguous"),
+            other => panic!("expected Error, got {:?}", other),
         }
     }
 }

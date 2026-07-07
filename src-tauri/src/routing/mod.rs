@@ -21,12 +21,21 @@ pub enum RoutingError {
     Identity(#[from] crate::identity::IdentityError),
     #[error("消息不存在: {0}")]
     MessageNotFound(String),
+    #[error("消息 ID 太短: {0}")]
+    MessageIdTooShort(String),
+    #[error("消息 ID '{short_id}' 匹配到 {count} 条消息，请使用更长前缀或完整 UUID")]
+    MessageIdAmbiguous { short_id: String, count: usize },
     #[error("目标 mailbox 不存在: {0}")]
     MailboxNotFound(String),
     #[error("JSON 错误: {0}")]
     Json(#[from] serde_json::Error),
     #[error("事件 ID 分配失败")]
     EventIdAllocation,
+}
+
+/// 取消息/UUID 的短 ID：第一个 `-` 之前的部分；无 `-` 则返回原串。
+pub fn short_id_of(id: &str) -> String {
+    id.split('-').next().unwrap_or(id).to_string()
 }
 
 pub struct SendRequest<'a> {
