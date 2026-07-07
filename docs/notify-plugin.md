@@ -14,6 +14,7 @@
 4. **不经 shell**：daemon 用参数数组执行插件，插件从 stdin 读 JSON。
 5. **discover + send 两阶段**：`id join` 时由 CLI 在当前 shell 调用插件 `discover` 缓存 endpoint；daemon `send` 失败时可自动重新 `discover` 刷新。
 6. **CLI 侧 discover**：`agtalk id join --notify plugin:<name>` 必须在能访问目标终端/session 的 shell 中执行，失败时直接报错，不自动降级。
+7. **不限语言**：插件可以是 shell、Python、Go、Rust 等任何可执行文件，只要支持 `discover` / `send` 协议。
 
 ---
 
@@ -163,19 +164,18 @@ chmod +x ~/.local/bin/agtalk-notify-zellij
 
 ## 6. 参考实现
 
-项目提供两个参考插件：
+项目提供两个参考插件，均为 shell 脚本：
 
-- `plugins/zellij`（二进制名 `agtalk-notify-zellij`）
-- `plugins/tmux`（二进制名 `agtalk-notify-tmux`）
+- `plugins/agtalk-notify-zellij`
+- `plugins/agtalk-notify-tmux`
 
-它们不是 agtalk core 编译产物，agent 可自行编译并复制到 `<config_dir>/plugins/` 或 PATH。
+插件不限语言，只要实现 `discover` / `send [--dry-run]` 协议即可。
 
 ### 6.1 zellij 安装
 
 ```bash
-cargo build -p agtalk-notify-zellij --release
 mkdir -p ~/.config/agtalk2/plugins
-cp target/release/agtalk-notify-zellij ~/.config/agtalk2/plugins/
+cp plugins/agtalk-notify-zellij ~/.config/agtalk2/plugins/
 chmod +x ~/.config/agtalk2/plugins/agtalk-notify-zellij
 agtalk id join coder --notify plugin:zellij
 ```
@@ -183,9 +183,8 @@ agtalk id join coder --notify plugin:zellij
 ### 6.2 tmux 安装
 
 ```bash
-cargo build -p agtalk-notify-tmux --release
 mkdir -p ~/.config/agtalk2/plugins
-cp target/release/agtalk-notify-tmux ~/.config/agtalk2/plugins/
+cp plugins/agtalk-notify-tmux ~/.config/agtalk2/plugins/
 chmod +x ~/.config/agtalk2/plugins/agtalk-notify-tmux
 agtalk id join coder --notify plugin:tmux
 ```

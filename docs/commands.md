@@ -132,18 +132,16 @@ plugin:<name>     由 CLI 调用外部 notify 插件 discover（如 zellij、tmu
 none              关闭打扰，仅 pull
 ```
 
-zellij/tmux 已迁出 agtalk core，需要安装对应 plugin 二进制到 `<config_dir>/plugins/`：
+zellij/tmux 已迁出 agtalk core，项目提供对应 shell 脚本插件，复制到 `<config_dir>/plugins/` 即可：
 
 ```bash
 mkdir -p ~/.config/agtalk2/plugins
 
-cargo build -p agtalk-notify-zellij --release
-cp target/release/agtalk-notify-zellij ~/.config/agtalk2/plugins/
+cp plugins/agtalk-notify-zellij ~/.config/agtalk2/plugins/
 chmod +x ~/.config/agtalk2/plugins/agtalk-notify-zellij
 agtalk id join coder --notify plugin:zellij
 
-cargo build -p agtalk-notify-tmux --release
-cp target/release/agtalk-notify-tmux ~/.config/agtalk2/plugins/
+cp plugins/agtalk-notify-tmux ~/.config/agtalk2/plugins/
 chmod +x ~/.config/agtalk2/plugins/agtalk-notify-tmux
 agtalk id join coder --notify plugin:tmux
 ```
