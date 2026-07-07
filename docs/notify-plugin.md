@@ -112,14 +112,14 @@ chmod +x ~/.local/bin/agtalk-notify-zellij
     "pane": "1"
   },
   "from_name": "nora",
-  "read_command": "/usr/local/bin/agtalk --as coder msg read",
+  "read_command": "agtalk --as coder msg read",
   "read_args": ["--as", "coder", "msg", "read"],
   "binary_path": "/usr/local/bin/agtalk",
   "workspace": "agtalk",
   "agent_name": "coder",
   "agent_address": "550e8400-e29b-41d4-a716-446655440000",
   "message_id": "msg-123",
-  "text": "[agtalk:msg-123] | exec: /usr/local/bin/agtalk --as coder msg read"
+  "text": "[agtalk:msg-123] | exec: agtalk --as coder msg read"
 }
 ```
 
@@ -145,7 +145,7 @@ chmod +x ~/.local/bin/agtalk-notify-zellij
 参考实现直接透传 `text`：
 
 ```text
-[agtalk:msg-123] | exec: /usr/local/bin/agtalk --as coder msg read
+[agtalk:msg-123] | exec: agtalk --as coder msg read
 ```
 
 - 前缀 `[agtalk:<message_id>]` 方便 agent 直接识别是哪条消息。

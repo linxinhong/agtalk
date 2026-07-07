@@ -385,6 +385,10 @@ pub struct NotifyPluginSendPayload {
     pub text: String,
 }
 
+pub(crate) fn short_id(id: &str) -> String {
+    id.split('-').next().unwrap_or(id).to_string()
+}
+
 fn build_send_payload(endpoint: &serde_json::Value, hint: &NotifyHint) -> NotifyPluginSendPayload {
     let read_args = vec![
         "--as".to_string(),
@@ -392,8 +396,12 @@ fn build_send_payload(endpoint: &serde_json::Value, hint: &NotifyHint) -> Notify
         "msg".to_string(),
         "read".to_string(),
     ];
-    let read_command = format!("{} --as {} msg read", hint.binary_path, hint.agent_name);
-    let text = format!("[agtalk:{}] | exec: {}", hint.message_id, read_command);
+    let read_command = format!("agtalk --as {} msg read", hint.agent_name);
+    let text = format!(
+        "[agtalk:{}] | exec: {}",
+        short_id(&hint.message_id),
+        read_command
+    );
     NotifyPluginSendPayload {
         version: 1,
         type_: "notify".to_string(),
@@ -492,10 +500,10 @@ mod tests {
         let payload = build_send_payload(&serde_json::json!({ "pane": "1" }), &hint());
         let json = serde_json::to_string(&payload).unwrap();
         assert!(json.contains("nora"));
-        assert!(json.contains("/usr/local/bin/agtalk --as codex msg read"));
+        assert!(json.contains("agtalk --as codex msg read"));
         assert!(json.contains("[\"--as\",\"codex\",\"msg\",\"read\"]"));
         assert!(json.contains("msg-123"));
-        assert!(json.contains("[agtalk:msg-123] | exec:"));
+        assert!(json.contains("[agtalk:msg] | exec:"));
         assert!(!json.contains("secret"));
         assert!(!json.contains("message body"));
     }
