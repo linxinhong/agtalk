@@ -10,6 +10,7 @@ pub fn join(
     intro: Option<String>,
     workspace: Option<String>,
     notify: String,
+    notify_endpoint: Option<serde_json::Value>,
     json: bool,
 ) -> Result<(), CliError> {
     let resp = post(
@@ -20,6 +21,7 @@ pub fn join(
             "intro": intro,
             "workspace": workspace,
             "notify": notify,
+            "notify_endpoint": notify_endpoint,
             "pid": ctx.pid,
             "start_time": ctx.start_time,
         }),

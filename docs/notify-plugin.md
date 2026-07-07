@@ -12,7 +12,8 @@
 2. **插件不是 transport**：消息可靠投递仍走 daemon -> SQLite -> SSE / `agtalk msg read`。
 3. **插件失败不影响消息**：notify 失败只记录日志，消息已落库、SSE 已触发。
 4. **不经 shell**：daemon 用参数数组执行插件，插件从 stdin 读 JSON。
-5. **discover + send 两阶段**：join 时 discover 缓存 endpoint；send 失败时可自动重新 discover 刷新。
+5. **discover + send 两阶段**：`id join` 时由 CLI 在当前 shell 调用插件 `discover` 缓存 endpoint；daemon `send` 失败时可自动重新 `discover` 刷新。
+6. **CLI 侧 discover**：`agtalk id join --notify plugin:<name>` 必须在能访问目标终端/session 的 shell 中执行，失败时直接报错，不自动降级。
 
 ---
 
@@ -164,16 +165,17 @@ chmod +x ~/.local/bin/agtalk-notify-zellij
 
 项目提供两个参考插件：
 
-- `plugins/agtalk-notify-zellij`
-- `plugins/agtalk-notify-tmux`
+- `plugins/zellij`（二进制名 `agtalk-notify-zellij`）
+- `plugins/tmux`（二进制名 `agtalk-notify-tmux`）
 
-它们不是 agtalk core 编译产物，agent 可自行复制到 `<config_dir>/plugins/` 或 PATH。
+它们不是 agtalk core 编译产物，agent 可自行编译并复制到 `<config_dir>/plugins/` 或 PATH。
 
 ### 6.1 zellij 安装
 
 ```bash
+cargo build -p agtalk-notify-zellij --release
 mkdir -p ~/.config/agtalk2/plugins
-cp plugins/agtalk-notify-zellij ~/.config/agtalk2/plugins/
+cp target/release/agtalk-notify-zellij ~/.config/agtalk2/plugins/
 chmod +x ~/.config/agtalk2/plugins/agtalk-notify-zellij
 agtalk id join coder --notify plugin:zellij
 ```
@@ -181,8 +183,9 @@ agtalk id join coder --notify plugin:zellij
 ### 6.2 tmux 安装
 
 ```bash
+cargo build -p agtalk-notify-tmux --release
 mkdir -p ~/.config/agtalk2/plugins
-cp plugins/agtalk-notify-tmux ~/.config/agtalk2/plugins/
+cp target/release/agtalk-notify-tmux ~/.config/agtalk2/plugins/
 chmod +x ~/.config/agtalk2/plugins/agtalk-notify-tmux
 agtalk id join coder --notify plugin:tmux
 ```
@@ -246,6 +249,7 @@ check ID：
 | `notify.target` | 当前 session 的 notify target |
 | `notify.plugin.binary` | 插件二进制是否可用 |
 | `notify.plugin.discover` | discover 是否 ready |
+| `notify.plugin.endpoint_stale` | session 中缓存的 endpoint 是否和当前环境一致 |
 | `notify.plugin.dry_run` | send --dry-run 是否成功 |
 
 ---
@@ -264,10 +268,11 @@ check ID：
 
 | 错误 | 处理 |
 |---|---|
-| 插件二进制缺失 | join 时降级为 none；doctor 报 error |
-| discover 返回 not ready | join 时降级为 none；doctor 报 error |
+| 插件二进制缺失 | CLI `id join` 报错；无 CLI discover 时 daemon 侧兜底降级为 none；doctor 报 error |
+| discover 返回 not ready | CLI `id join` 报错；无 CLI discover 时 daemon 侧兜底降级为 none；doctor 报 error |
 | send 失败 | 自动重新 discover 一次并重试；仍失败则记录 warn，不影响消息 |
 | send 超时 | kill 插件进程，记录 warn，不影响消息 |
+| endpoint 过期 | doctor 报 warn，提示在当前终端环境内重新 join |
 
 ---
 

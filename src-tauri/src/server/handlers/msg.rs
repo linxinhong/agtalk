@@ -339,6 +339,7 @@ mod tests {
             Some("intro".into()),
             Some("w".into()),
             "none".into(),
+            None,
             pid,
             start_time,
         ) {

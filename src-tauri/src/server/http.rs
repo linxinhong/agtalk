@@ -77,6 +77,8 @@ struct IdJoinBody {
     workspace: Option<String>,
     #[serde(default = "crate::proto::default_notify")]
     notify: String,
+    #[serde(default)]
+    notify_endpoint: Option<serde_json::Value>,
     pid: u32,
     start_time: u64,
 }
@@ -91,6 +93,7 @@ async fn id_join_handler(
         body.intro,
         body.workspace,
         body.notify,
+        body.notify_endpoint,
         body.pid,
         body.start_time,
     ))

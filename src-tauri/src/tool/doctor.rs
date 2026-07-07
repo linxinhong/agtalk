@@ -1245,6 +1245,29 @@ fn notify_checks(ctx: &DoctorContext, identity: &Option<ResolvedIdentity>) -> Ve
                                         serde_json::to_value(&endpoint_result).unwrap_or_default(),
                                     ));
 
+                                    // endpoint 一致性：session 中保存的 endpoint 和当前 discover 结果是否一致。
+                                    if let Some(NotifyTarget::Plugin {
+                                        endpoint: saved_endpoint,
+                                        ..
+                                    }) = target.as_ref()
+                                    {
+                                        if saved_endpoint != &endpoint_result.endpoint {
+                                            checks.push(check(
+                                                "notify",
+                                                "notify.plugin.endpoint_stale",
+                                                "warn",
+                                                format!(
+                                                    "插件 {} endpoint 已过期（session 保存 {:?}，当前环境 {:?}）",
+                                                    name, saved_endpoint, endpoint_result.endpoint
+                                                ),
+                                                Some("在当前终端环境内重新 join 以刷新 endpoint"),
+                                                Some(&join_notify_cmd),
+                                                serde_json::to_value(&endpoint_result)
+                                                    .unwrap_or_default(),
+                                            ));
+                                        }
+                                    }
+
                                     // dry-run
                                     let workspace = session
                                         .as_ref()

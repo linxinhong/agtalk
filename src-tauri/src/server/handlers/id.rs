@@ -12,12 +12,14 @@ use axum::http::HeaderMap;
 use sysinfo::{Pid, System};
 use uuid::Uuid;
 
+#[allow(clippy::too_many_arguments)]
 pub fn handle_join(
     state: &AppState,
     name: Option<String>,
     intro: Option<String>,
     workspace: Option<String>,
     notify: String,
+    notify_endpoint: Option<serde_json::Value>,
     pid: u32,
     start_time: u64,
 ) -> ServerMsg {
@@ -50,15 +52,18 @@ pub fn handle_join(
                 if session.notify_channel.is_empty()
                     || session.notify_channel.eq_ignore_ascii_case("auto")
                 {
-                    None
+                    "auto".to_string()
                 } else {
-                    Some(session.notify_channel.clone())
+                    session.notify_channel.clone()
                 }
             } else {
-                Some(notify.clone())
+                notify.clone()
             };
-            let (notify_channel, notify_target) =
-                resolve_notify(&base_channel.unwrap_or_else(|| "auto".to_string()));
+            let (notify_channel, notify_target) = resolve_notify(
+                &base_channel,
+                notify_endpoint.clone(),
+                Some(&session.notify_target),
+            );
 
             (
                 session.address.clone(),
@@ -81,7 +86,8 @@ pub fn handle_join(
                     }
                 };
 
-            let (notify_channel, notify_target) = resolve_notify(&notify);
+            let (notify_channel, notify_target) =
+                resolve_notify(&notify, notify_endpoint.clone(), None);
 
             (
                 address,
@@ -276,16 +282,28 @@ fn validate_pid(pid: u32, start_time: u64) -> Result<(), String> {
 }
 
 /// 统一解析 notify 参数：auto/none/plugin:<name>。
-/// 对 plugin 通道会调用 discover 获取 endpoint；若 discover 失败或插件不存在，
-/// 不阻塞 join，降级为 none。
-fn resolve_notify(notify: &str) -> (String, NotifyTarget) {
+/// 优先使用 CLI 侧 discover 传来的 `notify_endpoint`；没有时 daemon 侧兜底 discover。
+/// discover 失败时，若已有同名的旧 endpoint 则保留，否则降级为 none，不阻塞 join。
+fn resolve_notify(
+    notify: &str,
+    notify_endpoint: Option<serde_json::Value>,
+    existing_target: Option<&NotifyTarget>,
+) -> (String, NotifyTarget) {
     if notify.eq_ignore_ascii_case("none") {
         return ("none".to_string(), NotifyTarget::None);
     }
-    if notify.eq_ignore_ascii_case("auto") {
-        return notify::auto_detect();
-    }
     if let Some(plugin_name) = notify.strip_prefix("plugin:") {
+        // 优先 CLI 传来的 endpoint。
+        if let Some(endpoint) = notify_endpoint {
+            return (
+                notify.to_string(),
+                NotifyTarget::Plugin {
+                    name: plugin_name.to_string(),
+                    endpoint,
+                },
+            );
+        }
+        // 否则尝试 daemon 侧 discover（向后兼容无 CLI discover 的调用方）。
         if let Some(channel) = notify::channel_from_name(notify) {
             match channel.discover() {
                 Ok(Some(endpoint)) if endpoint.ready => {
@@ -312,8 +330,23 @@ fn resolve_notify(notify: &str) -> (String, NotifyTarget) {
                 }
             }
         }
-        // discover 失败或不 ready 时降级为 none，不阻塞 join。
+        // 若已有同名旧 endpoint，保留它（例如 session 复用时插件当前不可用）。
+        if let Some(NotifyTarget::Plugin { name, endpoint }) = existing_target {
+            if name == plugin_name {
+                return (
+                    notify.to_string(),
+                    NotifyTarget::Plugin {
+                        name: name.clone(),
+                        endpoint: endpoint.clone(),
+                    },
+                );
+            }
+        }
+        // 降级为 none。
         return ("none".to_string(), NotifyTarget::None);
+    }
+    if notify.eq_ignore_ascii_case("auto") {
+        return notify::auto_detect();
     }
     // 未知通道统一降级为 none。
     tracing::warn!("未知 notify 通道 '{}', 降级为 none", notify);
@@ -403,6 +436,7 @@ mod tests {
             Some("设计评审专家".into()),
             Some("agtalk".into()),
             "none".into(),
+            None,
             pid,
             start_time,
         );
@@ -438,6 +472,7 @@ mod tests {
             Some("初代 intro".into()),
             Some("agtalk".into()),
             "none".into(),
+            None,
             pid,
             start_time,
         );
@@ -452,6 +487,7 @@ mod tests {
             Some("更新后的 intro".into()),
             None,
             "none".into(),
+            None,
             pid,
             start_time,
         );
@@ -486,6 +522,7 @@ mod tests {
             Some("展示用 intro".into()),
             Some("agtalk".into()),
             "none".into(),
+            None,
             pid,
             start_time,
         );
@@ -520,6 +557,7 @@ mod tests {
             Some("展示用 intro".into()),
             Some("agtalk".into()),
             "plugin:zellij".into(),
+            None,
             pid,
             start_time,
         );
@@ -552,6 +590,7 @@ mod tests {
             Some("展示用 intro".into()),
             Some("agtalk".into()),
             "plugin:macos".into(),
+            None,
             pid,
             start_time,
         );
@@ -582,6 +621,7 @@ mod tests {
             Some("展示用 intro".into()),
             Some("agtalk".into()),
             "zellij".into(),
+            None,
             pid,
             start_time,
         );
@@ -614,6 +654,7 @@ mod tests {
             Some("展示用 intro".into()),
             Some("agtalk".into()),
             "zellij".into(),
+            None,
             pid,
             start_time,
         );

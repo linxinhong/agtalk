@@ -244,9 +244,9 @@ notify 是 agtalk 解决"agent 会偷懒"的机制：daemon 有新消息时**主
 v2 起，zellij/tmux 等终端通知不再内置于 agtalk core，而是通过**通用 notify plugin 协议**实现。agtalk core 只负责：
 
 1. 按 `plugin:<name>` 查找可执行插件：优先读取全局配置 `notify.plugins.<name>.path`；未配置时默认在 `<config_dir>/plugins/` 中查找 `agtalk-notify-<name>`；最后回退到 PATH。
-2. join / auto 时调用插件的 `discover` 子命令，获取并缓存 endpoint 到 `session.json`。
-3. 收到消息时调用插件的 `send` 子命令执行提醒；失败时自动重新 `discover` 刷新 endpoint 并重试一次。
-4. `agtalk tool doctor` 调用 `discover` + `send --dry-run` 诊断可用性。
+2. `id join --notify plugin:<name>` / `--notify auto` 时由 **CLI 在当前 shell** 调用插件 `discover`，获取并缓存 endpoint 到 `session.json`；`send` 失败时 daemon 自动重新 `discover` 刷新 endpoint 并重试一次。
+3. 收到消息时调用插件的 `send` 子命令执行提醒。
+4. `agtalk tool doctor` 调用 `discover` + `send --dry-run` 诊断可用性，并检查 session endpoint 是否过期。
 
 用户注册身份时选择通道：
 
@@ -273,7 +273,7 @@ GUI 通知、系统通知、webhook、IDE 通知、BLE 等全部通过 `plugin:<
 
 - **普通终端（无多路复用器且无可用 plugin）**无标准注入方式——不假装能解决。文档明确：该环境下 notify 不生效，agent 需自查（`agtalk msg read`）或安装对应 plugin。
 - 终端注入命令模板末尾（如 `agtalk msg read`）会读 stdin——若 agent pane 当前在交互提示中（sudo 密码/REPL），文本会被当输入。属固有风险，须在用户文档说明。
-- daemon 作为独立后台进程时，可能无法访问当前 shell 的 zellij session；此时 plugin discover 会返回 `ready=false`，通知降级为纯 pull。
+- `id join` 必须在能访问目标终端/session 的 shell 中执行，因为 `discover` 在 CLI 侧；daemon 触发 `send` 时按缓存的 endpoint 调用插件，若终端/session 已变化，`send` 失败后会自动重新 `discover` 一次，仍失败则降级为纯 pull。
 
 ### 扩展性
 

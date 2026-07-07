@@ -444,6 +444,51 @@ fn print_agent_help(json: bool) {
     print_server_msg(json, &msg);
 }
 
+/// CLI 侧解析 notify 通道。对 `auto` / `plugin:<name>` 会调用插件 `discover`。
+/// 失败时返回错误，不自动降级，让 agent 明确知道原因。
+/// 对 `auto`，如果没有任何 plugin 就绪，返回 `("none", None)`。
+fn resolve_notify(notify: &str) -> Result<(String, Option<serde_json::Value>), CliError> {
+    let notify = notify.trim();
+    if notify.eq_ignore_ascii_case("none") {
+        return Ok(("none".to_string(), None));
+    }
+    if notify.eq_ignore_ascii_case("auto") {
+        for candidate in ["zellij", "tmux"] {
+            let channel_name = format!("plugin:{}", candidate);
+            if let Ok(channel) = crate::notify::plugin::PluginChannel::new(candidate) {
+                match channel.discover() {
+                    Ok(endpoint) if endpoint.ready => {
+                        return Ok((channel_name, Some(endpoint.endpoint)));
+                    }
+                    _ => continue,
+                }
+            }
+        }
+        return Ok(("none".to_string(), None));
+    }
+    if let Some(plugin_name) = notify.strip_prefix("plugin:") {
+        let channel = crate::notify::plugin::PluginChannel::new(plugin_name)
+            .map_err(|e| CliError::new("notify_plugin_invalid", e.to_string()))?;
+        match channel.discover() {
+            Ok(endpoint) if endpoint.ready => Ok((notify.to_string(), Some(endpoint.endpoint))),
+            Ok(endpoint) => Err(CliError::new(
+                "notify_plugin_not_ready",
+                format!(
+                    "plugin:{} discover 未就绪: {}",
+                    plugin_name, endpoint.message
+                ),
+            )),
+            Err(e) => Err(CliError::new(
+                "notify_plugin_discover_failed",
+                format!("plugin:{} discover 失败: {}", plugin_name, e),
+            )),
+        }
+    } else {
+        // 未知通道保持原样，由 daemon 决定如何处理。
+        Ok((notify.to_string(), None))
+    }
+}
+
 fn run(cli: Cli, json: bool) -> Result<(), CliError> {
     let as_name = cli.as_name.as_deref();
     match cli.command {
@@ -472,7 +517,8 @@ fn run(cli: Cli, json: bool) -> Result<(), CliError> {
                     notify,
                 } => {
                     let ctx = Context::pre_join().map_err(CliError::from)?;
-                    client::id::join(ctx, name, intro, workspace, notify, json)
+                    let (notify, notify_endpoint) = resolve_notify(&notify)?;
+                    client::id::join(ctx, name, intro, workspace, notify, notify_endpoint, json)
                 }
                 IdCmd::Show => {
                     let ctx = Context::current(as_name).map_err(CliError::from)?;

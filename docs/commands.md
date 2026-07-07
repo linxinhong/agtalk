@@ -127,8 +127,8 @@ agtalk id join [name] [--intro <text>] [--workspace <text>] [--notify <channel>]
 notify channel：
 
 ```text
-auto              依次尝试 plugin:zellij / plugin:tmux discover，否则 none
-plugin:<name>     调用外部 notify 插件（如 zellij、tmux、macos、webhook）
+auto              由 CLI 依次尝试 plugin:zellij / plugin:tmux discover，否则 none
+plugin:<name>     由 CLI 调用外部 notify 插件 discover（如 zellij、tmux、macos、webhook）
 none              关闭打扰，仅 pull
 ```
 
@@ -137,11 +137,13 @@ zellij/tmux 已迁出 agtalk core，需要安装对应 plugin 二进制到 `<con
 ```bash
 mkdir -p ~/.config/agtalk2/plugins
 
-cp plugins/agtalk-notify-zellij ~/.config/agtalk2/plugins/
+cargo build -p agtalk-notify-zellij --release
+cp target/release/agtalk-notify-zellij ~/.config/agtalk2/plugins/
 chmod +x ~/.config/agtalk2/plugins/agtalk-notify-zellij
 agtalk id join coder --notify plugin:zellij
 
-cp plugins/agtalk-notify-tmux ~/.config/agtalk2/plugins/
+cargo build -p agtalk-notify-tmux --release
+cp target/release/agtalk-notify-tmux ~/.config/agtalk2/plugins/
 chmod +x ~/.config/agtalk2/plugins/agtalk-notify-tmux
 agtalk id join coder --notify plugin:tmux
 ```
