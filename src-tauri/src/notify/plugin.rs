@@ -381,6 +381,8 @@ pub struct NotifyPluginSendPayload {
     pub agent_address: String,
     /// 触发本次 notify 的消息 ID。
     pub message_id: String,
+    /// 插件应直接注入终端的完整文本，由 daemon 统一组装。
+    pub text: String,
 }
 
 fn build_send_payload(endpoint: &serde_json::Value, hint: &NotifyHint) -> NotifyPluginSendPayload {
@@ -391,6 +393,7 @@ fn build_send_payload(endpoint: &serde_json::Value, hint: &NotifyHint) -> Notify
         "read".to_string(),
     ];
     let read_command = format!("{} --as {} msg read", hint.binary_path, hint.agent_name);
+    let text = format!("[agtalk:{}] | exec: {}", hint.message_id, read_command);
     NotifyPluginSendPayload {
         version: 1,
         type_: "notify".to_string(),
@@ -403,6 +406,7 @@ fn build_send_payload(endpoint: &serde_json::Value, hint: &NotifyHint) -> Notify
         agent_name: hint.agent_name.clone(),
         agent_address: hint.agent_address.clone(),
         message_id: hint.message_id.clone(),
+        text,
     }
 }
 
@@ -491,6 +495,7 @@ mod tests {
         assert!(json.contains("/usr/local/bin/agtalk --as codex msg read"));
         assert!(json.contains("[\"--as\",\"codex\",\"msg\",\"read\"]"));
         assert!(json.contains("msg-123"));
+        assert!(json.contains("[agtalk:msg-123] | exec:"));
         assert!(!json.contains("secret"));
         assert!(!json.contains("message body"));
     }

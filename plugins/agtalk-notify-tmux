@@ -50,9 +50,8 @@ if [ "$CMD" = "send" ]; then
         exit 1
     fi
 
-    MESSAGE_ID=$(printf '%s' "$PAYLOAD" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("message_id",""))' 2>/dev/null || true)
-    READ_COMMAND=$(printf '%s' "$PAYLOAD" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("read_command","agtalk msg read"))' 2>/dev/null || echo "agtalk msg read")
-    TEXT="[agtalk:${MESSAGE_ID}] | exec: ${READ_COMMAND}"
+    # Inject the pre-assembled text from daemon. The payload contains no body/secret.
+    TEXT=$(printf '%s' "$PAYLOAD" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("text","[agtalk] 新消息"))' 2>/dev/null || echo "[agtalk] 新消息")
 
     # Use send-keys -R to clear any pending input, then send the hint + Enter.
     tmux send-keys -t "$PANE" -R "$TEXT" Enter

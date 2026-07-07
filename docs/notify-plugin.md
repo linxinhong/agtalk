@@ -118,7 +118,8 @@ chmod +x ~/.local/bin/agtalk-notify-zellij
   "workspace": "agtalk",
   "agent_name": "coder",
   "agent_address": "550e8400-e29b-41d4-a716-446655440000",
-  "message_id": "msg-123"
+  "message_id": "msg-123",
+  "text": "[agtalk:msg-123] | exec: /usr/local/bin/agtalk --as coder msg read"
 }
 ```
 
@@ -137,10 +138,11 @@ chmod +x ~/.local/bin/agtalk-notify-zellij
 | `agent_name` | 目标 agent 名称 |
 | `agent_address` | 目标 agent address UUID |
 | `message_id` | 触发本次 notify 的消息 ID |
+| `text` | daemon 组装好的注入文本，插件默认直接透传 |
 
 ### 4.3 注入文本风格
 
-参考实现输出：
+参考实现直接透传 `text`：
 
 ```text
 [agtalk:msg-123] | exec: /usr/local/bin/agtalk --as coder msg read
@@ -148,6 +150,7 @@ chmod +x ~/.local/bin/agtalk-notify-zellij
 
 - 前缀 `[agtalk:<message_id>]` 方便 agent 直接识别是哪条消息。
 - `exec:` 后接可直接执行的取信命令。
+- 插件默认不自己组装文本，只读取 `text` 注入终端；如需自定义格式，由 daemon 端调整。
 
 ### 4.4 send --dry-run
 
