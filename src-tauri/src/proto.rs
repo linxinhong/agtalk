@@ -357,6 +357,7 @@ pub enum ServerMsg {
         address: String,
         name: String,
         removed_session: bool,
+        purge: bool,
     },
     LookupResult {
         mailboxes: Vec<LookupMailbox>,

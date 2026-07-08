@@ -105,6 +105,8 @@ async fn id_join_handler(
 struct IdLeaveBody {
     #[serde(default)]
     purge: bool,
+    #[serde(default)]
+    address: Option<String>,
 }
 
 async fn id_leave_handler(
@@ -112,7 +114,7 @@ async fn id_leave_handler(
     headers: HeaderMap,
     Json(body): Json<IdLeaveBody>,
 ) -> (StatusCode, Json<ServerMsg>) {
-    json_response(id::handle_leave(&state, &headers, body.purge))
+    json_response(id::handle_leave(&state, &headers, body.address, body.purge))
 }
 
 #[derive(serde::Deserialize)]

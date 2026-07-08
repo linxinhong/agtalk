@@ -241,9 +241,10 @@ fn print_text_server_msg(msg: &ServerMsg) {
             address,
             name,
             removed_session,
+            purge,
         } => {
             println!("left: {} {}", name, address);
-            if !removed_session {
+            if *purge && !removed_session {
                 println!("warning: session directory could not be removed");
             }
         }
@@ -724,6 +725,7 @@ mod tests {
             address: "550e8400-e29b-41d4-a716-446655440000".into(),
             name: "reviewer".into(),
             removed_session: true,
+            purge: true,
         };
         print_text_server_msg(&msg);
     }

@@ -184,27 +184,66 @@ fn notify_summary(channel: &str) -> String {
     "unknown".to_string()
 }
 
-pub fn handle_leave(state: &AppState, headers: &HeaderMap, _purge: bool) -> ServerMsg {
-    let session = match super::authenticate_req(state, headers) {
-        Ok(s) => s,
-        Err(e) => return e,
+pub fn handle_leave(
+    state: &AppState,
+    headers: &HeaderMap,
+    address_override: Option<String>,
+    purge: bool,
+) -> ServerMsg {
+    let (address, name, workspace_root) = match address_override {
+        Some(addr) => {
+            let mb = match mailbox_db::get_by_address(&state.storage, &addr) {
+                Ok(Some(mb)) => mb,
+                Ok(None) => {
+                    return ServerMsg::Error {
+                        code: "leave_failed".into(),
+                        message: format!("address 不存在或已离开: {}", addr),
+                    }
+                }
+                Err(e) => {
+                    return ServerMsg::Error {
+                        code: "leave_failed".into(),
+                        message: e.to_string(),
+                    }
+                }
+            };
+            (addr, mb.name, state.dot_agtalk.clone())
+        }
+        None => {
+            let session = match super::authenticate_req(state, headers) {
+                Ok(s) => s,
+                Err(e) => return e,
+            };
+            (
+                session.address,
+                session.name,
+                session.workspace_root.clone(),
+            )
+        }
     };
 
-    if let Err(e) = mailbox_db::mark_left(&state.storage, &session.address) {
+    if let Err(e) = mailbox_db::mark_left(&state.storage, &address) {
         return ServerMsg::Error {
             code: "leave_failed".into(),
             message: e.to_string(),
         };
     }
-    let removed_session = session_file_mod::remove(&session.workspace_root, &session.name).is_ok();
+
+    let removed_session = if purge {
+        session_file_mod::remove(&workspace_root, &name).is_ok()
+    } else {
+        false
+    };
+
     // 清理所有指向该 name 的 pid 锚点，避免 stale agents.json。
-    let _ = agents_map::remove_by_name(&session.workspace_root, &session.name);
-    crate::mem::index::remove(&state.storage, &session.address);
+    let _ = agents_map::remove_by_name(&workspace_root, &name);
+    crate::mem::index::remove(&state.storage, &address);
 
     ServerMsg::IdentityLeft {
-        address: session.address,
-        name: session.name,
+        address,
+        name,
         removed_session,
+        purge,
     }
 }
 
@@ -782,26 +821,118 @@ mod tests {
             start_time.to_string().parse().unwrap(),
         );
 
-        let msg = handle_leave(&state, &headers, false);
+        // 默认 purge=false，不删除本地 session 目录
+        let msg = handle_leave(&state, &headers, None, false);
         match msg {
             ServerMsg::IdentityLeft {
                 name,
                 removed_session,
+                purge,
                 ..
             } => {
                 assert_eq!(name, "reviewer");
-                assert!(removed_session);
+                assert!(!removed_session);
+                assert!(!purge);
             }
             other => panic!("expected IdentityLeft, got {:?}", other),
         }
 
-        assert!(session_file::read(&state.dot_agtalk, "reviewer").is_err());
+        // session 目录应保留
+        assert!(session_file::read(&state.dot_agtalk, "reviewer").is_ok());
+        // pid anchor 应被清理
         assert!(agents_map::get_by_pid(&state.dot_agtalk, 12345)
             .unwrap()
             .is_none());
         assert!(agents_map::get_by_pid(&state.dot_agtalk, 12346)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn leave_by_address_targets_specific_mailbox() {
+        let (state, _tmp) = test_state();
+        let (pid, start_time) = current_pid_start_time();
+
+        let alice_addr = match handle_join(
+            &state,
+            &state.dot_agtalk,
+            Some("alice".into()),
+            Some("alice intro".into()),
+            "none".into(),
+            None,
+            pid,
+            start_time,
+        ) {
+            ServerMsg::Identity { address, .. } => address,
+            other => panic!("expected Identity, got {:?}", other),
+        };
+
+        let bob_addr = match handle_join(
+            &state,
+            &state.dot_agtalk,
+            Some("bob".into()),
+            Some("bob intro".into()),
+            "none".into(),
+            None,
+            pid,
+            start_time,
+        ) {
+            ServerMsg::Identity { address, .. } => address,
+            other => panic!("expected Identity, got {:?}", other),
+        };
+
+        let msg = handle_leave(&state, &HeaderMap::new(), Some(bob_addr.clone()), false);
+        match msg {
+            ServerMsg::IdentityLeft { address, name, .. } => {
+                assert_eq!(address, bob_addr);
+                assert_eq!(name, "bob");
+            }
+            other => panic!("expected IdentityLeft, got {:?}", other),
+        }
+
+        assert!(mailbox_db::get_by_address(&state.storage, &bob_addr)
+            .unwrap()
+            .is_none());
+        assert!(mailbox_db::get_by_address(&state.storage, &alice_addr)
+            .unwrap()
+            .is_some());
+        assert!(session_file::read(&state.dot_agtalk, "bob").is_ok());
+        assert!(session_file::read(&state.dot_agtalk, "alice").is_ok());
+    }
+
+    #[test]
+    fn leave_by_address_with_purge_removes_session() {
+        let (state, _tmp) = test_state();
+        let (pid, start_time) = current_pid_start_time();
+
+        let addr = match handle_join(
+            &state,
+            &state.dot_agtalk,
+            Some("reviewer".into()),
+            Some("intro".into()),
+            "none".into(),
+            None,
+            pid,
+            start_time,
+        ) {
+            ServerMsg::Identity { address, .. } => address,
+            other => panic!("expected Identity, got {:?}", other),
+        };
+
+        let msg = handle_leave(&state, &HeaderMap::new(), Some(addr), true);
+        match msg {
+            ServerMsg::IdentityLeft {
+                removed_session,
+                purge,
+                ..
+            } => {
+                assert!(removed_session);
+                assert!(purge);
+            }
+            other => panic!("expected IdentityLeft, got {:?}", other),
+        }
+
+        assert!(session_file::read(&state.dot_agtalk, "reviewer").is_err());
     }
 
     #[test]

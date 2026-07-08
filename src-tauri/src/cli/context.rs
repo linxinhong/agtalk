@@ -88,6 +88,68 @@ impl Context {
         })
     }
 
+    /// 用于 `id leave`：
+    /// 必须显式指定身份（--as / AGTALK_NAME / 已注册祖先 PID），
+    /// 不允许单 session 自动恢复，避免在多个 session 时随机注销。
+    pub fn for_leave(as_name: Option<&str>) -> Result<Self, IdentityResolutionError> {
+        let current_dir =
+            env::current_dir().map_err(|e| IdentityResolutionError::Io(e.to_string()))?;
+        let dot_agtalk =
+            workspace_dir(&current_dir).map_err(|e| IdentityResolutionError::Io(e.to_string()))?;
+
+        let (pid, start_time, name) = if let Some(name) = as_name {
+            Self::resolve_by_name(&dot_agtalk, name)?
+        } else if let Some(name) = env::var_os("AGTALK_NAME") {
+            let name = name
+                .into_string()
+                .map_err(|_| IdentityResolutionError::Io("AGTALK_NAME 不是有效 UTF-8".into()))?;
+            Self::resolve_by_name(&dot_agtalk, &name)?
+        } else {
+            Self::resolve_identity(&dot_agtalk)?
+        };
+
+        let session = session_file::read(&dot_agtalk, &name).map_err(|e| match e {
+            crate::identity::IdentityError::Io(_) if !session_path_exists(&dot_agtalk, &name) => {
+                IdentityResolutionError::SessionMissing { name: name.clone() }
+            }
+            _ => IdentityResolutionError::InvalidSession {
+                name: name.clone(),
+                reason: e.to_string(),
+            },
+        })?;
+
+        let config = AgConfig::load().map_err(|e| IdentityResolutionError::Io(e.to_string()))?;
+        let base_url = format!("http://127.0.0.1:{}", config.http_port);
+
+        Ok(Self {
+            dot_agtalk,
+            address: session.address,
+            name: session.name,
+            pid,
+            start_time,
+            base_url,
+        })
+    }
+
+    /// 用于 `id leave --address <uuid>`：
+    /// 不需要解析本地 session，直接用给定 address 请求 daemon。
+    pub fn for_address(address: String) -> Result<Self, IdentityResolutionError> {
+        let current_dir =
+            env::current_dir().map_err(|e| IdentityResolutionError::Io(e.to_string()))?;
+        let dot_agtalk =
+            workspace_dir(&current_dir).map_err(|e| IdentityResolutionError::Io(e.to_string()))?;
+        let config = AgConfig::load().map_err(|e| IdentityResolutionError::Io(e.to_string()))?;
+        let base_url = format!("http://127.0.0.1:{}", config.http_port);
+        Ok(Self {
+            dot_agtalk,
+            address,
+            name: String::new(),
+            pid: std::process::id(),
+            start_time: 0,
+            base_url,
+        })
+    }
+
     /// 用于 `join`：不依赖 agents.json 中已注册的条目。
     /// 若当前目录没有 `.agtalk`，会自动创建。
     pub fn pre_join() -> Result<Self, String> {
@@ -528,5 +590,66 @@ mod tests {
         assert_eq!(err.unwrap_err().code(), "identity_required");
         // stale anchor 应被清理
         assert!(agents_map::get_by_pid(&dot, cur_pid).unwrap().is_none());
+    }
+
+    fn with_workspace_root<T>(tmp: &TempDir, f: impl FnOnce() -> T) -> T {
+        let prev = std::env::var_os(crate::paths::WORKSPACE_ROOT_ENV);
+        let dot = tmp.path().join(".agtalk");
+        std::env::set_var(crate::paths::WORKSPACE_ROOT_ENV, &dot);
+        let result = f();
+        if let Some(p) = prev {
+            std::env::set_var(crate::paths::WORKSPACE_ROOT_ENV, p);
+        } else {
+            std::env::remove_var(crate::paths::WORKSPACE_ROOT_ENV);
+        }
+        result
+    }
+
+    #[test]
+    fn for_leave_uses_as_name() {
+        let tmp = TempDir::new().unwrap();
+        let dot = tmp.path().join(".agtalk");
+        write_session(&dot, "nora");
+
+        let ctx = with_workspace_root(&tmp, || Context::for_leave(Some("nora")).unwrap());
+        assert_eq!(ctx.name, "nora");
+    }
+
+    #[test]
+    fn for_leave_without_selector_and_no_anchor_requires_identity() {
+        let tmp = TempDir::new().unwrap();
+        let dot = tmp.path().join(".agtalk");
+        write_session(&dot, "nora");
+        write_session(&dot, "quinn");
+
+        let code = with_workspace_root(&tmp, || {
+            Context::for_leave(None)
+                .map(|_| "".to_string())
+                .unwrap_or_else(|e| e.code().to_string())
+        });
+        assert_eq!(code, "identity_required");
+    }
+
+    #[test]
+    fn for_leave_does_not_auto_recover_single_session() {
+        let tmp = TempDir::new().unwrap();
+        let dot = tmp.path().join(".agtalk");
+        write_session(&dot, "nora");
+
+        let code = with_workspace_root(&tmp, || {
+            Context::for_leave(None)
+                .map(|_| "".to_string())
+                .unwrap_or_else(|e| e.code().to_string())
+        });
+        assert_eq!(code, "identity_required");
+    }
+
+    #[test]
+    fn for_address_does_not_read_session() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = with_workspace_root(&tmp, || {
+            Context::for_address("550e8400-e29b-41d4-a716-446655440000".into()).unwrap()
+        });
+        assert_eq!(ctx.address, "550e8400-e29b-41d4-a716-446655440000");
     }
 }

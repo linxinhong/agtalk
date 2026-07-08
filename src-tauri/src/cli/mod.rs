@@ -100,6 +100,10 @@ pub(crate) enum IdCmd {
     Lookup { name: Option<String> },
     /// 离开网络
     Leave {
+        /// 按 UUID 精确离开，不再解析当前身份
+        #[arg(long, value_name = "ADDRESS")]
+        address: Option<String>,
+        /// 同时删除本地 .agtalk/<name>/ 目录
         #[arg(long)]
         purge: bool,
     },
@@ -550,9 +554,14 @@ fn run(cli: Cli, json: bool) -> Result<(), CliError> {
                     let ctx = Context::daemon_only().map_err(CliError::from)?;
                     client::id::lookup(ctx, name, json)
                 }
-                IdCmd::Leave { purge } => {
-                    let ctx = Context::current(as_name).map_err(CliError::from)?;
-                    client::id::leave(ctx, purge, json)
+                IdCmd::Leave { address, purge } => {
+                    if let Some(address) = address {
+                        let ctx = Context::for_address(address.clone()).map_err(CliError::from)?;
+                        client::id::leave_by_address(ctx, address, purge, json)
+                    } else {
+                        let ctx = Context::for_leave(as_name).map_err(CliError::from)?;
+                        client::id::leave(ctx, purge, json)
+                    }
                 }
                 IdCmd::Cleanup { execute } => {
                     let ctx = Context::daemon_only().map_err(CliError::from)?;

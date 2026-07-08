@@ -28,12 +28,30 @@ pub fn join(
     Ok(())
 }
 
-pub fn leave(ctx: Context, _purge: bool, json: bool) -> Result<(), CliError> {
+pub fn leave(ctx: Context, purge: bool, json: bool) -> Result<(), CliError> {
     let resp = post(
         &ctx,
         "/api/v1/id/leave",
         serde_json::json!({
-            "purge": false,
+            "purge": purge,
+        }),
+    )?;
+    print_server_msg(json, &resp);
+    Ok(())
+}
+
+pub fn leave_by_address(
+    ctx: Context,
+    address: String,
+    purge: bool,
+    json: bool,
+) -> Result<(), CliError> {
+    let resp = post(
+        &ctx,
+        "/api/v1/id/leave",
+        serde_json::json!({
+            "address": address,
+            "purge": purge,
         }),
     )?;
     print_server_msg(json, &resp);
