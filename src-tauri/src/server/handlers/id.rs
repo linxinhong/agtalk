@@ -34,22 +34,16 @@ pub fn handle_join(
         if let Some(ref session) = existing_session {
             let final_intro = intro.unwrap_or_else(|| session.intro.clone());
 
-            let base_channel = if notify.eq_ignore_ascii_case("auto") {
-                if session.notify_channel.is_empty()
-                    || session.notify_channel.eq_ignore_ascii_case("auto")
-                {
-                    "auto".to_string()
-                } else {
-                    session.notify_channel.clone()
-                }
-            } else {
-                notify.clone()
-            };
-            let (notify_channel, notify_target) = resolve_notify(
-                &base_channel,
-                notify_endpoint.clone(),
-                Some(&session.notify_target),
-            );
+            let (notify_channel, notify_target) =
+                match resolve_notify(&notify, notify_endpoint.clone()) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return ServerMsg::Error {
+                            code: "join_failed".into(),
+                            message: e,
+                        }
+                    }
+                };
 
             if let Err(e) = mailbox_db::revive_with_notify(
                 &state.storage,
@@ -75,7 +69,15 @@ pub fn handle_join(
         } else {
             let final_intro = intro.unwrap_or_default();
             let (notify_channel, notify_target) =
-                resolve_notify(&notify, notify_endpoint.clone(), None);
+                match resolve_notify(&notify, notify_endpoint.clone()) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return ServerMsg::Error {
+                            code: "join_failed".into(),
+                            message: e,
+                        }
+                    }
+                };
             let address = match mailbox_db::create_with_notify(
                 &state.storage,
                 &name,
@@ -99,6 +101,8 @@ pub fn handle_join(
     let command = std::env::current_exe()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| "agtalk".to_string());
+
+    let notify_ready = !notify_channel.eq_ignore_ascii_case("none") && !notify_channel.is_empty();
 
     let session = SessionFile {
         address: address.clone(),
@@ -133,6 +137,8 @@ pub fn handle_join(
         address,
         name,
         intro: session.intro,
+        notify_channel: session.notify_channel.clone(),
+        notify_ready,
     }
 }
 
@@ -141,13 +147,16 @@ pub fn handle_show(state: &AppState, headers: &HeaderMap) -> ServerMsg {
         Ok(s) => s,
         Err(e) => return e,
     };
-    let intro = session_file_mod::read(&session.workspace_root, &session.name)
-        .map(|s| s.intro)
+    let (intro, notify_channel) = session_file_mod::read(&session.workspace_root, &session.name)
+        .map(|s| (s.intro, s.notify_channel))
         .unwrap_or_default();
+    let notify_ready = !notify_channel.eq_ignore_ascii_case("none") && !notify_channel.is_empty();
     ServerMsg::Identity {
         address: session.address,
         name: session.name,
         intro,
+        notify_channel,
+        notify_ready,
     }
 }
 
@@ -429,74 +438,59 @@ fn validate_pid(pid: u32, start_time: u64) -> Result<(), String> {
 
 /// 统一解析 notify 参数：auto/none/plugin:<name>。
 /// 优先使用 CLI 侧 discover 传来的 `notify_endpoint`；没有时 daemon 侧兜底 discover。
-/// discover 失败时，若已有同名的旧 endpoint 则保留，否则降级为 none，不阻塞 join。
+/// 显式 plugin:<name>  discover 失败时返回错误，不静默降级。
 fn resolve_notify(
     notify: &str,
     notify_endpoint: Option<serde_json::Value>,
-    existing_target: Option<&NotifyTarget>,
-) -> (String, NotifyTarget) {
+) -> Result<(String, NotifyTarget), String> {
     if notify.eq_ignore_ascii_case("none") {
-        return ("none".to_string(), NotifyTarget::None);
+        return Ok(("none".to_string(), NotifyTarget::None));
     }
     if let Some(plugin_name) = notify.strip_prefix("plugin:") {
         // 优先 CLI 传来的 endpoint。
         if let Some(endpoint) = notify_endpoint {
-            return (
+            return Ok((
                 notify.to_string(),
                 NotifyTarget::Plugin {
                     name: plugin_name.to_string(),
                     endpoint,
                 },
-            );
+            ));
         }
         // 否则尝试 daemon 侧 discover（向后兼容无 CLI discover 的调用方）。
         if let Some(channel) = notify::channel_from_name(notify) {
             match channel.discover() {
                 Ok(Some(endpoint)) if endpoint.ready => {
-                    return (
+                    return Ok((
                         notify.to_string(),
                         NotifyTarget::Plugin {
                             name: plugin_name.to_string(),
                             endpoint: endpoint.endpoint,
                         },
-                    );
+                    ));
                 }
                 Ok(Some(endpoint)) => {
-                    tracing::warn!(
-                        "notify plugin {} discover 返回 not ready: {}",
-                        plugin_name,
-                        endpoint.message
-                    );
+                    return Err(format!(
+                        "plugin:{} discover 未就绪: {}",
+                        plugin_name, endpoint.message
+                    ));
                 }
                 Ok(None) => {
-                    tracing::warn!("notify plugin {} discover 返回空", plugin_name);
+                    return Err(format!("plugin:{} discover 返回空", plugin_name));
                 }
                 Err(e) => {
-                    tracing::warn!("notify plugin {} discover 失败: {}", plugin_name, e);
+                    return Err(format!("plugin:{} discover 失败: {}", plugin_name, e));
                 }
             }
         }
-        // 若已有同名旧 endpoint，保留它（例如 session 复用时插件当前不可用）。
-        if let Some(NotifyTarget::Plugin { name, endpoint }) = existing_target {
-            if name == plugin_name {
-                return (
-                    notify.to_string(),
-                    NotifyTarget::Plugin {
-                        name: name.clone(),
-                        endpoint: endpoint.clone(),
-                    },
-                );
-            }
-        }
-        // 降级为 none。
-        return ("none".to_string(), NotifyTarget::None);
+        return Err(format!("plugin:{} 通道无效", plugin_name));
     }
     if notify.eq_ignore_ascii_case("auto") {
-        return notify::auto_detect();
+        return Ok(notify::auto_detect());
     }
     // 未知通道统一降级为 none。
     tracing::warn!("未知 notify 通道 '{}', 降级为 none", notify);
-    ("none".to_string(), NotifyTarget::None)
+    Ok(("none".to_string(), NotifyTarget::None))
 }
 
 fn short_id() -> String {
@@ -596,10 +590,13 @@ mod tests {
                 address,
                 name,
                 intro,
+                notify_channel,
+                ..
             } => {
                 assert!(!address.is_empty());
                 assert_eq!(name, "reviewer");
                 assert_eq!(intro, "设计评审专家");
+                assert_eq!(notify_channel, "none");
             }
             other => panic!("expected Identity, got {:?}", other),
         }
@@ -645,6 +642,7 @@ mod tests {
                 address,
                 name,
                 intro,
+                ..
             } => {
                 assert_eq!(address, first_address);
                 assert_eq!(name, "reviewer");
@@ -688,6 +686,157 @@ mod tests {
                 assert_eq!(intro, "展示用 intro");
             }
             other => panic!("expected Identity, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn join_without_notify_upgrades_old_none_to_plugin_when_ready() {
+        let (_plugin_tmp, prev_path) = mock_plugin_env("zellij");
+        let (state, _tmp) = test_state();
+        let (pid, start_time) = current_pid_start_time();
+
+        // 首次以 none 创建
+        handle_join(
+            &state,
+            &state.dot_agtalk,
+            Some("reviewer".into()),
+            Some("初代 intro".into()),
+            "none".into(),
+            None,
+            pid,
+            start_time,
+        );
+        let session = session_file::read(&state.dot_agtalk, "reviewer").unwrap();
+        assert_eq!(session.notify_channel, "none");
+
+        // 再次 join 不传 notify，应升级为 plugin:zellij
+        let msg = handle_join(
+            &state,
+            &state.dot_agtalk,
+            Some("reviewer".into()),
+            None,
+            "auto".into(),
+            None,
+            pid,
+            start_time,
+        );
+        match msg {
+            ServerMsg::Identity {
+                notify_channel,
+                notify_ready,
+                ..
+            } => {
+                assert_eq!(notify_channel, "plugin:zellij");
+                assert!(notify_ready);
+            }
+            other => panic!("expected Identity, got {:?}", other),
+        }
+        let session = session_file::read(&state.dot_agtalk, "reviewer").unwrap();
+        assert_eq!(session.notify_channel, "plugin:zellij");
+
+        std::env::set_var("PATH", prev_path);
+    }
+
+    #[test]
+    fn join_without_notify_refreshes_existing_plugin_endpoint() {
+        let (_plugin_tmp, prev_path) = mock_plugin_env("zellij");
+        let (state, _tmp) = test_state();
+        let (pid, start_time) = current_pid_start_time();
+
+        handle_join(
+            &state,
+            &state.dot_agtalk,
+            Some("reviewer".into()),
+            Some("初代 intro".into()),
+            "plugin:zellij".into(),
+            None,
+            pid,
+            start_time,
+        );
+        let first_session = session_file::read(&state.dot_agtalk, "reviewer").unwrap();
+        assert_eq!(first_session.notify_channel, "plugin:zellij");
+
+        // 不传 notify 再次 join，channel 保持 plugin:zellij，endpoint 会被刷新
+        handle_join(
+            &state,
+            &state.dot_agtalk,
+            Some("reviewer".into()),
+            None,
+            "auto".into(),
+            None,
+            pid,
+            start_time,
+        );
+        let second_session = session_file::read(&state.dot_agtalk, "reviewer").unwrap();
+        assert_eq!(second_session.notify_channel, "plugin:zellij");
+
+        std::env::set_var("PATH", prev_path);
+    }
+
+    #[test]
+    fn join_explicit_notify_none_persists_none() {
+        let (_plugin_tmp, prev_path) = mock_plugin_env("zellij");
+        let (state, _tmp) = test_state();
+        let (pid, start_time) = current_pid_start_time();
+
+        handle_join(
+            &state,
+            &state.dot_agtalk,
+            Some("reviewer".into()),
+            Some("初代 intro".into()),
+            "plugin:zellij".into(),
+            None,
+            pid,
+            start_time,
+        );
+
+        let msg = handle_join(
+            &state,
+            &state.dot_agtalk,
+            Some("reviewer".into()),
+            None,
+            "none".into(),
+            None,
+            pid,
+            start_time,
+        );
+        match msg {
+            ServerMsg::Identity {
+                notify_channel,
+                notify_ready,
+                ..
+            } => {
+                assert_eq!(notify_channel, "none");
+                assert!(!notify_ready);
+            }
+            other => panic!("expected Identity, got {:?}", other),
+        }
+        let session = session_file::read(&state.dot_agtalk, "reviewer").unwrap();
+        assert_eq!(session.notify_channel, "none");
+
+        std::env::set_var("PATH", prev_path);
+    }
+
+    #[test]
+    fn join_explicit_plugin_not_ready_returns_error() {
+        let (state, _tmp) = test_state();
+        let (pid, start_time) = current_pid_start_time();
+
+        let msg = handle_join(
+            &state,
+            &state.dot_agtalk,
+            Some("reviewer".into()),
+            Some("intro".into()),
+            "plugin:missing-plugin".into(),
+            None,
+            pid,
+            start_time,
+        );
+        match msg {
+            ServerMsg::Error { code, .. } => {
+                assert_eq!(code, "join_failed");
+            }
+            other => panic!("expected Error, got {:?}", other),
         }
     }
 

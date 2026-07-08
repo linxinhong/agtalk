@@ -232,10 +232,20 @@ fn print_text_server_msg(msg: &ServerMsg) {
             address,
             name,
             intro,
+            notify_channel,
+            notify_ready,
         } => {
             println!("address   : {}", address);
             println!("name      : {}", name);
             println!("intro     : {}", intro);
+            if *notify_ready {
+                println!("notify    : {} ready", notify_channel);
+            } else {
+                println!("notify    : {}", notify_channel);
+                println!(
+                    "hint      : rejoin inside zellij/tmux or install a notify plugin to enable notifications"
+                );
+            }
         }
         ServerMsg::IdentityLeft {
             address,

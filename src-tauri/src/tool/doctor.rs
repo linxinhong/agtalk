@@ -1168,7 +1168,23 @@ fn notify_checks(ctx: &DoctorContext, identity: &Option<ResolvedIdentity>) -> Ve
         .as_ref()
         .and_then(|m| serde_json::from_value::<NotifyTarget>(m.notify_target.clone()).ok());
 
-    if channel.is_empty() || channel == "none" {
+    let (detected_channel, _detected_target) = notify::auto_detect();
+    let channel_is_none = channel.is_empty() || channel == "none";
+    if channel_is_none && detected_channel != "none" {
+        checks.push(check(
+            "notify",
+            "notify.channel",
+            "warn",
+            format!(
+                "notify 通道为 {}，但当前环境可用 {}",
+                if channel.is_empty() { "none" } else { &channel },
+                detected_channel
+            ),
+            Some("在对应终端环境内重新 join 以启用 notify"),
+            Some(&format!("agtalk id join {} --notify auto", id.name)),
+            serde_json::json!({ "channel": channel, "detected": detected_channel }),
+        ));
+    } else {
         checks.push(check(
             "notify",
             "notify.channel",
@@ -1177,16 +1193,6 @@ fn notify_checks(ctx: &DoctorContext, identity: &Option<ResolvedIdentity>) -> Ve
                 "notify 通道为 {}",
                 if channel.is_empty() { "none" } else { &channel }
             ),
-            None,
-            None,
-            serde_json::json!({ "channel": channel }),
-        ));
-    } else {
-        checks.push(check(
-            "notify",
-            "notify.channel",
-            "ok",
-            format!("notify 通道为 {}", channel),
             None,
             None,
             serde_json::json!({ "channel": channel }),
@@ -1966,5 +1972,68 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains("agtalk config set notify.plugins.bad.path"));
+    }
+
+    #[test]
+    fn doctor_warns_when_notify_none_but_environment_ready() {
+        let tmp = TempDir::new().unwrap();
+        let (ctx, _guard) = test_ctx(&tmp);
+
+        // 构造一个可用的 mock plugin 并加入 PATH
+        let plugins_dir = tmp.path().join("plugins");
+        std::fs::create_dir_all(&plugins_dir).unwrap();
+        let plugin_path = plugins_dir.join("agtalk-notify-zellij");
+        let script = "#!/bin/sh\nif [ \"$1\" = \"discover\" ]; then echo '{\"version\":1,\"type\":\"notify_endpoint\",\"channel\":\"zellij\",\"ready\":true,\"endpoint\":{\"pane\":\"1\"},\"message\":\"ok\"}'; fi\n";
+        std::fs::write(&plugin_path, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&plugin_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let prev_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut paths = std::env::split_paths(&prev_path).collect::<Vec<_>>();
+        paths.push(plugins_dir);
+        std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+
+        let address = "550e8400-e29b-41d4-a716-446655440000".to_string();
+        let session = SessionFile {
+            address: address.clone(),
+            name: "nora".to_string(),
+            workspace: "projA".to_string(),
+            intro: "前端".to_string(),
+            created_at: "2026-07-01T00:00:00Z".to_string(),
+            command: "agtalk".to_string(),
+            notify_channel: "none".to_string(),
+            notify_target: NotifyTarget::None,
+        };
+        session_file::write(&ctx.dot_agtalk, "nora", &session).unwrap();
+        if let Some(storage) = ctx.storage.as_ref() {
+            mailbox::revive_with_notify(
+                storage,
+                &address,
+                "nora",
+                "前端",
+                "",
+                "none",
+                &serde_json::json!({"type":"none"}),
+            )
+            .unwrap();
+        }
+
+        let msg = run(ctx);
+        let checks = match msg {
+            ServerMsg::ToolDiagnosis { checks, .. } => checks,
+            other => panic!("expected ToolDiagnosis, got {:?}", other),
+        };
+
+        let channel_check = find_check(&checks, "notify.channel").unwrap();
+        assert_eq!(channel_check.status, "warn");
+        assert!(channel_check
+            .command
+            .as_ref()
+            .unwrap()
+            .contains("agtalk id join nora --notify auto"));
+
+        std::env::set_var("PATH", prev_path);
     }
 }

@@ -34,11 +34,13 @@ agtalk daemon start
 # 查看当前身份
 agtalk id show
 
-# 如果没有身份，创建一个
-agtalk id join <name> --intro "<你的角色/能力>"
+# 如果没有身份，创建一个（默认 auto discover 可用 notify plugin）
+agtalk id join <name> --intro "<你的角色/能力>" --notify auto
 ```
 
-`id join` 是幂等的：同名 session 已存在则复用原 address，只更新当前进程锚点。
+`id join` 是幂等的：同名 session 已存在则复用原 address，只更新当前进程锚点。省略 `--notify` 时也会重新 auto-discover，旧的 `notify=none` 会被升级到可用 plugin；只有显式 `--notify none` 才会持久关闭打扰层。
+
+如果 `agtalk id lookup` 看到自己 `notify=none`，但你当前在 zellij/tmux 环境里，重新执行一次 `agtalk id join <name>` 即可刷新 notify 通道。
 
 多个 session 存在导致歧义时，用 `--as` 或 `AGTALK_NAME` 指定：
 
@@ -99,8 +101,9 @@ agtalk tool doctor
 | 目的 | 命令 |
 |---|---|
 | 当前身份 / 恢复 | `agtalk id show` |
-| 创建/复用身份 | `agtalk id join <name> --intro "..."` |
+| 创建/复用身份 | `agtalk id join <name> --intro "..." [--notify auto|none|plugin:<name>]` |
 | 指定身份 | `agtalk --as <name> <cmd>` |
+| 修复 notify | `agtalk id join <name> --notify auto` |
 | 查找目标 | `agtalk id lookup [name]` |
 | 发送消息 | `agtalk msg send <uuid> "<body>"` |
 | 读取收件箱 | `agtalk msg read` |

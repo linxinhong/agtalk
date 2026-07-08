@@ -90,9 +90,9 @@ pub(crate) enum IdCmd {
         name: Option<String>,
         #[arg(short, long)]
         intro: Option<String>,
-        /// 打扰通道：auto | none | zellij | tmux | plugin:<name>
-        #[arg(short, long, default_value = "auto", value_name = "CHANNEL")]
-        notify: String,
+        /// 打扰通道：auto | none | plugin:<name>（省略时默认 auto，会重新 discover 覆盖旧 session 的 none）
+        #[arg(short, long, value_name = "CHANNEL")]
+        notify: Option<String>,
     },
     /// 当前身份
     Show,
@@ -542,7 +542,8 @@ fn run(cli: Cli, json: bool) -> Result<(), CliError> {
                     notify,
                 } => {
                     let ctx = Context::pre_join().map_err(CliError::from)?;
-                    let (notify, notify_endpoint) = resolve_notify(&notify, name.as_deref())?;
+                    let notify_input = notify.as_deref().unwrap_or("auto");
+                    let (notify, notify_endpoint) = resolve_notify(notify_input, name.as_deref())?;
                     client::id::join(ctx, name, intro, notify, notify_endpoint, json)
                 }
                 IdCmd::Show => {
@@ -699,6 +700,33 @@ mod tests {
         let cli = Cli::try_parse_from(["agtalk", "--json"]).unwrap();
         assert!(cli.json);
         assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn parse_id_join_without_notify_defaults_to_none_option() {
+        let cli = Cli::try_parse_from(["agtalk", "id", "join", "nora"]).unwrap();
+        let cmd = match cli.command {
+            Some(Commands::Id { cmd }) => cmd,
+            _ => panic!("expected Id join"),
+        };
+        match cmd {
+            IdCmd::Join { notify, .. } => assert!(notify.is_none()),
+            _ => panic!("expected Join"),
+        }
+    }
+
+    #[test]
+    fn parse_id_join_notify_none_is_some() {
+        let cli =
+            Cli::try_parse_from(["agtalk", "id", "join", "nora", "--notify", "none"]).unwrap();
+        let cmd = match cli.command {
+            Some(Commands::Id { cmd }) => cmd,
+            _ => panic!("expected Id join"),
+        };
+        match cmd {
+            IdCmd::Join { notify, .. } => assert_eq!(notify, Some("none".to_string())),
+            _ => panic!("expected Join"),
+        }
     }
 
     #[test]
