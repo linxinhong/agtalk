@@ -4,9 +4,9 @@ use crate::proto::ServerMsg;
 use crate::server::state::AppState;
 use crate::tool::DoctorContext;
 
-pub fn handle_doctor(state: &AppState) -> ServerMsg {
+pub fn handle_doctor(state: &AppState, workspace_root: &std::path::Path) -> ServerMsg {
     let ctx = DoctorContext::new(
-        state.dot_agtalk.clone(),
+        workspace_root.to_path_buf(),
         (*state.config).clone(),
         Some(state.storage.clone()),
         None,

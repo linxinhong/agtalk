@@ -4,6 +4,7 @@ use crate::cli::context_error::IdentityResolutionError;
 use crate::config::AgConfig;
 use crate::identity::agents_map;
 use crate::identity::session_file;
+use crate::paths::{ensure_workspace_dir, workspace_dir};
 use std::env;
 use std::path::{Path, PathBuf};
 use sysinfo::{Pid, System};
@@ -28,9 +29,10 @@ impl Context {
     /// 4. 当前目录只有一个 session 时自动恢复
     /// 5. 多个 session 且无法判断 → identity_ambiguous
     pub fn current(as_name: Option<&str>) -> Result<Self, IdentityResolutionError> {
-        let dot_agtalk = env::current_dir()
-            .map_err(|e| IdentityResolutionError::Io(e.to_string()))?
-            .join(".agtalk");
+        let current_dir =
+            env::current_dir().map_err(|e| IdentityResolutionError::Io(e.to_string()))?;
+        let dot_agtalk =
+            workspace_dir(&current_dir).map_err(|e| IdentityResolutionError::Io(e.to_string()))?;
 
         let (pid, start_time, name) = if let Some(name) = as_name {
             Self::resolve_by_name(&dot_agtalk, name)?
@@ -70,9 +72,10 @@ impl Context {
     /// 构造一个不需要本地身份、只用于访问 daemon 的上下文。
     /// 用于 `id lookup` 等“无身份命令”。
     pub fn daemon_only() -> Result<Self, IdentityResolutionError> {
-        let dot_agtalk = env::current_dir()
-            .map_err(|e| IdentityResolutionError::Io(e.to_string()))?
-            .join(".agtalk");
+        let current_dir =
+            env::current_dir().map_err(|e| IdentityResolutionError::Io(e.to_string()))?;
+        let dot_agtalk =
+            workspace_dir(&current_dir).map_err(|e| IdentityResolutionError::Io(e.to_string()))?;
         let config = AgConfig::load().map_err(|e| IdentityResolutionError::Io(e.to_string()))?;
         let base_url = format!("http://127.0.0.1:{}", config.http_port);
         Ok(Self {
@@ -86,10 +89,10 @@ impl Context {
     }
 
     /// 用于 `join`：不依赖 agents.json 中已注册的条目。
+    /// 若当前目录没有 `.agtalk`，会自动创建。
     pub fn pre_join() -> Result<Self, String> {
-        let dot_agtalk = env::current_dir()
-            .map_err(|e| e.to_string())?
-            .join(".agtalk");
+        let current_dir = env::current_dir().map_err(|e| e.to_string())?;
+        let dot_agtalk = ensure_workspace_dir(&current_dir).map_err(|e| e.to_string())?;
 
         let (pid, start_time) = session_anchor(std::process::id());
         if start_time == 0 {

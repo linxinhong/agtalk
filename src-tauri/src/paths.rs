@@ -17,6 +17,8 @@ pub enum PathsError {
 }
 
 pub const CONFIG_DIR_ENV: &str = "AGTALK_CONFIG_DIR";
+/// 覆盖当前 workspace root 的环境变量名。
+pub const WORKSPACE_ROOT_ENV: &str = "AGTALK_ROOT";
 
 /// 全局配置目录：
 /// - Linux / macOS: ~/.config/agtalk2
@@ -41,6 +43,29 @@ pub fn config_dir() -> Result<PathBuf, PathsError> {
 /// 确保配置目录存在，权限 0700
 pub fn ensure_config_dir() -> Result<PathBuf, PathsError> {
     let dir = config_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    {
+        use std::fs::Permissions;
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, Permissions::from_mode(0o700))?;
+    }
+    Ok(dir)
+}
+
+/// 定位当前命令的 workspace root：
+/// 1. 若 `AGTALK_ROOT` 存在，直接使用；
+/// 2. 否则返回 `current_dir/.agtalk`。
+pub fn workspace_dir(current_dir: impl AsRef<Path>) -> Result<PathBuf, PathsError> {
+    if let Some(root) = std::env::var_os(WORKSPACE_ROOT_ENV) {
+        return Ok(PathBuf::from(root));
+    }
+    Ok(current_dir.as_ref().join(".agtalk"))
+}
+
+/// 确保当前目录存在 `.agtalk` 目录；不存在则创建，权限 0700。
+pub fn ensure_workspace_dir(current_dir: impl AsRef<Path>) -> Result<PathBuf, PathsError> {
+    let dir = workspace_dir(current_dir)?;
     std::fs::create_dir_all(&dir)?;
     #[cfg(unix)]
     {

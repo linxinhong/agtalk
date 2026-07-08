@@ -4,6 +4,7 @@ use crate::identity::auth::{self, AuthenticatedSession};
 use crate::proto::ServerMsg;
 use crate::server::state::AppState;
 use axum::http::{HeaderMap, StatusCode};
+use std::path::{Path, PathBuf};
 
 pub mod config;
 pub mod daemon;
@@ -12,12 +13,22 @@ pub mod mem;
 pub mod msg;
 pub mod tool;
 
+/// 从 header 读取 workspace root；缺失时退化为 daemon 启动时的 legacy 目录。
+pub fn workspace_root_from_headers(headers: &HeaderMap, fallback: &Path) -> PathBuf {
+    headers
+        .get("X-AgTalk-Workspace-Root")
+        .and_then(|v| v.to_str().ok())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| fallback.to_path_buf())
+}
+
 /// 从请求头读取认证信息并认证。
 #[allow(clippy::result_large_err)]
 pub fn authenticate_req(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<AuthenticatedSession, ServerMsg> {
+    let workspace_root = workspace_root_from_headers(headers, &state.dot_agtalk);
     let address = headers
         .get("X-AgTalk-Address")
         .and_then(|v| v.to_str().ok())
@@ -36,7 +47,7 @@ pub fn authenticate_req(
 
     auth::authenticate(
         &state.storage,
-        &state.dot_agtalk,
+        &workspace_root,
         address,
         pid,
         start_time,

@@ -122,6 +122,9 @@ pub(crate) enum MsgCmd {
         file: Vec<PathBuf>,
         #[arg(long)]
         notify: Option<bool>,
+        /// 不在 notify 注入后自动发送 Enter（默认自动执行）
+        #[arg(long)]
+        no_enter: bool,
         #[arg(long)]
         more: bool,
     },
@@ -134,6 +137,9 @@ pub(crate) enum MsgCmd {
         file: Vec<PathBuf>,
         #[arg(long)]
         notify: Option<bool>,
+        /// 不在 notify 注入后自动发送 Enter（默认自动执行）
+        #[arg(long)]
+        no_enter: bool,
     },
     /// 标记消息完成（message_id 支持短 ID 或完整 UUID；省略则取最新一条）
     Done {
@@ -560,6 +566,7 @@ fn run(cli: Cli, json: bool) -> Result<(), CliError> {
                     subject,
                     file,
                     notify,
+                    no_enter,
                     more,
                 } => {
                     let ctx = Context::current(as_name).map_err(CliError::from)?;
@@ -567,20 +574,25 @@ fn run(cli: Cli, json: bool) -> Result<(), CliError> {
                         .into_iter()
                         .map(|p| p.to_string_lossy().into_owned())
                         .collect();
-                    client::msg::send(ctx, to, body, subject, files, notify, more, json)
+                    let send_enter = if no_enter { Some(false) } else { None };
+                    client::msg::send(
+                        ctx, to, body, subject, files, notify, send_enter, more, json,
+                    )
                 }
                 MsgCmd::Reply {
                     message_id,
                     body,
                     file,
                     notify,
+                    no_enter,
                 } => {
                     let ctx = Context::current(as_name).map_err(CliError::from)?;
                     let files: Vec<String> = file
                         .into_iter()
                         .map(|p| p.to_string_lossy().into_owned())
                         .collect();
-                    client::msg::reply(ctx, message_id, body, files, notify, json)
+                    let send_enter = if no_enter { Some(false) } else { None };
+                    client::msg::reply(ctx, message_id, body, files, notify, send_enter, json)
                 }
                 MsgCmd::Done {
                     message_id,

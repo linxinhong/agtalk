@@ -5,10 +5,11 @@
 //! v2 架构：agtalk core 只负责调用外部 notify plugin 的 `discover`/`send` 子命令。
 //! zellij/tmux 等具体实现已迁出 core，作为独立可执行插件。
 
-use crate::identity::session_file::{self, NotifyTarget, SessionFile};
+use crate::identity::mailbox as mailbox_db;
+use crate::identity::session_file::NotifyTarget;
 use crate::notify::plugin::{PluginChannel, PluginEndpoint};
+use crate::storage::Storage;
 use std::collections::HashMap;
-use std::path::Path;
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -88,6 +89,8 @@ pub struct NotifyHint {
     pub agent_name: String,
     pub agent_address: String,
     pub message_id: String,
+    /// 注入后是否自动发送 Enter（让终端执行命令）。
+    pub send_enter: bool,
 }
 
 /// notify 通道抽象。
@@ -172,59 +175,64 @@ pub fn resolve_channel(raw: &str) -> (String, Option<Box<dyn NotifyChannel>>, No
 
 /// 触发一次 notify。
 ///
-/// 流程：扫描 `.agtalk/*/` 找到 address 匹配的 session，读 notify 配置，注入提示。
-/// 只有在注入成功后才会记录 cooldown；session 缺失、channel disabled、插件失败等都不消耗 cooldown。
-/// 对 plugin 通道，send 失败时会自动重新 discover 并刷新 endpoint 重试一次。
+/// 流程：从 daemon DB 读取目标 mailbox 的 notify 配置，注入提示。
+/// 只有在注入成功后才会记录 cooldown；mailbox 缺失、channel disabled、插件失败等都不消耗 cooldown。
+/// 对 plugin 通道，send 失败时会自动重新 discover 并刷新 endpoint 重试一次，同时更新 DB。
 /// 失败只返回错误，由调用方决定是否记录日志。
 pub async fn trigger(
-    dot_agtalk: &Path,
+    storage: &Storage,
     to_address: &str,
     from_name: &str,
     message_id: &str,
     limiter: &NotifyLimiter,
+    send_enter: Option<bool>,
 ) -> Result<(), NotifyError> {
     if !limiter.check(to_address) {
         return Err(NotifyError::RateLimited);
     }
 
-    let session = find_session_by_address(dot_agtalk, to_address)?;
+    let mb =
+        mailbox_db::get_by_address(storage, to_address)?.ok_or(NotifyError::SessionNotFound)?;
 
-    if session.notify_channel.eq_ignore_ascii_case("none") || session.notify_channel.is_empty() {
+    if mb.notify_channel.eq_ignore_ascii_case("none") || mb.notify_channel.is_empty() {
         return Err(NotifyError::ChannelDisabled);
     }
 
-    let channel = channel_from_name(&session.notify_channel).ok_or_else(|| {
-        NotifyError::Other(format!("未知 notify 通道: {}", session.notify_channel))
-    })?;
+    let channel = channel_from_name(&mb.notify_channel)
+        .ok_or_else(|| NotifyError::Other(format!("未知 notify 通道: {}", mb.notify_channel)))?;
+
+    let notify_target: NotifyTarget =
+        serde_json::from_value(mb.notify_target.clone()).unwrap_or_default();
 
     let binary_path = current_binary_path();
     let hint = NotifyHint {
         from_name: from_name.to_string(),
         binary_path,
-        agent_name: session.name.clone(),
-        agent_address: session.address.clone(),
+        agent_name: mb.name.clone(),
+        agent_address: mb.address.clone(),
         message_id: message_id.to_string(),
+        send_enter: send_enter.unwrap_or(true),
     };
 
     // 第一次尝试。
-    if let Err(e) = channel.send(&session.notify_target, &hint, false) {
+    if let Err(e) = channel.send(&notify_target, &hint, false) {
         // plugin 通道失败时尝试刷新 endpoint 重试一次。
-        if let Some(plugin) = channel_from_name(&session.notify_channel) {
+        if let Some(plugin) = channel_from_name(&mb.notify_channel) {
             if let Ok(Some(endpoint)) = plugin.discover() {
                 if endpoint.ready {
                     let refreshed = NotifyTarget::Plugin {
-                        name: session
-                            .notify_target
-                            .plugin_name()
-                            .unwrap_or_default()
-                            .to_string(),
-                        endpoint: endpoint.endpoint,
+                        name: notify_target.plugin_name().unwrap_or_default().to_string(),
+                        endpoint: endpoint.endpoint.clone(),
                     };
                     channel.send(&refreshed, &hint, false)?;
-                    // 写回 session.json。
-                    let mut updated = session.clone();
-                    updated.notify_target = refreshed;
-                    let _ = session_file::write(dot_agtalk, &session.name, &updated);
+                    // 同步更新 DB notify_target。
+                    let refreshed_json = serde_json::to_value(&refreshed).unwrap_or_default();
+                    let _ = mailbox_db::set_notify(
+                        storage,
+                        to_address,
+                        &mb.notify_channel,
+                        &refreshed_json,
+                    );
                     limiter.record(to_address);
                     return Ok(());
                 }
@@ -240,7 +248,7 @@ pub async fn trigger(
 /// 构造注入文本。不包含正文，只含信号 + 取信命令模板。
 pub fn build_hint_text(hint: &NotifyHint) -> String {
     format!(
-        "[agtalk:{}] | exec: agtalk --as {} msg read\n",
+        "[agtalk:{}] | exec: agtalk --as {} msg read",
         crate::notify::plugin::short_id(&hint.message_id),
         hint.agent_name
     )
@@ -250,29 +258,6 @@ fn current_binary_path() -> String {
     std::env::current_exe()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| "agtalk".to_string())
-}
-
-fn find_session_by_address(dot_agtalk: &Path, address: &str) -> Result<SessionFile, NotifyError> {
-    if !dot_agtalk.exists() {
-        return Err(NotifyError::SessionNotFound);
-    }
-
-    for entry in std::fs::read_dir(dot_agtalk)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let session = match session_file::read(dot_agtalk, &name) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        if session.address == address {
-            return Ok(session);
-        }
-    }
-
-    Err(NotifyError::SessionNotFound)
 }
 
 /// 执行外部命令，参数数组形式（不经 shell）。
@@ -291,8 +276,6 @@ pub fn run_command(cmd: &str, args: &[&str]) -> Result<(), NotifyError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::session_file;
-    use tempfile::TempDir;
 
     #[test]
     fn build_hint_does_not_include_body() {
@@ -302,33 +285,12 @@ mod tests {
             agent_name: "codex".to_string(),
             agent_address: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             message_id: "msg-123".to_string(),
+            send_enter: true,
         };
         let text = build_hint_text(&hint);
         assert!(text.contains("[agtalk:msg]"));
         assert!(text.contains("exec: agtalk --as codex msg read"));
         assert!(!text.contains("secret"));
-    }
-
-    #[test]
-    fn find_session_by_address_works() {
-        let tmp = TempDir::new().unwrap();
-        let dot = tmp.path().join(".agtalk");
-        let session = SessionFile {
-            address: "550e8400-e29b-41d4-a716-446655440000".to_string(),
-            name: "nora".to_string(),
-            workspace: "projA".to_string(),
-            intro: "前端".to_string(),
-            created_at: "2026-07-01T00:00:00Z".to_string(),
-            command: "agtalk".to_string(),
-            notify_channel: "plugin:zellij".to_string(),
-            notify_target: NotifyTarget::Plugin {
-                name: "zellij".to_string(),
-                endpoint: serde_json::json!({ "session": "sess", "pane": "1" }),
-            },
-        };
-        session_file::write(&dot, "nora", &session).unwrap();
-        let found = find_session_by_address(&dot, "550e8400-e29b-41d4-a716-446655440000").unwrap();
-        assert_eq!(found.name, "nora");
     }
 
     #[test]

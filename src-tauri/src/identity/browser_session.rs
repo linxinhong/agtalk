@@ -84,6 +84,7 @@ pub fn validate(storage: &Storage, token: &str) -> Result<AuthenticatedSession, 
         address,
         name,
         workspace: mb.workspace,
+        workspace_root: browser_workspace()?,
         pid: None,
     })
 }

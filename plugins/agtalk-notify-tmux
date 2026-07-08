@@ -53,8 +53,12 @@ if [ "$CMD" = "send" ]; then
     # Inject the pre-assembled text from daemon. The payload contains no body/secret.
     TEXT=$(printf '%s' "$PAYLOAD" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("text","[agtalk] 新消息"))' 2>/dev/null || echo "[agtalk] 新消息")
 
-    # Use send-keys -R to clear any pending input, then send the hint + Enter.
-    tmux send-keys -t "$PANE" -R "$TEXT" Enter
+    SEND_ENTER=$(printf '%s' "$PAYLOAD" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("send_enter",True))' 2>/dev/null || echo "True")
+    if [ "$SEND_ENTER" = "True" ] || [ "$SEND_ENTER" = "true" ]; then
+        tmux send-keys -t "$PANE" -R "$TEXT" Enter
+    else
+        tmux send-keys -t "$PANE" -R "$TEXT"
+    fi
     exit 0
 fi
 

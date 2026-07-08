@@ -1155,12 +1155,18 @@ fn notify_checks(ctx: &DoctorContext, identity: &Option<ResolvedIdentity>) -> Ve
         return checks;
     };
 
-    let session = session_file::read(&ctx.dot_agtalk, &id.name).ok();
-    let channel = session
+    let mb = ctx
+        .storage
         .as_ref()
-        .map(|s| s.notify_channel.clone())
+        .and_then(|s| mailbox::get_by_address(s, &id.address).ok())
+        .flatten();
+    let channel = mb
+        .as_ref()
+        .map(|m| m.notify_channel.clone())
         .unwrap_or_default();
-    let target = session.as_ref().map(|s| s.notify_target.clone());
+    let target = mb
+        .as_ref()
+        .and_then(|m| serde_json::from_value::<NotifyTarget>(m.notify_target.clone()).ok());
 
     if channel.is_empty() || channel == "none" {
         checks.push(check(
@@ -1275,6 +1281,7 @@ fn notify_checks(ctx: &DoctorContext, identity: &Option<ResolvedIdentity>) -> Ve
                                         agent_name: id.name.clone(),
                                         agent_address: id.address.clone(),
                                         message_id: "doctor-dry-run".to_string(),
+                                        send_enter: true,
                                     };
                                     match plugin.send(endpoint, &dummy, true) {
                                         Ok(()) => {
@@ -1854,8 +1861,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let (ctx, _guard) = test_ctx(&tmp);
 
+        let address = "550e8400-e29b-41d4-a716-446655440000".to_string();
         let session = SessionFile {
-            address: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            address: address.clone(),
             name: "nora".to_string(),
             workspace: "projA".to_string(),
             intro: "前端".to_string(),
@@ -1868,6 +1876,18 @@ mod tests {
             },
         };
         session_file::write(&ctx.dot_agtalk, "nora", &session).unwrap();
+        if let Some(storage) = ctx.storage.as_ref() {
+            mailbox::revive_with_notify(
+                storage,
+                &address,
+                "nora",
+                "前端",
+                "",
+                "plugin:missing",
+                &serde_json::json!({"type":"plugin","name":"missing","endpoint":null}),
+            )
+            .unwrap();
+        }
 
         let msg = run(ctx);
         let checks = match msg {
@@ -1905,8 +1925,9 @@ mod tests {
         );
         config.save().unwrap();
 
+        let address = "550e8400-e29b-41d4-a716-446655440000".to_string();
         let session = SessionFile {
-            address: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            address: address.clone(),
             name: "nora".to_string(),
             workspace: "projA".to_string(),
             intro: "前端".to_string(),
@@ -1919,6 +1940,18 @@ mod tests {
             },
         };
         session_file::write(&ctx.dot_agtalk, "nora", &session).unwrap();
+        if let Some(storage) = ctx.storage.as_ref() {
+            mailbox::revive_with_notify(
+                storage,
+                &address,
+                "nora",
+                "前端",
+                "",
+                "plugin:bad",
+                &serde_json::json!({"type":"plugin","name":"bad","endpoint":null}),
+            )
+            .unwrap();
+        }
 
         let msg = run(ctx);
         let checks = match msg {

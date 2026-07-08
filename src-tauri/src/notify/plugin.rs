@@ -395,6 +395,8 @@ pub struct NotifyPluginSendPayload {
     pub message_id: String,
     /// 插件应直接注入终端的完整文本，由 daemon 统一组装。
     pub text: String,
+    /// 注入后是否自动发送 Enter 执行命令。
+    pub send_enter: bool,
 }
 
 pub(crate) fn short_id(id: &str) -> String {
@@ -426,6 +428,7 @@ fn build_send_payload(endpoint: &serde_json::Value, hint: &NotifyHint) -> Notify
         agent_address: hint.agent_address.clone(),
         message_id: hint.message_id.clone(),
         text,
+        send_enter: hint.send_enter,
     }
 }
 
@@ -445,6 +448,7 @@ mod tests {
             agent_name: "codex".to_string(),
             agent_address: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             message_id: "msg-123".to_string(),
+            send_enter: true,
         }
     }
 
@@ -514,6 +518,7 @@ mod tests {
         assert!(json.contains("[\"--as\",\"codex\",\"msg\",\"read\"]"));
         assert!(json.contains("msg-123"));
         assert!(json.contains("[agtalk:msg] | exec:"));
+        assert!(json.contains("\"send_enter\":true"));
         assert!(!json.contains("secret"));
         assert!(!json.contains("message body"));
     }

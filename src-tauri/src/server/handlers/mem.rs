@@ -6,9 +6,11 @@ use crate::server::state::AppState;
 use axum::http::HeaderMap;
 
 #[allow(clippy::result_large_err)]
-fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<(String, String), ServerMsg> {
-    let session = super::authenticate_req(state, headers)?;
-    Ok((session.address, session.name))
+fn authenticate(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<crate::identity::auth::AuthenticatedSession, ServerMsg> {
+    super::authenticate_req(state, headers)
 }
 
 fn is_uuid(s: &str) -> bool {
@@ -58,7 +60,7 @@ pub fn handle_plan_show(
     headers: &HeaderMap,
     target: Option<String>,
 ) -> ServerMsg {
-    let (address, name) = match authenticate(state, headers) {
+    let session = match authenticate(state, headers) {
         Ok(s) => s,
         Err(e) => return e,
     };
@@ -68,10 +70,10 @@ pub fn handle_plan_show(
             Err(e) => return e,
         }
     } else {
-        (address, name)
+        (session.address, session.name)
     };
 
-    let state_path = &state.dot_agtalk;
+    let state_path = &session.workspace_root;
     match mem::plan_show(state_path, &target_name) {
         Ok(s) => ServerMsg::MemPlanShow {
             address: target_address,
@@ -97,23 +99,30 @@ pub fn handle_plan_update(
     status: Option<String>,
     summary: Option<String>,
 ) -> ServerMsg {
-    let (address, name) = match authenticate(state, headers) {
+    let session = match authenticate(state, headers) {
         Ok(s) => s,
         Err(e) => return e,
     };
 
-    match mem::plan_update(&state.dot_agtalk, &name, plan, context, status, summary) {
+    match mem::plan_update(
+        &session.workspace_root,
+        &session.name,
+        plan,
+        context,
+        status,
+        summary,
+    ) {
         Ok(st) => {
-            let topics = collect_topics(&state.dot_agtalk, &name).unwrap_or_default();
+            let topics = collect_topics(&session.workspace_root, &session.name).unwrap_or_default();
             crate::mem::index::refresh(
                 &state.storage,
-                &address,
+                &session.address,
                 &status_summary_text(&st),
                 &topics,
             );
             ServerMsg::MemPlanStatus {
-                address,
-                name,
+                address: session.address,
+                name: session.name,
                 updated_at: st.updated_at,
                 status: st.status,
                 summary: st.summary,
@@ -131,7 +140,7 @@ pub fn handle_plan_status(
     headers: &HeaderMap,
     target: Option<String>,
 ) -> ServerMsg {
-    let (address, name) = match authenticate(state, headers) {
+    let session = match authenticate(state, headers) {
         Ok(s) => s,
         Err(e) => return e,
     };
@@ -141,10 +150,10 @@ pub fn handle_plan_status(
             Err(e) => return e,
         }
     } else {
-        (address, name)
+        (session.address, session.name)
     };
 
-    match mem::plan_status(&state.dot_agtalk, &target_name) {
+    match mem::plan_status(&session.workspace_root, &target_name) {
         Ok(st) => ServerMsg::MemPlanStatus {
             address: target_address,
             name: target_name,
@@ -168,18 +177,27 @@ pub fn handle_add(
     title: Option<String>,
     tags: Vec<String>,
 ) -> ServerMsg {
-    let (address, name) = match authenticate(state, headers) {
+    let session = match authenticate(state, headers) {
         Ok(s) => s,
         Err(e) => return e,
     };
 
-    match mem::add(&state.dot_agtalk, &name, text, topic, ty, title, tags) {
+    match mem::add(
+        &session.workspace_root,
+        &session.name,
+        text,
+        topic,
+        ty,
+        title,
+        tags,
+    ) {
         Ok(id) => {
-            let topics = collect_topics(&state.dot_agtalk, &name).unwrap_or_default();
-            let status = mem::plan_status(&state.dot_agtalk, &name).unwrap_or_default();
+            let topics = collect_topics(&session.workspace_root, &session.name).unwrap_or_default();
+            let status =
+                mem::plan_status(&session.workspace_root, &session.name).unwrap_or_default();
             crate::mem::index::refresh(
                 &state.storage,
-                &address,
+                &session.address,
                 &status_summary_text(&status),
                 &topics,
             );
@@ -199,12 +217,18 @@ pub fn handle_search(
     topic: Option<String>,
     limit: Option<usize>,
 ) -> ServerMsg {
-    let (_address, name) = match authenticate(state, headers) {
+    let session = match authenticate(state, headers) {
         Ok(s) => s,
         Err(e) => return e,
     };
 
-    match mem::search(&state.dot_agtalk, &name, &query, topic.as_deref(), limit) {
+    match mem::search(
+        &session.workspace_root,
+        &session.name,
+        &query,
+        topic.as_deref(),
+        limit,
+    ) {
         Ok(entries) => ServerMsg::MemSearchResult {
             entries: entries
                 .into_iter()
@@ -219,12 +243,12 @@ pub fn handle_search(
 }
 
 pub fn handle_show(state: &AppState, headers: &HeaderMap, id: String) -> ServerMsg {
-    let (_address, name) = match authenticate(state, headers) {
+    let session = match authenticate(state, headers) {
         Ok(s) => s,
         Err(e) => return e,
     };
 
-    match mem::show_entry(&state.dot_agtalk, &name, &id) {
+    match mem::show_entry(&session.workspace_root, &session.name, &id) {
         Ok(entry) => ServerMsg::MemShowResult {
             entry: serde_json::to_value(entry).unwrap_or_default(),
         },
@@ -236,12 +260,12 @@ pub fn handle_show(state: &AppState, headers: &HeaderMap, id: String) -> ServerM
 }
 
 pub fn handle_list(state: &AppState, headers: &HeaderMap, topic: Option<String>) -> ServerMsg {
-    let (_address, name) = match authenticate(state, headers) {
+    let session = match authenticate(state, headers) {
         Ok(s) => s,
         Err(e) => return e,
     };
 
-    match mem::list(&state.dot_agtalk, &name, topic.as_deref()) {
+    match mem::list(&session.workspace_root, &session.name, topic.as_deref()) {
         Ok(entries) => ServerMsg::MemSearchResult {
             entries: entries
                 .into_iter()
@@ -261,14 +285,14 @@ pub fn handle_pack(
     topic: Option<String>,
     limit: Option<usize>,
 ) -> ServerMsg {
-    let (_address, name) = match authenticate(state, headers) {
+    let session = match authenticate(state, headers) {
         Ok(s) => s,
         Err(e) => return e,
     };
 
     let topic_str = topic.unwrap_or_default();
 
-    match mem::pack(&state.dot_agtalk, &name, &topic_str, limit) {
+    match mem::pack(&session.workspace_root, &session.name, &topic_str, limit) {
         Ok(markdown) => ServerMsg::MemPack {
             topic: if topic_str.is_empty() {
                 "all".to_string()

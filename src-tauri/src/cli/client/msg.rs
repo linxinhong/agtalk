@@ -15,6 +15,7 @@ pub fn send(
     subject: Option<String>,
     files: Vec<String>,
     notify: Option<bool>,
+    send_enter: Option<bool>,
     more: bool,
     json: bool,
 ) -> Result<(), CliError> {
@@ -27,6 +28,7 @@ pub fn send(
             "subject": subject,
             "files": files,
             "notify": notify,
+            "send_enter": send_enter,
             "more": more,
         }),
     )?;
@@ -40,6 +42,7 @@ pub fn reply(
     body: String,
     files: Vec<String>,
     notify: Option<bool>,
+    send_enter: Option<bool>,
     json: bool,
 ) -> Result<(), CliError> {
     let resp = post(
@@ -50,6 +53,7 @@ pub fn reply(
             "body": body,
             "files": files,
             "notify": notify,
+            "send_enter": send_enter,
         }),
     )?;
     print_server_msg(json, &resp);
@@ -176,7 +180,11 @@ async fn wait_sse(
         .get(&url)
         .header("X-AgTalk-Address", ctx.address)
         .header("X-AgTalk-Pid", ctx.pid.to_string())
-        .header("X-AgTalk-Start-Time", ctx.start_time.to_string());
+        .header("X-AgTalk-Start-Time", ctx.start_time.to_string())
+        .header(
+            "X-AgTalk-Workspace-Root",
+            ctx.dot_agtalk.to_string_lossy().as_ref(),
+        );
     if let Some(s) = since {
         req = req.header("Last-Event-ID", s.to_string());
     }

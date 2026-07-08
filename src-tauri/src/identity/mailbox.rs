@@ -13,17 +13,23 @@ pub struct Mailbox {
     pub name: String,
     pub intro: String,
     pub workspace: String,
+    pub notify_channel: String,
+    pub notify_target: serde_json::Value,
     pub created_at: f64,
     pub left_at: Option<f64>,
 }
 
 impl Mailbox {
     fn from_row(row: &rusqlite::Row<'_>) -> Result<Self, rusqlite::Error> {
+        let notify_target_str: String = row.get("notify_target")?;
+        let notify_target = serde_json::from_str(&notify_target_str).unwrap_or_default();
         Ok(Self {
             address: row.get("address")?,
             name: row.get("name")?,
             intro: row.get("intro")?,
             workspace: row.get("workspace")?,
+            notify_channel: row.get("notify_channel")?,
+            notify_target,
             created_at: row.get("created_at")?,
             left_at: row.get("left_at")?,
         })
@@ -37,12 +43,38 @@ pub fn create(
     intro: &str,
     workspace: &str,
 ) -> Result<String, IdentityError> {
+    create_with_notify(
+        storage,
+        name,
+        intro,
+        workspace,
+        "none",
+        &serde_json::Value::Null,
+    )
+}
+
+/// 创建 mailbox 并同时设置 notify 配置。
+pub fn create_with_notify(
+    storage: &Storage,
+    name: &str,
+    intro: &str,
+    workspace: &str,
+    notify_channel: &str,
+    notify_target: &serde_json::Value,
+) -> Result<String, IdentityError> {
     let address = Uuid::new_v4().to_string();
     let mut conn = storage.conn();
     let tx = conn.transaction()?;
     tx.execute(
-        "INSERT INTO mailboxes (address, name, intro, workspace) VALUES (?1, ?2, ?3, ?4)",
-        params![address, name, intro, workspace],
+        "INSERT INTO mailboxes (address, name, intro, workspace, notify_channel, notify_target) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            address,
+            name,
+            intro,
+            workspace,
+            notify_channel,
+            notify_target.to_string()
+        ],
     )?;
     tx.execute(
         "INSERT INTO event_sequences (address, last_event_id) VALUES (?1, 0)",
@@ -124,6 +156,21 @@ pub fn update(
     Ok(())
 }
 
+/// 单独更新 mailbox 的 notify 配置。
+pub fn set_notify(
+    storage: &Storage,
+    address: &str,
+    notify_channel: &str,
+    notify_target: &serde_json::Value,
+) -> Result<(), IdentityError> {
+    let conn = storage.conn();
+    conn.execute(
+        "UPDATE mailboxes SET notify_channel = ?2, notify_target = ?3 WHERE address = ?1",
+        params![address, notify_channel, notify_target.to_string()],
+    )?;
+    Ok(())
+}
+
 /// 恢复一个已 leave 或可能缺失的 mailbox。
 /// 如果 address 不存在则创建；如果存在但 left_at 不为空则清空 left_at 并更新元数据；
 /// 如果存在且活跃则仅更新元数据。同时确保 event_sequences 存在。
@@ -133,6 +180,27 @@ pub fn revive(
     name: &str,
     intro: &str,
     workspace: &str,
+) -> Result<(), IdentityError> {
+    revive_with_notify(
+        storage,
+        address,
+        name,
+        intro,
+        workspace,
+        "none",
+        &serde_json::Value::Null,
+    )
+}
+
+/// 恢复 mailbox 并同时设置 notify 配置。
+pub fn revive_with_notify(
+    storage: &Storage,
+    address: &str,
+    name: &str,
+    intro: &str,
+    workspace: &str,
+    notify_channel: &str,
+    notify_target: &serde_json::Value,
 ) -> Result<(), IdentityError> {
     let mut conn = storage.conn();
     let tx = conn.transaction()?;
@@ -148,13 +216,27 @@ pub fn revive(
 
     if exists {
         tx.execute(
-            "UPDATE mailboxes SET name = ?2, intro = ?3, workspace = ?4, left_at = NULL WHERE address = ?1",
-            params![address, name, intro, workspace],
+            "UPDATE mailboxes SET name = ?2, intro = ?3, workspace = ?4, left_at = NULL, notify_channel = ?5, notify_target = ?6 WHERE address = ?1",
+            params![
+                address,
+                name,
+                intro,
+                workspace,
+                notify_channel,
+                notify_target.to_string()
+            ],
         )?;
     } else {
         tx.execute(
-            "INSERT INTO mailboxes (address, name, intro, workspace) VALUES (?1, ?2, ?3, ?4)",
-            params![address, name, intro, workspace],
+            "INSERT INTO mailboxes (address, name, intro, workspace, notify_channel, notify_target) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                address,
+                name,
+                intro,
+                workspace,
+                notify_channel,
+                notify_target.to_string()
+            ],
         )?;
     }
 

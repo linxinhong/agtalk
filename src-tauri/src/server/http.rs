@@ -84,10 +84,14 @@ struct IdJoinBody {
 
 async fn id_join_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<IdJoinBody>,
 ) -> (StatusCode, Json<ServerMsg>) {
+    let workspace_root =
+        crate::server::handlers::workspace_root_from_headers(&headers, &state.dot_agtalk);
     json_response(id::handle_join(
         &state,
+        &workspace_root,
         body.name,
         body.intro,
         body.notify,
@@ -119,9 +123,12 @@ struct IdCleanupBody {
 
 async fn id_cleanup_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<IdCleanupBody>,
 ) -> (StatusCode, Json<ServerMsg>) {
-    json_response(id::handle_cleanup(&state, body.execute))
+    let workspace_root =
+        crate::server::handlers::workspace_root_from_headers(&headers, &state.dot_agtalk);
+    json_response(id::handle_cleanup(&state, &workspace_root, body.execute))
 }
 
 async fn id_me_handler(
@@ -151,6 +158,8 @@ struct MsgSendBody {
     #[serde(default)]
     notify: Option<bool>,
     #[serde(default)]
+    send_enter: Option<bool>,
+    #[serde(default)]
     more: bool,
 }
 
@@ -167,6 +176,7 @@ async fn msg_send_handler(
         body.subject,
         body.files,
         body.notify,
+        body.send_enter,
         body.more,
     ))
 }
@@ -179,6 +189,8 @@ struct MsgReplyBody {
     files: Vec<String>,
     #[serde(default)]
     notify: Option<bool>,
+    #[serde(default)]
+    send_enter: Option<bool>,
 }
 
 async fn msg_reply_handler(
@@ -193,6 +205,7 @@ async fn msg_reply_handler(
         body.body,
         body.files,
         body.notify,
+        body.send_enter,
     ))
 }
 
@@ -421,8 +434,13 @@ async fn mem_pack_handler(
 
 // ---- tool ----
 
-async fn tool_doctor_handler(State(state): State<AppState>) -> (StatusCode, Json<ServerMsg>) {
-    json_response(tool::handle_doctor(&state))
+async fn tool_doctor_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> (StatusCode, Json<ServerMsg>) {
+    let workspace_root =
+        crate::server::handlers::workspace_root_from_headers(&headers, &state.dot_agtalk);
+    json_response(tool::handle_doctor(&state, &workspace_root))
 }
 
 async fn tool_version_handler() -> (StatusCode, Json<ServerMsg>) {
@@ -513,10 +531,12 @@ async fn events_handler(
     let browser_token = headers
         .get("X-AgTalk-Browser-Token")
         .and_then(|v| v.to_str().ok());
+    let workspace_root =
+        crate::server::handlers::workspace_root_from_headers(&headers, &state.dot_agtalk);
 
     crate::identity::auth::authenticate(
         &state.storage,
-        &state.dot_agtalk,
+        &workspace_root,
         &address,
         pid,
         start_time,

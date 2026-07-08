@@ -18,6 +18,7 @@ pub fn handle_send(
     _subject: Option<String>,
     _files: Vec<String>,
     notify: Option<bool>,
+    send_enter: Option<bool>,
     more: bool,
 ) -> ServerMsg {
     let session = match authenticate_req(state, headers) {
@@ -62,14 +63,21 @@ pub fn handle_send(
                 },
             );
             if notify.unwrap_or(true) {
-                let dot = state.dot_agtalk.clone();
+                let storage = state.storage.clone();
                 let to = to.clone();
                 let from_name = session.name.clone();
                 let message_id = msg.id.clone();
                 let limiter = state.notify_limiter.clone();
                 tokio::spawn(async move {
-                    if let Err(e) =
-                        notify::trigger(&dot, &to, &from_name, &message_id, &limiter).await
+                    if let Err(e) = notify::trigger(
+                        &storage,
+                        &to,
+                        &from_name,
+                        &message_id,
+                        &limiter,
+                        send_enter,
+                    )
+                    .await
                     {
                         tracing::debug!("notify trigger skipped: {}", e);
                     }
@@ -91,6 +99,7 @@ pub fn handle_reply(
     body: String,
     _files: Vec<String>,
     notify: Option<bool>,
+    send_enter: Option<bool>,
 ) -> ServerMsg {
     let session = match authenticate_req(state, headers) {
         Ok(s) => s,
@@ -121,14 +130,21 @@ pub fn handle_reply(
                 },
             );
             if notify.unwrap_or(true) {
-                let dot = state.dot_agtalk.clone();
+                let storage = state.storage.clone();
                 let to = msg.to_address.clone();
                 let from_name = session.name.clone();
                 let message_id = msg.id.clone();
                 let limiter = state.notify_limiter.clone();
                 tokio::spawn(async move {
-                    if let Err(e) =
-                        notify::trigger(&dot, &to, &from_name, &message_id, &limiter).await
+                    if let Err(e) = notify::trigger(
+                        &storage,
+                        &to,
+                        &from_name,
+                        &message_id,
+                        &limiter,
+                        send_enter,
+                    )
+                    .await
                     {
                         tracing::debug!("notify trigger skipped: {}", e);
                     }
@@ -253,14 +269,20 @@ pub fn handle_ask(
                 },
             );
             if notify {
-                let dot = state.dot_agtalk.clone();
+                let storage = state.storage.clone();
                 let from_name = session.name.clone();
                 let message_id = msg.id.clone();
                 let limiter = state.notify_limiter.clone();
                 tokio::spawn(async move {
-                    if let Err(e) =
-                        notify::trigger(&dot, &human_address, &from_name, &message_id, &limiter)
-                            .await
+                    if let Err(e) = notify::trigger(
+                        &storage,
+                        &human_address,
+                        &from_name,
+                        &message_id,
+                        &limiter,
+                        None,
+                    )
+                    .await
                     {
                         tracing::debug!("notify trigger skipped: {}", e);
                     }
@@ -379,6 +401,7 @@ mod tests {
         let start_time = current_pid_start_time();
         match id::handle_join(
             state,
+            &state.dot_agtalk,
             Some(name.into()),
             Some("intro".into()),
             "none".into(),
@@ -423,6 +446,7 @@ mod tests {
             None,
             vec![],
             None,
+            None,
             false,
         );
         match msg {
@@ -446,6 +470,7 @@ mod tests {
             None,
             vec![],
             Some(false),
+            None,
             false,
         );
         match msg {
@@ -469,6 +494,7 @@ mod tests {
             None,
             vec![],
             Some(false),
+            None,
             false,
         );
         let sent_id = match send_resp {
@@ -500,6 +526,7 @@ mod tests {
             None,
             vec![],
             Some(false),
+            None,
             false,
         );
 
@@ -518,6 +545,7 @@ mod tests {
             "ok".into(),
             vec![],
             Some(false),
+            None,
         );
         match reply_resp {
             ServerMsg::Ok { id } => assert!(!id.is_empty()),
@@ -540,6 +568,7 @@ mod tests {
             None,
             vec![],
             Some(false),
+            None,
             false,
         );
 

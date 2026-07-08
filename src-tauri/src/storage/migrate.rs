@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 
-pub const CURRENT_VERSION: u32 = 5;
+pub const CURRENT_VERSION: u32 = 6;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS _migrations (
@@ -87,6 +87,11 @@ CREATE INDEX IF NOT EXISTS idx_mem_index_name ON mem_index(name);
 CREATE INDEX IF NOT EXISTS idx_mem_index_workspace ON mem_index(workspace);
 "#;
 
+const MIGRATE_V6: &str = r#"
+ALTER TABLE mailboxes ADD COLUMN notify_channel TEXT NOT NULL DEFAULT '';
+ALTER TABLE mailboxes ADD COLUMN notify_target TEXT NOT NULL DEFAULT '{}';
+"#;
+
 pub fn run(conn: &mut Connection) -> Result<(), super::StorageError> {
     let tx = conn.transaction()?;
 
@@ -118,6 +123,9 @@ pub fn run(conn: &mut Connection) -> Result<(), super::StorageError> {
     }
     if version < 5 {
         tx.execute_batch(MIGRATE_V5)?;
+    }
+    if version < 6 {
+        tx.execute_batch(MIGRATE_V6)?;
     }
 
     tx.execute(

@@ -5,7 +5,7 @@ use super::browser_session;
 use super::session_file;
 use super::IdentityError;
 use crate::storage::Storage;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use sysinfo::{Pid, System};
 
 #[derive(Debug, Clone)]
@@ -13,6 +13,7 @@ pub struct AuthenticatedSession {
     pub address: String,
     pub name: String,
     pub workspace: String,
+    pub workspace_root: PathBuf,
     pub pid: Option<u32>,
 }
 
@@ -24,7 +25,7 @@ pub struct AuthenticatedSession {
 /// 3. 若提供 pid + start_time，校验 OS 中该 pid 的启动时间一致，且 agents.json 中记录匹配。
 pub fn authenticate(
     storage: &Storage,
-    dot_agtalk: &Path,
+    workspace_root: &Path,
     address: &str,
     pid: Option<u32>,
     start_time: Option<u64>,
@@ -35,7 +36,13 @@ pub fn authenticate(
         if session.address != address {
             return Err(IdentityError::SessionMismatch);
         }
-        return Ok(session);
+        return Ok(AuthenticatedSession {
+            address: session.address,
+            name: session.name,
+            workspace: session.workspace,
+            workspace_root: workspace_root.to_path_buf(),
+            pid: None,
+        });
     }
 
     let mb = storage
@@ -49,30 +56,31 @@ pub fn authenticate(
 
     let (name, workspace) = mb;
 
-    let session = session_file::read(dot_agtalk, &name)?;
+    let session = session_file::read(workspace_root, &name)?;
     if session.address != address {
         return Err(IdentityError::SessionMismatch);
     }
 
     if let (Some(pid), Some(start_time)) = (pid, start_time) {
-        validate_pid(dot_agtalk, pid, start_time, &name)?;
+        validate_pid(workspace_root, pid, start_time, &name)?;
     }
 
     Ok(AuthenticatedSession {
         address: address.to_string(),
         name,
         workspace,
+        workspace_root: workspace_root.to_path_buf(),
         pid,
     })
 }
 
 fn validate_pid(
-    dot_agtalk: &Path,
+    workspace_root: &Path,
     pid: u32,
     start_time: u64,
     name: &str,
 ) -> Result<(), IdentityError> {
-    let entry = agents_map::get_by_pid(dot_agtalk, pid)?;
+    let entry = agents_map::get_by_pid(workspace_root, pid)?;
     let entry = entry.ok_or(IdentityError::AgentNotRegistered)?;
     if entry.name != name || entry.start_time != start_time {
         return Err(IdentityError::AgentNotRegistered);

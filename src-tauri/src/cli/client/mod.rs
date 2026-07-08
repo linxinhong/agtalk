@@ -101,7 +101,11 @@ fn request(
         .request(method, &url)
         .header("X-AgTalk-Address", ctx.address.clone())
         .header("X-AgTalk-Pid", ctx.pid.to_string())
-        .header("X-AgTalk-Start-Time", ctx.start_time.to_string());
+        .header("X-AgTalk-Start-Time", ctx.start_time.to_string())
+        .header(
+            "X-AgTalk-Workspace-Root",
+            ctx.dot_agtalk.to_string_lossy().as_ref(),
+        );
     if let Some(b) = body {
         builder = builder.json(&b);
     }

@@ -15,6 +15,7 @@ use uuid::Uuid;
 #[allow(clippy::too_many_arguments)]
 pub fn handle_join(
     state: &AppState,
+    workspace_root: &std::path::Path,
     name: Option<String>,
     intro: Option<String>,
     notify: String,
@@ -27,20 +28,11 @@ pub fn handle_join(
     }
 
     let name = name.unwrap_or_else(|| format!("agent-{}", short_id()));
-    let existing_session = session_file_mod::read(&state.dot_agtalk, &name).ok();
+    let existing_session = session_file_mod::read(workspace_root, &name).ok();
 
     let (address, final_intro, notify_channel, notify_target) =
         if let Some(ref session) = existing_session {
             let final_intro = intro.unwrap_or_else(|| session.intro.clone());
-
-            if let Err(e) =
-                mailbox_db::revive(&state.storage, &session.address, &name, &final_intro, "")
-            {
-                return ServerMsg::Error {
-                    code: "join_failed".into(),
-                    message: e.to_string(),
-                };
-            }
 
             let base_channel = if notify.eq_ignore_ascii_case("auto") {
                 if session.notify_channel.is_empty()
@@ -59,6 +51,21 @@ pub fn handle_join(
                 Some(&session.notify_target),
             );
 
+            if let Err(e) = mailbox_db::revive_with_notify(
+                &state.storage,
+                &session.address,
+                &name,
+                &final_intro,
+                "",
+                &notify_channel,
+                &notify_target_json(&notify_target),
+            ) {
+                return ServerMsg::Error {
+                    code: "join_failed".into(),
+                    message: e.to_string(),
+                };
+            }
+
             (
                 session.address.clone(),
                 final_intro,
@@ -67,7 +74,16 @@ pub fn handle_join(
             )
         } else {
             let final_intro = intro.unwrap_or_default();
-            let address = match mailbox_db::create(&state.storage, &name, &final_intro, "") {
+            let (notify_channel, notify_target) =
+                resolve_notify(&notify, notify_endpoint.clone(), None);
+            let address = match mailbox_db::create_with_notify(
+                &state.storage,
+                &name,
+                &final_intro,
+                "",
+                &notify_channel,
+                &notify_target_json(&notify_target),
+            ) {
                 Ok(addr) => addr,
                 Err(e) => {
                     return ServerMsg::Error {
@@ -76,9 +92,6 @@ pub fn handle_join(
                     }
                 }
             };
-
-            let (notify_channel, notify_target) =
-                resolve_notify(&notify, notify_endpoint.clone(), None);
 
             (address, final_intro, notify_channel, notify_target)
         };
@@ -100,20 +113,20 @@ pub fn handle_join(
         notify_target,
     };
 
-    if let Err(e) = session_file_mod::write(&state.dot_agtalk, &name, &session) {
+    if let Err(e) = session_file_mod::write(workspace_root, &name, &session) {
         return ServerMsg::Error {
             code: "session_write_failed".into(),
             message: e.to_string(),
         };
     }
-    if let Err(e) = agents_map::register_pid(&state.dot_agtalk, pid, &name, start_time) {
+    if let Err(e) = agents_map::register_pid(workspace_root, pid, &name, start_time) {
         return ServerMsg::Error {
             code: "agents_map_failed".into(),
             message: e.to_string(),
         };
     }
 
-    let memory_path = state.dot_agtalk.join(&name).join("memory");
+    let memory_path = workspace_root.join(&name).join("memory");
     crate::mem::index::register(&state.storage, &address, &name, "", &memory_path);
 
     ServerMsg::Identity {
@@ -128,7 +141,7 @@ pub fn handle_show(state: &AppState, headers: &HeaderMap) -> ServerMsg {
         Ok(s) => s,
         Err(e) => return e,
     };
-    let intro = session_file_mod::read(&state.dot_agtalk, &session.name)
+    let intro = session_file_mod::read(&session.workspace_root, &session.name)
         .map(|s| s.intro)
         .unwrap_or_default();
     ServerMsg::Identity {
@@ -141,10 +154,7 @@ pub fn handle_show(state: &AppState, headers: &HeaderMap) -> ServerMsg {
 pub fn handle_lookup(state: &AppState, name: Option<String>) -> ServerMsg {
     match crate::routing::lookup::lookup(&state.storage, name.as_deref()) {
         Ok(mbs) => {
-            let mailboxes = mbs
-                .iter()
-                .map(|mb| build_lookup_mailbox(&state.dot_agtalk, mb))
-                .collect();
+            let mailboxes = mbs.iter().map(build_lookup_mailbox).collect();
             ServerMsg::LookupResult { mailboxes }
         }
         Err(e) => ServerMsg::Error {
@@ -154,19 +164,10 @@ pub fn handle_lookup(state: &AppState, name: Option<String>) -> ServerMsg {
     }
 }
 
-fn build_lookup_mailbox(
-    dot_agtalk: &std::path::Path,
-    mb: &crate::identity::mailbox::Mailbox,
-) -> crate::proto::LookupMailbox {
-    let (channel, notify, ready) = match crate::identity::session_file::read(dot_agtalk, &mb.name) {
-        Ok(session) if session.address == mb.address => {
-            let ready = !session.notify_channel.eq_ignore_ascii_case("none")
-                && !session.notify_channel.is_empty();
-            let notify = notify_summary(&session.notify_channel);
-            (session.notify_channel, notify, ready)
-        }
-        _ => ("unknown".to_string(), "unknown".to_string(), false),
-    };
+fn build_lookup_mailbox(mb: &crate::identity::mailbox::Mailbox) -> crate::proto::LookupMailbox {
+    let channel = mb.notify_channel.clone();
+    let notify = notify_summary(&channel);
+    let ready = !channel.eq_ignore_ascii_case("none") && !channel.is_empty();
     crate::proto::LookupMailbox::from_mailbox(mb, channel, notify, ready)
 }
 
@@ -195,9 +196,9 @@ pub fn handle_leave(state: &AppState, headers: &HeaderMap, _purge: bool) -> Serv
             message: e.to_string(),
         };
     }
-    let removed_session = session_file_mod::remove(&state.dot_agtalk, &session.name).is_ok();
+    let removed_session = session_file_mod::remove(&session.workspace_root, &session.name).is_ok();
     // 清理所有指向该 name 的 pid 锚点，避免 stale agents.json。
-    let _ = agents_map::remove_by_name(&state.dot_agtalk, &session.name);
+    let _ = agents_map::remove_by_name(&session.workspace_root, &session.name);
     crate::mem::index::remove(&state.storage, &session.address);
 
     ServerMsg::IdentityLeft {
@@ -209,7 +210,11 @@ pub fn handle_leave(state: &AppState, headers: &HeaderMap, _purge: bool) -> Serv
 
 /// 批量清理无效/未激活身份。
 /// 默认 dry-run，返回候选列表；`execute=true` 时执行删除。
-pub fn handle_cleanup(state: &AppState, execute: bool) -> ServerMsg {
+pub fn handle_cleanup(
+    state: &AppState,
+    workspace_root: &std::path::Path,
+    execute: bool,
+) -> ServerMsg {
     let mut removed: Vec<crate::proto::CleanupItem> = Vec::new();
     let skipped: Vec<crate::proto::CleanupItem> = Vec::new();
 
@@ -231,7 +236,7 @@ pub fn handle_cleanup(state: &AppState, execute: bool) -> ServerMsg {
         mailboxes.iter().map(|mb| (mb.name.clone(), mb)).collect();
 
     // 2. 收集文件系统中所有 session。
-    let session_names = match session_file_mod::list_session_names(&state.dot_agtalk) {
+    let session_names = match session_file_mod::list_session_names(workspace_root) {
         Ok(names) => names,
         Err(e) => {
             return ServerMsg::Error {
@@ -243,7 +248,7 @@ pub fn handle_cleanup(state: &AppState, execute: bool) -> ServerMsg {
     let mut session_by_name: std::collections::HashMap<String, session_file_mod::SessionFile> =
         std::collections::HashMap::new();
     for name in &session_names {
-        if let Ok(session) = session_file_mod::read(&state.dot_agtalk, name) {
+        if let Ok(session) = session_file_mod::read(workspace_root, name) {
             session_by_name.insert(name.clone(), session);
         }
     }
@@ -287,7 +292,7 @@ pub fn handle_cleanup(state: &AppState, execute: bool) -> ServerMsg {
                 reason: "stale_session".into(),
             };
             if execute {
-                let _ = session_file_mod::remove(&state.dot_agtalk, name);
+                let _ = session_file_mod::remove(workspace_root, name);
                 removed.push(item);
             } else {
                 removed.push(item);
@@ -297,7 +302,7 @@ pub fn handle_cleanup(state: &AppState, execute: bool) -> ServerMsg {
 
     // 5. stale pid anchor：agents.json 指向的 session 已不存在。
     let valid_session_names: Vec<String> = session_by_name.keys().cloned().collect();
-    match agents_map::cleanup_stale_pids(&state.dot_agtalk, &valid_session_names) {
+    match agents_map::cleanup_stale_pids(workspace_root, &valid_session_names) {
         Ok(stale_pids) => {
             for (pid, name) in stale_pids {
                 let address = session_by_name
@@ -468,6 +473,10 @@ fn iso_now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+fn notify_target_json(target: &NotifyTarget) -> serde_json::Value {
+    serde_json::to_value(target).unwrap_or(serde_json::Value::Null)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,6 +543,7 @@ mod tests {
 
         let msg = handle_join(
             &state,
+            &state.dot_agtalk,
             Some("reviewer".into()),
             Some("设计评审专家".into()),
             "none".into(),
@@ -567,6 +577,7 @@ mod tests {
 
         let first = handle_join(
             &state,
+            &state.dot_agtalk,
             Some("reviewer".into()),
             Some("初代 intro".into()),
             "none".into(),
@@ -581,6 +592,7 @@ mod tests {
 
         let second = handle_join(
             &state,
+            &state.dot_agtalk,
             Some("reviewer".into()),
             Some("更新后的 intro".into()),
             "none".into(),
@@ -613,6 +625,7 @@ mod tests {
 
         handle_join(
             &state,
+            &state.dot_agtalk,
             Some("reviewer".into()),
             Some("展示用 intro".into()),
             "none".into(),
@@ -647,6 +660,7 @@ mod tests {
 
         handle_join(
             &state,
+            &state.dot_agtalk,
             Some("reviewer".into()),
             Some("展示用 intro".into()),
             "plugin:zellij".into(),
@@ -679,6 +693,7 @@ mod tests {
 
         handle_join(
             &state,
+            &state.dot_agtalk,
             Some("reviewer".into()),
             Some("展示用 intro".into()),
             "plugin:macos".into(),
@@ -703,21 +718,23 @@ mod tests {
     }
 
     #[test]
-    fn lookup_stale_session_returns_unknown_notify() {
+    fn lookup_stale_session_uses_db_notify() {
+        let (_plugin_tmp, prev_path) = mock_plugin_env("zellij");
         let (state, _tmp) = test_state();
         let (pid, start_time) = current_pid_start_time();
 
         handle_join(
             &state,
+            &state.dot_agtalk,
             Some("reviewer".into()),
             Some("展示用 intro".into()),
-            "zellij".into(),
+            "plugin:zellij".into(),
             None,
             pid,
             start_time,
         );
 
-        // 篡改 session address，使其与 mailbox address 不匹配
+        // 篡改 session address，使其与 mailbox address 不匹配；DB 仍是 canonical 源。
         let mut session = session_file::read(&state.dot_agtalk, "reviewer").unwrap();
         session.address = "00000000-0000-0000-0000-000000000000".to_string();
         session_file::write(&state.dot_agtalk, "reviewer", &session).unwrap();
@@ -727,11 +744,13 @@ mod tests {
             ServerMsg::LookupResult { mailboxes } => {
                 assert_eq!(mailboxes.len(), 1);
                 let mb = &mailboxes[0];
-                assert_eq!(mb.notify, "unknown");
-                assert!(!mb.notify_ready);
+                assert_eq!(mb.notify, "plugin:zellij");
+                assert!(mb.notify_ready);
             }
             other => panic!("expected LookupResult, got {:?}", other),
         }
+
+        std::env::set_var("PATH", prev_path);
     }
 
     #[test]
@@ -741,6 +760,7 @@ mod tests {
 
         handle_join(
             &state,
+            &state.dot_agtalk,
             Some("reviewer".into()),
             Some("展示用 intro".into()),
             "none".into(),
@@ -785,21 +805,23 @@ mod tests {
     }
 
     #[test]
-    fn lookup_missing_session_returns_unknown_notify() {
+    fn lookup_missing_session_uses_db_notify() {
+        let (_plugin_tmp, prev_path) = mock_plugin_env("zellij");
         let (state, _tmp) = test_state();
         let (pid, start_time) = current_pid_start_time();
 
         handle_join(
             &state,
+            &state.dot_agtalk,
             Some("reviewer".into()),
             Some("展示用 intro".into()),
-            "zellij".into(),
+            "plugin:zellij".into(),
             None,
             pid,
             start_time,
         );
 
-        // 删除 session 文件，模拟 session 缺失
+        // 删除 session 文件，模拟 session 缺失；DB 仍是 canonical 源。
         let session_path = state.dot_agtalk.join("reviewer").join("session.json");
         std::fs::remove_file(session_path).unwrap();
 
@@ -808,11 +830,13 @@ mod tests {
             ServerMsg::LookupResult { mailboxes } => {
                 assert_eq!(mailboxes.len(), 1);
                 let mb = &mailboxes[0];
-                assert_eq!(mb.notify, "unknown");
-                assert!(!mb.notify_ready);
+                assert_eq!(mb.notify, "plugin:zellij");
+                assert!(mb.notify_ready);
             }
             other => panic!("expected LookupResult, got {:?}", other),
         }
+
+        std::env::set_var("PATH", prev_path);
     }
 
     #[test]
@@ -822,6 +846,7 @@ mod tests {
 
         handle_join(
             &state,
+            &state.dot_agtalk,
             Some("reviewer".into()),
             Some("展示用 intro".into()),
             "none".into(),
@@ -835,7 +860,7 @@ mod tests {
         let session_path = state.dot_agtalk.join("reviewer").join("session.json");
         std::fs::remove_file(session_path).unwrap();
 
-        let msg = handle_cleanup(&state, false);
+        let msg = handle_cleanup(&state, &state.dot_agtalk, false);
         match msg {
             ServerMsg::CleanupResult {
                 dry_run,
@@ -859,6 +884,7 @@ mod tests {
 
         handle_join(
             &state,
+            &state.dot_agtalk,
             Some("reviewer".into()),
             Some("展示用 intro".into()),
             "none".into(),
@@ -870,7 +896,7 @@ mod tests {
         let session_path = state.dot_agtalk.join("reviewer").join("session.json");
         std::fs::remove_file(session_path).unwrap();
 
-        let msg = handle_cleanup(&state, true);
+        let msg = handle_cleanup(&state, &state.dot_agtalk, true);
         match msg {
             ServerMsg::CleanupResult {
                 dry_run,
@@ -913,7 +939,7 @@ mod tests {
         };
         session_file::write(&state.dot_agtalk, "orphan", &session).unwrap();
 
-        let msg = handle_cleanup(&state, true);
+        let msg = handle_cleanup(&state, &state.dot_agtalk, true);
         match msg {
             ServerMsg::CleanupResult {
                 dry_run,
@@ -938,6 +964,7 @@ mod tests {
 
         handle_join(
             &state,
+            &state.dot_agtalk,
             Some("reviewer".into()),
             Some("展示用 intro".into()),
             "none".into(),
@@ -950,7 +977,7 @@ mod tests {
         let session = session_file::read(&state.dot_agtalk, "reviewer").unwrap();
         crate::identity::mailbox::mark_left(&state.storage, &session.address).unwrap();
 
-        let msg = handle_cleanup(&state, true);
+        let msg = handle_cleanup(&state, &state.dot_agtalk, true);
         match msg {
             ServerMsg::CleanupResult {
                 dry_run,
@@ -979,6 +1006,7 @@ mod tests {
 
         handle_join(
             &state,
+            &state.dot_agtalk,
             Some("reviewer".into()),
             Some("展示用 intro".into()),
             "none".into(),
@@ -992,7 +1020,7 @@ mod tests {
         std::fs::remove_file(session_path).unwrap();
         agents_map::register_pid(&state.dot_agtalk, 99999, "reviewer", start_time).unwrap();
 
-        let msg = handle_cleanup(&state, true);
+        let msg = handle_cleanup(&state, &state.dot_agtalk, true);
         match msg {
             ServerMsg::CleanupResult {
                 dry_run,
