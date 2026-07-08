@@ -59,9 +59,9 @@ if [ "$CMD" = "send" ]; then
     # Inject the pre-assembled text from daemon. The payload contains no body/secret.
     TEXT=$(printf '%s' "$PAYLOAD" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("text","[agtalk] 新消息"))' 2>/dev/null || echo "[agtalk] 新消息")
 
-    # Append newline so the injected command is submitted in the target pane.
-    zellij --session "$SESSION" action write-chars --pane-id "$PANE" "${TEXT}
-"
+    # Write the command text, then send an Enter keystroke so it executes in the target pane.
+    zellij --session "$SESSION" action write-chars --pane-id "$PANE" "$TEXT"
+    zellij --session "$SESSION" action write-chars --pane-id "$PANE" "$(printf '\r')"
     exit 0
 fi
 
