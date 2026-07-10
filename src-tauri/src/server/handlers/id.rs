@@ -2,7 +2,7 @@
 
 use crate::identity::agents_map;
 use crate::identity::mailbox as mailbox_db;
-use crate::identity::session_file::{NotifyTarget, SessionFile};
+use crate::identity::session_file::{NotifyTarget, SessionFile, SessionNotify};
 use crate::identity::{browser_session, session_file as session_file_mod};
 use crate::notify;
 use crate::proto::ServerMsg;
@@ -98,23 +98,29 @@ pub fn handle_join(
             (address, final_intro, notify_channel, notify_target)
         };
 
-    let command = std::env::current_exe()
+    let registered_by = std::env::current_exe()
         .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "agtalk".to_string());
+        .ok();
 
-    let notify_ready = !notify_channel.eq_ignore_ascii_case("none") && !notify_channel.is_empty();
+    let notify = SessionNotify {
+        channel: notify_channel.clone(),
+        endpoint: match &notify_target {
+            NotifyTarget::None => serde_json::Value::Null,
+            NotifyTarget::Plugin { endpoint, .. } => endpoint.clone(),
+        },
+    };
+    let notify_ready = !notify.channel.eq_ignore_ascii_case("none") && !notify.channel.is_empty();
 
     let session = SessionFile {
+        version: 2,
         address: address.clone(),
         name: name.clone(),
-        workspace: "".to_string(),
         intro: final_intro,
         created_at: existing_session
             .map(|s| s.created_at)
             .unwrap_or_else(iso_now),
-        command,
-        notify_channel,
-        notify_target,
+        registered_by,
+        notify,
     };
 
     if let Err(e) = session_file_mod::write(workspace_root, &name, &session) {
@@ -135,11 +141,12 @@ pub fn handle_join(
     let memory_path = workspace_root.join(&name).join("memory");
     crate::mem::index::register(&state.storage, &address, &name, "", &memory_path);
 
+    let notify_channel = session.notify_channel();
     ServerMsg::Identity {
         address,
         name,
         intro: session.intro,
-        notify_channel: session.notify_channel.clone(),
+        notify_channel,
         notify_ready,
     }
 }
@@ -150,7 +157,7 @@ pub fn handle_show(state: &AppState, headers: &HeaderMap) -> ServerMsg {
         Err(e) => return e,
     };
     let (intro, notify_channel) = session_file_mod::read(&session.workspace_root, &session.name)
-        .map(|s| (s.intro, s.notify_channel))
+        .map(|s| (s.intro.clone(), s.notify_channel()))
         .unwrap_or_default();
     let notify_ready = !notify_channel.eq_ignore_ascii_case("none") && !notify_channel.is_empty();
     ServerMsg::Identity {
@@ -630,7 +637,7 @@ mod tests {
 
         let session = session_file::read(&state.dot_agtalk, "reviewer").unwrap();
         assert_eq!(session.intro, "设计评审专家");
-        assert_eq!(session.workspace, "");
+        // v2 session 不再包含 workspace 字段
     }
 
     #[test]
@@ -734,7 +741,7 @@ mod tests {
             start_time,
         );
         let session = session_file::read(&state.dot_agtalk, "reviewer").unwrap();
-        assert_eq!(session.notify_channel, "none");
+        assert_eq!(session.notify_channel(), "none");
 
         // 再次 join 不传 notify，应升级为 plugin:zellij
         let msg = handle_join(
@@ -759,7 +766,7 @@ mod tests {
             other => panic!("expected Identity, got {:?}", other),
         }
         let session = session_file::read(&state.dot_agtalk, "reviewer").unwrap();
-        assert_eq!(session.notify_channel, "plugin:zellij");
+        assert_eq!(session.notify_channel(), "plugin:zellij");
 
         std::env::set_var("PATH", prev_path);
     }
@@ -781,7 +788,7 @@ mod tests {
             start_time,
         );
         let first_session = session_file::read(&state.dot_agtalk, "reviewer").unwrap();
-        assert_eq!(first_session.notify_channel, "plugin:zellij");
+        assert_eq!(first_session.notify_channel(), "plugin:zellij");
 
         // 不传 notify 再次 join，channel 保持 plugin:zellij，endpoint 会被刷新
         handle_join(
@@ -795,7 +802,7 @@ mod tests {
             start_time,
         );
         let second_session = session_file::read(&state.dot_agtalk, "reviewer").unwrap();
-        assert_eq!(second_session.notify_channel, "plugin:zellij");
+        assert_eq!(second_session.notify_channel(), "plugin:zellij");
 
         std::env::set_var("PATH", prev_path);
     }
@@ -839,7 +846,7 @@ mod tests {
             other => panic!("expected Identity, got {:?}", other),
         }
         let session = session_file::read(&state.dot_agtalk, "reviewer").unwrap();
-        assert_eq!(session.notify_channel, "none");
+        assert_eq!(session.notify_channel(), "none");
 
         std::env::set_var("PATH", prev_path);
     }
@@ -1235,14 +1242,16 @@ mod tests {
 
         // 直接写入一个无对应 mailbox 的 session 文件
         let session = session_file::SessionFile {
+            version: 2,
             address: "00000000-0000-0000-0000-000000000001".to_string(),
             name: "orphan".to_string(),
-            workspace: "".to_string(),
             intro: "no mailbox".to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
-            command: "".to_string(),
-            notify_channel: "none".to_string(),
-            notify_target: Default::default(),
+            registered_by: None,
+            notify: SessionNotify {
+                channel: "none".to_string(),
+                endpoint: serde_json::Value::Null,
+            },
         };
         session_file::write(&state.dot_agtalk, "orphan", &session).unwrap();
 

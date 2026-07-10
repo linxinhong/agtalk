@@ -213,6 +213,11 @@ pub(crate) enum MsgCmd {
 
 #[derive(Subcommand)]
 pub(crate) enum MemCmd {
+    /// 协作关系索引（本地 .agtalk/<agent>/relations.json）
+    Relation {
+        #[command(subcommand)]
+        cmd: MemRelationCmd,
+    },
     /// 查看 plan
     Plan {
         #[command(subcommand)]
@@ -254,6 +259,24 @@ pub(crate) enum MemCmd {
         topic: Option<String>,
         #[arg(short, long)]
         limit: Option<usize>,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum MemRelationCmd {
+    /// 列出所有协作 peer
+    List,
+    /// 查看某个 peer 的关系详情
+    Show { name_or_address: String },
+    /// 更新 peer 的手动字段（role / tags / note）
+    Update {
+        name_or_address: String,
+        #[arg(short, long)]
+        role: Option<String>,
+        #[arg(short, long, value_delimiter = ',')]
+        tag: Vec<String>,
+        #[arg(short, long)]
+        note: Option<String>,
     },
 }
 
@@ -865,6 +888,75 @@ mod tests {
         assert_eq!(sections[0]["title"], "Identity");
         assert_eq!(sections[3]["title"], "Run (preferred send entry)");
         assert_eq!(sections[6]["title"], "Memory / plan");
+    }
+
+    #[test]
+    fn parse_mem_relation_list() {
+        let cli = Cli::try_parse_from(["agtalk", "mem", "relation", "list"]).unwrap();
+        let cmd = match cli.command {
+            Some(Commands::Mem { cmd }) => cmd,
+            _ => panic!("expected Mem relation list"),
+        };
+        assert!(matches!(
+            cmd,
+            MemCmd::Relation {
+                cmd: MemRelationCmd::List
+            }
+        ));
+    }
+
+    #[test]
+    fn parse_mem_relation_show() {
+        let cli = Cli::try_parse_from(["agtalk", "mem", "relation", "show", "nora"]).unwrap();
+        let cmd = match cli.command {
+            Some(Commands::Mem { cmd }) => cmd,
+            _ => panic!("expected Mem relation show"),
+        };
+        match cmd {
+            MemCmd::Relation {
+                cmd: MemRelationCmd::Show { name_or_address },
+            } => assert_eq!(name_or_address, "nora"),
+            _ => panic!("expected relation show"),
+        }
+    }
+
+    #[test]
+    fn parse_mem_relation_update() {
+        let cli = Cli::try_parse_from([
+            "agtalk",
+            "mem",
+            "relation",
+            "update",
+            "nora",
+            "--role",
+            "reviewer",
+            "--tag",
+            "rust,frontend",
+            "--note",
+            "good partner",
+        ])
+        .unwrap();
+        let cmd = match cli.command {
+            Some(Commands::Mem { cmd }) => cmd,
+            _ => panic!("expected Mem relation update"),
+        };
+        match cmd {
+            MemCmd::Relation {
+                cmd:
+                    MemRelationCmd::Update {
+                        name_or_address,
+                        role,
+                        tag,
+                        note,
+                    },
+            } => {
+                assert_eq!(name_or_address, "nora");
+                assert_eq!(role, Some("reviewer".to_string()));
+                assert_eq!(tag, vec!["rust".to_string(), "frontend".to_string()]);
+                assert_eq!(note, Some("good partner".to_string()));
+            }
+            _ => panic!("expected relation update"),
+        }
     }
 
     #[test]

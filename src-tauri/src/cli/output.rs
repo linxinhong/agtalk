@@ -185,6 +185,61 @@ fn print_wait_result(messages: &[Message], body: &str) {
     }
 }
 
+fn print_relation_list(relations: &[crate::identity::relations::Relation]) {
+    if relations.is_empty() {
+        println!("no relations yet");
+        return;
+    }
+    println!(
+        "{} peer{}",
+        relations.len(),
+        if relations.len() == 1 { "" } else { "s" }
+    );
+    for r in relations {
+        let short = crate::routing::short_id_of(&r.address);
+        let counts = format!("sent {} / recv {}", r.sent_count, r.received_count);
+        println!();
+        println!("{}  {}  {}", short, r.name, counts);
+        if !r.intro.is_empty() {
+            println!("    {}", r.intro);
+        }
+        if let Some(role) = &r.role {
+            println!("    role: {}", role);
+        }
+        if !r.tags.is_empty() {
+            println!("    tags: {}", r.tags.join(", "));
+        }
+    }
+}
+
+fn print_relation(relation: &crate::identity::relations::Relation) {
+    println!("address       : {}", relation.address);
+    println!("name          : {}", relation.name);
+    if !relation.intro.is_empty() {
+        println!("intro         : {}", relation.intro);
+    }
+    println!("sent_count    : {}", relation.sent_count);
+    println!("received_count: {}", relation.received_count);
+    if let Some(first) = relation.first_seen_at {
+        println!("first_seen_at : {}", first);
+    }
+    if let Some(last) = relation.last_seen_at {
+        println!("last_seen_at  : {}", last);
+    }
+    if let Some(last_id) = &relation.last_message_id {
+        println!("last_message  : {}", crate::routing::short_id_of(last_id));
+    }
+    if let Some(role) = &relation.role {
+        println!("role          : {}", role);
+    }
+    if !relation.tags.is_empty() {
+        println!("tags          : {}", relation.tags.join(", "));
+    }
+    if let Some(note) = &relation.note {
+        println!("note          : {}", note);
+    }
+}
+
 fn print_cleanup_result(
     dry_run: bool,
     removed: &[crate::proto::CleanupItem],
@@ -334,6 +389,12 @@ fn print_text_server_msg(msg: &ServerMsg) {
                 "{}",
                 serde_json::to_string_pretty(entry).unwrap_or_default()
             );
+        }
+        ServerMsg::MemRelationList { relations } => {
+            print_relation_list(relations);
+        }
+        ServerMsg::MemRelation { relation } => {
+            print_relation(relation);
         }
         ServerMsg::ConfigValue { key, value } => {
             println!("{} = {}", key, value);

@@ -1457,7 +1457,7 @@ fn http_get_stream_head(url: &str, headers: &[(&str, String)]) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::session_file::{NotifyTarget, SessionFile};
+    use crate::identity::session_file::SessionFile;
     use crate::storage::Storage;
     use std::ffi::OsString;
     use tempfile::TempDir;
@@ -1526,14 +1526,16 @@ mod tests {
         let (ctx, _guard) = test_ctx(&tmp);
 
         let session = SessionFile {
+            version: 2,
             address: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             name: "nora".to_string(),
-            workspace: "projA".to_string(),
             intro: "前端".to_string(),
             created_at: "2026-07-01T00:00:00Z".to_string(),
-            command: "agtalk".to_string(),
-            notify_channel: "none".to_string(),
-            notify_target: NotifyTarget::None,
+            registered_by: Some("agtalk".to_string()),
+            notify: session_file::SessionNotify {
+                channel: "none".to_string(),
+                endpoint: serde_json::Value::Null,
+            },
         };
         session_file::write(&ctx.dot_agtalk, "nora", &session).unwrap();
 
@@ -1630,14 +1632,16 @@ mod tests {
         let (ctx, _guard) = test_ctx(&tmp);
 
         let session = SessionFile {
+            version: 2,
             address: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             name: "tester".to_string(),
-            workspace: "projA".to_string(),
             intro: "前端".to_string(),
             created_at: "2026-07-01T00:00:00Z".to_string(),
-            command: "agtalk".to_string(),
-            notify_channel: "none".to_string(),
-            notify_target: NotifyTarget::None,
+            registered_by: Some("agtalk".to_string()),
+            notify: session_file::SessionNotify {
+                channel: "none".to_string(),
+                endpoint: serde_json::Value::Null,
+            },
         };
         session_file::write(&ctx.dot_agtalk, "tester", &session).unwrap();
 
@@ -1688,14 +1692,16 @@ mod tests {
         let (ctx, _guard) = test_ctx(&tmp);
 
         let session = SessionFile {
+            version: 2,
             address: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             name: "nora".to_string(),
-            workspace: "projA".to_string(),
             intro: "前端".to_string(),
             created_at: "2026-07-01T00:00:00Z".to_string(),
-            command: "agtalk".to_string(),
-            notify_channel: "none".to_string(),
-            notify_target: NotifyTarget::None,
+            registered_by: Some("agtalk".to_string()),
+            notify: session_file::SessionNotify {
+                channel: "none".to_string(),
+                endpoint: serde_json::Value::Null,
+            },
         };
         session_file::write(&ctx.dot_agtalk, "nora", &session).unwrap();
 
@@ -1869,15 +1875,14 @@ mod tests {
 
         let address = "550e8400-e29b-41d4-a716-446655440000".to_string();
         let session = SessionFile {
+            version: 2,
             address: address.clone(),
             name: "nora".to_string(),
-            workspace: "projA".to_string(),
             intro: "前端".to_string(),
             created_at: "2026-07-01T00:00:00Z".to_string(),
-            command: "agtalk".to_string(),
-            notify_channel: "plugin:missing".to_string(),
-            notify_target: NotifyTarget::Plugin {
-                name: "missing".to_string(),
+            registered_by: Some("agtalk".to_string()),
+            notify: session_file::SessionNotify {
+                channel: "plugin:missing".to_string(),
                 endpoint: serde_json::Value::Null,
             },
         };
@@ -1933,15 +1938,14 @@ mod tests {
 
         let address = "550e8400-e29b-41d4-a716-446655440000".to_string();
         let session = SessionFile {
+            version: 2,
             address: address.clone(),
             name: "nora".to_string(),
-            workspace: "projA".to_string(),
             intro: "前端".to_string(),
             created_at: "2026-07-01T00:00:00Z".to_string(),
-            command: "agtalk".to_string(),
-            notify_channel: "plugin:bad".to_string(),
-            notify_target: NotifyTarget::Plugin {
-                name: "bad".to_string(),
+            registered_by: Some("agtalk".to_string()),
+            notify: session_file::SessionNotify {
+                channel: "plugin:bad".to_string(),
                 endpoint: serde_json::Value::Null,
             },
         };
@@ -1997,14 +2001,16 @@ mod tests {
 
         let address = "550e8400-e29b-41d4-a716-446655440000".to_string();
         let session = SessionFile {
+            version: 2,
             address: address.clone(),
             name: "nora".to_string(),
-            workspace: "projA".to_string(),
             intro: "前端".to_string(),
             created_at: "2026-07-01T00:00:00Z".to_string(),
-            command: "agtalk".to_string(),
-            notify_channel: "none".to_string(),
-            notify_target: NotifyTarget::None,
+            registered_by: Some("agtalk".to_string()),
+            notify: session_file::SessionNotify {
+                channel: "none".to_string(),
+                endpoint: serde_json::Value::Null,
+            },
         };
         session_file::write(&ctx.dot_agtalk, "nora", &session).unwrap();
         if let Some(storage) = ctx.storage.as_ref() {

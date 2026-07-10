@@ -1,10 +1,11 @@
-//! 身份模块：session.json、agents.json、mailbox、认证。
+//! 身份模块：session.json、agents.json、mailbox、认证、relations。
 
 pub mod agents_map;
 pub mod auth;
 pub mod browser_session;
 pub mod history;
 pub mod mailbox;
+pub mod relations;
 pub mod session_file;
 
 use thiserror::Error;

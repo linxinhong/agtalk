@@ -43,6 +43,8 @@ run      发送/协作 spec 优先入口
   agents.json
   <agent-name>/
     session.json
+    history.jsonl
+    relations.json
     memory/
       plan.md
       context.md
@@ -50,7 +52,9 @@ run      发送/协作 spec 优先入口
       entries.jsonl
 ```
 
-`session.json` 是身份/认证锚点，只保存低频身份字段。`memory/` 是 agent 自己的知识与工作现场，不能参与认证、路由、PID 校验。
+- `session.json` 是身份/认证锚点，只保存低频身份字段。
+- `history.jsonl` 与 `relations.json` 由消息收发自动维护，是 agent 私有的协作视图。
+- `memory/` 是 agent 自己的知识与工作现场，不能参与认证、路由、PID 校验。
 
 daemon SQLite 里只保存全局可见的 mem 注册/索引，不是长期记忆仓库：
 
@@ -460,6 +464,20 @@ fact decision rule procedure issue snippet preference summary note context
 - `mem pack` 保留旧版价值：生成可注入 prompt/message 的通用 Markdown 上下文包。
 - 内置全量使用指南：`agtalk --agent-guide`，源文件为 `docs/agent-usage.md`，编译时嵌入二进制，不写入任何 agent memory 或 agtalk.db。
 - `agent-learning-handbook` 与 `agtalk mem pack agtalk/agent-guide` 不再作为 guide 入口。
+
+### 7.7 协作关系索引
+
+```bash
+agtalk mem relation list
+agtalk mem relation show <name-or-address>
+agtalk mem relation update <name-or-address> --role <text> --tag <tag1,tag2> --note <text>
+```
+
+`relations.json` 是 agent 私有的协作关系索引，位于 `.agtalk/<agent-name>/relations.json`。
+
+- `msg send` / `msg reply` / `msg ask` 成功后会自动按 peer 聚合发送/接收计数、最后联系时间、最后消息 ID。
+- `role`、`tags`、`note` 是手动标注字段，自动更新不会覆盖。
+- `mem relation show` 支持按 name 或 address（含短前缀）查找。
 
 ---
 

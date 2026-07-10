@@ -52,7 +52,7 @@ src-tauri/
 src-tauri/src/
   proto.rs        ← ServerMsg enum 与共享 DTO 定义（协议内聚）
   cli/            ← CLI 子命令、HTTP 客户端、Context、输出格式化、YAML runner
-  identity/       ← mailbox、session.json、agents.json、PID 解析
+  identity/       ← mailbox、session.json、agents.json、relations.json、PID 解析
   routing/        ← send、lookup、inbox、wait
   transport/      ← SSE 端点、唤醒机制
   server/         ← HTTP 入口（薄）与 handler

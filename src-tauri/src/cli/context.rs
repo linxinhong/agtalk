@@ -403,19 +403,21 @@ fn session_anchor(pid: u32) -> (u32, u64) {
 mod tests {
     use super::*;
     use crate::identity::agents_map;
-    use crate::identity::session_file::{NotifyTarget, SessionFile};
+    use crate::identity::session_file::SessionFile;
     use tempfile::TempDir;
 
     fn write_session(dot: &Path, name: &str) {
         let session = SessionFile {
+            version: 2,
             address: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             name: name.to_string(),
-            workspace: "projA".to_string(),
             intro: "前端".to_string(),
             created_at: "2026-07-01T00:00:00Z".to_string(),
-            command: "agtalk".to_string(),
-            notify_channel: "none".to_string(),
-            notify_target: NotifyTarget::None,
+            registered_by: None,
+            notify: session_file::SessionNotify {
+                channel: "none".to_string(),
+                endpoint: serde_json::Value::Null,
+            },
         };
         session_file::write(dot, name, &session).unwrap();
     }

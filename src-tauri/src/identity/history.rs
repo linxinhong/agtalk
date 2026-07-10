@@ -206,10 +206,16 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dot = tmp.path().join(".agtalk");
         let session = SessionFile {
+            version: 2,
             address: address.to_string(),
             name: name.to_string(),
             intro: "test".to_string(),
-            ..Default::default()
+            created_at: "2026-07-01T00:00:00Z".to_string(),
+            registered_by: None,
+            notify: session_file::SessionNotify {
+                channel: "none".to_string(),
+                endpoint: serde_json::Value::Null,
+            },
         };
         session_file::write(&dot, name, &session).unwrap();
         (dot, tmp)

@@ -48,16 +48,29 @@ name    : 字符串    ← 可读展示名（人看，不唯一，不进路由�
 - `agents.json` 提供 `pid → name` 映射，让进程能自查身份（多 agent 并存时知道读哪个 session 文件）。
 - session.json 权限 0600。
 
-**session.json 内容**：
+**session.json v2 内容**：
 ```json
 {
+  "version": 2,
   "address": "550e8400-e29b-41d4-a716-446655440000",
   "name": "nora",
-  "workspace": "projA",
   "intro": "前端 review",
-  "created_at": "2026-07-01T..."
+  "created_at": "2026-07-01T...",
+  "registered_by": "/Users/.../.local/bin/agtalk",
+  "notify": {
+    "channel": "plugin:zellij",
+    "endpoint": {
+      "session": "...",
+      "pane": "..."
+    }
+  }
 }
 ```
+
+- `version`：当前为 `2`。
+- `registered_by`：可选，记录注册时使用的 agtalk 二进制路径。
+- `notify`：持久化的打扰通道与插件 endpoint。旧版 `notify_channel` / `notify_target` 字段在读取时自动迁移为 `notify` 对象；zellij/tmux 旧通道映射为 `plugin:zellij` / `plugin:tmux`。
+- `workspace` 已移除：CLI agent session 不再写入 workspace。
 
 **session.json 不含高熵 token。** 认证不依赖"agent 出示一个秘密字符串"，而依赖**文件系统本身就是信任根**——能读到这个文件的进程（同 uid、同工作目录）即被信任持有该身份。daemon 侧再叠加 PID + start_time 校验防 PID 复用。
 
@@ -227,13 +240,18 @@ Android APK 无法访问本地 `.agtalk/` 文件系统，因此 Android BLE tran
 每个 agent 的持久 memory 放在当前 workspace：
 
 ```
-.agtalk/<agent-name>/memory/
-  ├─ plan.md          ← 当前目标、计划、进度、阻塞项
-  ├─ context.md       ← 公开背景、约束、协作注意事项
-  ├─ status.json      ← 机器可读状态摘要
-  └─ entries.jsonl    ← 长期记忆条目
+.agtalk/<agent-name>/
+  ├─ session.json     ← 身份与认证材料
+  ├─ history.jsonl    ← 消息事件流水（自动写入）
+  ├─ relations.json   ← 协作关系索引（send/reply 自动更新）
+  └─ memory/
+       ├─ plan.md          ← 当前目标、计划、进度、阻塞项
+       ├─ context.md       ← 公开背景、约束、协作注意事项
+       ├─ status.json      ← 机器可读状态摘要
+       └─ entries.jsonl    ← 长期记忆条目
 ```
 
+- `history.jsonl` 与 `relations.json` 由 daemon 在消息收发成功后自动维护，是 agent 私有的协作视图。
 - `plan.md`、`context.md`、`status.json` 是公开协作状态，其他在线 agent 可读。
 - `entries.jsonl` 是长期知识沉淀，默认不跨 agent 开放。
 - 这些文件只参与展示/协作，不参与认证、路由、PID 校验。
@@ -728,15 +746,13 @@ AGTALK_NAME=<name> agtalk <cmd>
 
 ### 10.4 session.json 扩展字段
 
-为支持 notify 和调试，session.json 增加以下字段（均带默认值，旧版本兼容）：
+为支持 notify 和调试，session.json v2 使用 `notify` 对象（旧版本兼容）：
 
 ```json
 {
-  "command": "<注册时当前 agtalk 二进制路径>",
-  "notify_channel": "plugin:zellij",
-  "notify_target": {
-    "type": "plugin",
-    "name": "zellij",
+  "registered_by": "<注册时当前 agtalk 二进制路径>",
+  "notify": {
+    "channel": "plugin:zellij",
     "endpoint": {
       "session": "...",
       "pane": "..."
@@ -745,9 +761,10 @@ AGTALK_NAME=<name> agtalk <cmd>
 }
 ```
 
-- `command`：方便人类查看该身份是由哪个命令创建的。
-- `notify_channel`：持久化的 notify 通道。
-- `notify_target`：zellij/tmux 定位信息，用于精准注入提示。
+- `registered_by`：可选，方便人类查看该身份是由哪个命令创建的。
+- `notify.channel`：持久化的 notify 通道，如 `none`、`plugin:zellij`、`plugin:tmux`。
+- `notify.endpoint`：插件 discover 返回的 endpoint，由 plugin send 接收；agtalk core 完全透传。
+- 读取旧版 `command`、`notify_channel`、`notify_target` 字段时自动迁移。
 
 ### 10.5 `--json` 稳定输出
 

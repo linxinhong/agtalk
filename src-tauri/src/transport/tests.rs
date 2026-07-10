@@ -51,12 +51,16 @@ async fn sse_replays_past_events() {
         &dot,
         "nora",
         &SessionFile {
+            version: 2,
             address: a.clone(),
             name: "nora".to_string(),
-            workspace: "".to_string(),
             intro: "".to_string(),
             created_at: "2026-07-01T00:00:00Z".to_string(),
-            ..Default::default()
+            registered_by: None,
+            notify: session_file::SessionNotify {
+                channel: "none".to_string(),
+                endpoint: serde_json::Value::Null,
+            },
         },
     )
     .unwrap();
@@ -100,12 +104,16 @@ async fn sse_realtime_event() {
         &dot,
         "nora",
         &SessionFile {
+            version: 2,
             address: a.clone(),
             name: "nora".to_string(),
-            workspace: "".to_string(),
             intro: "".to_string(),
             created_at: "2026-07-01T00:00:00Z".to_string(),
-            ..Default::default()
+            registered_by: None,
+            notify: session_file::SessionNotify {
+                channel: "none".to_string(),
+                endpoint: serde_json::Value::Null,
+            },
         },
     )
     .unwrap();

@@ -418,6 +418,12 @@ pub enum ServerMsg {
     MemShowResult {
         entry: serde_json::Value,
     },
+    MemRelationList {
+        relations: Vec<crate::identity::relations::Relation>,
+    },
+    MemRelation {
+        relation: crate::identity::relations::Relation,
+    },
 
     // config
     ConfigValue {

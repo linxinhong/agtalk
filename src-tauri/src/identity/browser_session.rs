@@ -48,14 +48,16 @@ pub fn create(
     set_permissions_0700(&dir)?;
 
     let session = session_file::SessionFile {
+        version: 2,
         address: address.clone(),
         name: name.clone(),
-        workspace: workspace.clone(),
         intro: intro.clone(),
         created_at: iso_now(),
-        command: String::new(),
-        notify_channel: "none".to_string(),
-        notify_target: session_file::NotifyTarget::None,
+        registered_by: None,
+        notify: session_file::SessionNotify {
+            channel: "none".to_string(),
+            endpoint: serde_json::Value::Null,
+        },
     };
     let path = dir.join("session.json");
     let content = serde_json::to_string_pretty(&session)?;

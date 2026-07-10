@@ -1,6 +1,8 @@
 //! `/api/v1/msg/*` handler。
 
 use crate::identity::mailbox as mailbox_db;
+use crate::identity::relations;
+use crate::identity::session_file;
 use crate::notify;
 use crate::proto::{AskOptions, InboxFilter, ServerMsg};
 use crate::routing::{inbox, lookup, reply, send, SendRequest};
@@ -8,6 +10,7 @@ use crate::server::handlers::{authenticate_req, not_supported};
 use crate::server::state::AppState;
 use crate::transport::wake::SseEvent;
 use axum::http::HeaderMap;
+use std::path::Path;
 
 #[allow(clippy::too_many_arguments)]
 pub fn handle_send(
@@ -84,6 +87,7 @@ pub fn handle_send(
                 });
             }
             record_send_history(state, &session, &to_name, &msg, "msg.send");
+            record_send_relations(state, &session, &to_name, &to, &msg);
             ServerMsg::Ok { id: msg.id }
         }
         Err(e) => ServerMsg::Error {
@@ -173,6 +177,7 @@ pub fn handle_reply(
                 &msg,
                 original_status_change.as_ref(),
             );
+            record_reply_relations(state, &session, &original, &msg);
             ServerMsg::Ok { id: msg.id }
         }
         Err(e) => ServerMsg::Error {
@@ -436,6 +441,123 @@ pub fn handle_wait(
     _since: Option<i64>,
 ) -> ServerMsg {
     not_supported("服务端阻塞 wait")
+}
+
+/// 获取 peer 的最新 intro：优先读取本地 session.json（确认 address 匹配），否则 fallback。
+fn peer_intro(
+    dot_agtalk: &Path,
+    storage: &crate::storage::Storage,
+    address: &str,
+    fallback: &str,
+) -> String {
+    match mailbox_db::get_by_address(storage, address) {
+        Ok(Some(mb)) => {
+            if let Ok(session) = session_file::read(dot_agtalk, &mb.name) {
+                if session.address == address {
+                    return session.intro;
+                }
+            }
+            mb.intro
+        }
+        _ => fallback.to_string(),
+    }
+}
+
+/// 发送成功后同时更新 sender / receiver 的 relations.json（仅当本地存在对应 session 时）。
+fn record_send_relations(
+    state: &AppState,
+    sender: &crate::identity::auth::AuthenticatedSession,
+    to_name: &str,
+    to_address: &str,
+    msg: &crate::routing::Message,
+) {
+    let peer_intro_value = peer_intro(&state.dot_agtalk, &state.storage, to_address, "");
+    if let Err(e) = relations::record_send(
+        &state.dot_agtalk,
+        relations::RelationEvent {
+            owner_name: &sender.name,
+            owner_address: &sender.address,
+            peer_name: to_name,
+            peer_address: to_address,
+            peer_intro: &peer_intro_value,
+            message_id: &msg.id,
+            timestamp: msg.created_at,
+        },
+    ) {
+        tracing::warn!("record sender relation failed: {}", e);
+    }
+
+    // receiver 也是本地 agent 时才写 receiver 侧关系。
+    let receiver_local = session_file::read(&state.dot_agtalk, to_name)
+        .map(|s| s.address == to_address)
+        .unwrap_or(false);
+    if receiver_local {
+        let sender_intro = peer_intro(&state.dot_agtalk, &state.storage, &sender.address, "");
+        if let Err(e) = relations::record_receive(
+            &state.dot_agtalk,
+            relations::RelationEvent {
+                owner_name: to_name,
+                owner_address: to_address,
+                peer_name: &sender.name,
+                peer_address: &sender.address,
+                peer_intro: &sender_intro,
+                message_id: &msg.id,
+                timestamp: msg.created_at,
+            },
+        ) {
+            tracing::warn!("record receiver relation failed: {}", e);
+        }
+    }
+}
+
+/// 回复成功后同时更新 reply 发送方与原消息发送方的 relations.json。
+fn record_reply_relations(
+    state: &AppState,
+    sender: &crate::identity::auth::AuthenticatedSession,
+    original: &crate::routing::Message,
+    reply: &crate::routing::Message,
+) {
+    let peer_intro_value = peer_intro(
+        &state.dot_agtalk,
+        &state.storage,
+        &original.from_address,
+        "",
+    );
+    if let Err(e) = relations::record_send(
+        &state.dot_agtalk,
+        relations::RelationEvent {
+            owner_name: &sender.name,
+            owner_address: &sender.address,
+            peer_name: &original.from_name,
+            peer_address: &original.from_address,
+            peer_intro: &peer_intro_value,
+            message_id: &reply.id,
+            timestamp: reply.created_at,
+        },
+    ) {
+        tracing::warn!("record reply sender relation failed: {}", e);
+    }
+
+    let original_local = session_file::read(&state.dot_agtalk, &original.from_name)
+        .map(|s| s.address == original.from_address)
+        .unwrap_or(false);
+    if original_local {
+        let sender_intro = peer_intro(&state.dot_agtalk, &state.storage, &sender.address, "");
+        if let Err(e) = relations::record_receive(
+            &state.dot_agtalk,
+            relations::RelationEvent {
+                owner_name: &original.from_name,
+                owner_address: &original.from_address,
+                peer_name: &sender.name,
+                peer_address: &sender.address,
+                peer_intro: &sender_intro,
+                message_id: &reply.id,
+                timestamp: reply.created_at,
+            },
+        ) {
+            tracing::warn!("record reply receiver relation failed: {}", e);
+        }
+    }
 }
 
 fn record_send_history(
@@ -1204,5 +1326,141 @@ mod tests {
             ServerMsg::Error { code, .. } => assert_eq!(code, "message_id_ambiguous"),
             other => panic!("expected Error, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn send_updates_relations_for_both_sides() {
+        let (state, _tmp) = test_state();
+        let sender_addr = join(&state, "sender");
+        let recv_addr = join(&state, "recv");
+
+        let headers = auth_headers_for(&state, "sender");
+        handle_send(
+            &state,
+            &headers,
+            recv_addr.clone(),
+            "hi".into(),
+            None,
+            vec![],
+            Some(false),
+            None,
+            false,
+        );
+
+        let sender_relations = crate::identity::relations::read(&state.dot_agtalk, "sender")
+            .unwrap()
+            .peers;
+        let recv_relations = crate::identity::relations::read(&state.dot_agtalk, "recv")
+            .unwrap()
+            .peers;
+
+        assert_eq!(sender_relations.len(), 1);
+        let r = sender_relations
+            .get(&recv_addr)
+            .expect("sender should have recv peer");
+        assert_eq!(r.name, "recv");
+        assert_eq!(r.sent_count, 1);
+        assert_eq!(r.received_count, 0);
+
+        assert_eq!(recv_relations.len(), 1);
+        let r = recv_relations
+            .get(&sender_addr)
+            .expect("recv should have sender peer");
+        assert_eq!(r.name, "sender");
+        assert_eq!(r.received_count, 1);
+        assert_eq!(r.sent_count, 0);
+    }
+
+    #[test]
+    fn send_skips_receiver_relation_when_no_session() {
+        let (state, _tmp) = test_state();
+        join(&state, "sender");
+        let recv_addr =
+            crate::identity::mailbox::create(&state.storage, "recv", "receiver", "").unwrap();
+
+        let headers = auth_headers_for(&state, "sender");
+        handle_send(
+            &state,
+            &headers,
+            recv_addr,
+            "hi".into(),
+            None,
+            vec![],
+            Some(false),
+            None,
+            false,
+        );
+
+        let sender_relations = crate::identity::relations::read(&state.dot_agtalk, "sender")
+            .unwrap()
+            .peers;
+        assert_eq!(sender_relations.len(), 1);
+
+        assert!(!state
+            .dot_agtalk
+            .join("recv")
+            .join("relations.json")
+            .exists());
+    }
+
+    #[test]
+    fn reply_updates_relations_for_both_sides() {
+        let (state, _tmp) = test_state();
+        let sender_addr = join(&state, "sender");
+        let recv_addr = join(&state, "recv");
+
+        let sender_headers = auth_headers_for(&state, "sender");
+        let send_resp = handle_send(
+            &state,
+            &sender_headers,
+            recv_addr.clone(),
+            "hello".into(),
+            None,
+            vec![],
+            Some(false),
+            None,
+            false,
+        );
+        let sent_id = match send_resp {
+            ServerMsg::Ok { id } => id,
+            other => panic!("expected Ok, got {:?}", other),
+        };
+
+        let recv_headers = auth_headers_for(&state, "recv");
+        let reply_resp = handle_reply(
+            &state,
+            &recv_headers,
+            sent_id[..8].to_string(),
+            "ok".into(),
+            vec![],
+            Some(false),
+            None,
+        );
+        assert!(
+            matches!(reply_resp, ServerMsg::Ok { .. }),
+            "reply should succeed, got {:?}",
+            reply_resp
+        );
+
+        let sender_relations = crate::identity::relations::read(&state.dot_agtalk, "sender")
+            .unwrap()
+            .peers;
+        let recv_relations = crate::identity::relations::read(&state.dot_agtalk, "recv")
+            .unwrap()
+            .peers;
+
+        // sender: original out + reply in
+        let r = sender_relations
+            .get(&recv_addr)
+            .expect("sender should have recv peer");
+        assert_eq!(r.received_count, 1);
+        assert_eq!(r.sent_count, 1);
+
+        // recv: original in + reply out
+        let r = recv_relations
+            .get(&sender_addr)
+            .expect("recv should have sender peer");
+        assert_eq!(r.sent_count, 1);
+        assert_eq!(r.received_count, 1);
     }
 }
