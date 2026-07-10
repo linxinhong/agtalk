@@ -24,6 +24,7 @@ fn req<'a>(
         body,
         content_type: "text",
         reply_to_id: None,
+        subject: None,
         metadata: "{}",
         more_coming: false,
     }
@@ -52,6 +53,7 @@ fn send_fails_to_unknown_address() {
             body: "x",
             content_type: "text",
             reply_to_id: None,
+            subject: None,
             metadata: "{}",
             more_coming: false,
         },
@@ -110,6 +112,7 @@ fn reply_to_message() {
             body: "审批？",
             content_type: "approval_request",
             reply_to_id: None,
+            subject: None,
             metadata: r#"{"choices":["approve","reject"]}"#,
             more_coming: false,
         },

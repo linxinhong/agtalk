@@ -97,4 +97,18 @@ mod tests {
             .unwrap();
         assert_eq!(version, migrate::CURRENT_VERSION);
     }
+
+    #[test]
+    fn messages_have_subject_column() {
+        let storage = Storage::open_in_memory().unwrap();
+        let conn = storage.conn();
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(messages)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(columns.iter().any(|c| c == "subject"));
+    }
 }

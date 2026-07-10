@@ -13,6 +13,7 @@ pub fn send(storage: &Storage, req: SendRequest<'_>) -> Result<Message, RoutingE
     }
 
     let metadata = merge_more_coming(req.metadata, req.more_coming)?;
+    let subject = normalize_subject(req.subject);
 
     let id = Uuid::new_v4().to_string();
     let mut conn = storage.conn();
@@ -28,8 +29,8 @@ pub fn send(storage: &Storage, req: SendRequest<'_>) -> Result<Message, RoutingE
 
     let now = unix_timestamp();
     tx.execute(
-        "INSERT INTO messages (id, to_address, to_name, from_address, from_name, body, content_type, reply_to_id, metadata, event_id, status, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', ?11)",
+        "INSERT INTO messages (id, to_address, to_name, from_address, from_name, body, content_type, reply_to_id, subject, metadata, event_id, status, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'pending', ?12)",
         params![
             id,
             req.to,
@@ -39,6 +40,7 @@ pub fn send(storage: &Storage, req: SendRequest<'_>) -> Result<Message, RoutingE
             req.body,
             req.content_type,
             req.reply_to_id,
+            subject,
             metadata,
             event_id,
             now
@@ -56,10 +58,22 @@ pub fn send(storage: &Storage, req: SendRequest<'_>) -> Result<Message, RoutingE
         body: req.body.to_string(),
         content_type: req.content_type.to_string(),
         reply_to_id: req.reply_to_id.map(|s| s.to_string()),
+        subject,
         metadata,
         event_id,
         status: "pending".to_string(),
         created_at: now,
+    })
+}
+
+fn normalize_subject(subject: Option<&str>) -> Option<String> {
+    subject.and_then(|s| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
     })
 }
 

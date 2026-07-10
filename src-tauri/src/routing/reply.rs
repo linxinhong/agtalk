@@ -55,10 +55,13 @@ pub fn reply(
         original.metadata.clone()
     };
 
+    // 回复继承被回复消息（即线程 root 已继承到该消息）的 subject。
+    let subject = original.subject.clone();
+
     let now = unix_timestamp();
     tx.execute(
-        "INSERT INTO messages (id, to_address, to_name, from_address, from_name, body, content_type, reply_to_id, metadata, event_id, status, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', ?11)",
+        "INSERT INTO messages (id, to_address, to_name, from_address, from_name, body, content_type, reply_to_id, subject, metadata, event_id, status, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'pending', ?12)",
         params![
             id,
             &to,
@@ -68,6 +71,7 @@ pub fn reply(
             body,
             content_type,
             original_id,
+            subject,
             metadata,
             event_id,
             now
@@ -122,6 +126,7 @@ pub fn reply(
             body: body.to_string(),
             content_type: content_type.to_string(),
             reply_to_id: Some(original_id.to_string()),
+            subject,
             metadata,
             event_id,
             status: "pending".to_string(),

@@ -171,6 +171,9 @@ fn print_message_summary(m: &Message, index: Option<usize>) {
         "    type: {}    status: {}    event: {}",
         m.content_type, m.status, m.event_id
     );
+    if let Some(subject) = &m.subject {
+        println!("    subject: {}", subject);
+    }
     println!("    reply: agtalk msg reply {} \"<body>\"", short);
     println!("    done:  agtalk msg done {}", short);
     println!();
@@ -846,6 +849,7 @@ mod tests {
                 body: "test notify via zellij plugin".into(),
                 content_type: "text".into(),
                 reply_to_id: None,
+                subject: None,
                 metadata: "{}".into(),
                 event_id: 1,
                 status: "read".into(),
@@ -866,12 +870,35 @@ mod tests {
             body: "test notify via zellij plugin".into(),
             content_type: "text".into(),
             reply_to_id: None,
+            subject: None,
             metadata: "{}".into(),
             event_id: 1,
             status: "read".into(),
             created_at: 0.0,
         });
         print_text_server_msg(&msg);
+    }
+
+    #[test]
+    fn message_json_includes_subject() {
+        let msg = ServerMsg::MsgDetail(Message {
+            id: "6f0d4353-f4b2-46ab-afb6-8c7f6af02049".into(),
+            to_address: "to".into(),
+            to_name: "to".into(),
+            from_address: "from".into(),
+            from_name: "notify-receiver-zellij".into(),
+            body: "body".into(),
+            content_type: "text".into(),
+            reply_to_id: None,
+            subject: Some("Review plan".into()),
+            metadata: "{}".into(),
+            event_id: 1,
+            status: "read".into(),
+            created_at: 0.0,
+        });
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"subject\""), "{}", json);
+        assert!(json.contains("Review plan"), "{}", json);
     }
 
     #[test]

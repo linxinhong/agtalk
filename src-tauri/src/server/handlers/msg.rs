@@ -18,7 +18,7 @@ pub fn handle_send(
     headers: &HeaderMap,
     to: String,
     body: String,
-    _subject: Option<String>,
+    subject: Option<String>,
     _files: Vec<String>,
     notify: Option<bool>,
     send_enter: Option<bool>,
@@ -53,6 +53,7 @@ pub fn handle_send(
         body: &body,
         content_type: "text",
         reply_to_id: None,
+        subject: subject.as_deref(),
         metadata: "{}",
         more_coming: more,
     };
@@ -310,6 +311,7 @@ pub fn handle_ask(
         body: &message,
         content_type,
         reply_to_id: None,
+        subject: None,
         metadata: &metadata,
         more_coming: false,
     };
@@ -763,6 +765,124 @@ mod tests {
             ServerMsg::Ok { id } => assert!(!id.is_empty()),
             other => panic!("expected Ok, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn send_persists_trimmed_subject() {
+        let (state, _tmp) = test_state();
+        join(&state, "sender");
+        let recv_addr = join(&state, "recv");
+
+        let headers = auth_headers_for(&state, "sender");
+        let resp = handle_send(
+            &state,
+            &headers,
+            recv_addr,
+            "body".into(),
+            Some("  Review plan  ".into()),
+            vec![],
+            Some(false),
+            None,
+            false,
+        );
+        let id = match resp {
+            ServerMsg::Ok { id } => id,
+            other => panic!("expected Ok, got {:?}", other),
+        };
+        let msg = lookup::detail(&state.storage, &id).unwrap().unwrap();
+        assert_eq!(msg.subject.as_deref(), Some("Review plan"));
+    }
+
+    #[test]
+    fn send_blank_subject_becomes_none() {
+        let (state, _tmp) = test_state();
+        join(&state, "sender");
+        let recv_addr = join(&state, "recv");
+
+        let headers = auth_headers_for(&state, "sender");
+        let resp = handle_send(
+            &state,
+            &headers,
+            recv_addr,
+            "body".into(),
+            Some("   ".into()),
+            vec![],
+            Some(false),
+            None,
+            false,
+        );
+        let id = match resp {
+            ServerMsg::Ok { id } => id,
+            other => panic!("expected Ok, got {:?}", other),
+        };
+        let msg = lookup::detail(&state.storage, &id).unwrap().unwrap();
+        assert!(msg.subject.is_none());
+    }
+
+    #[test]
+    fn reply_inherits_subject() {
+        let (state, _tmp) = test_state();
+        join(&state, "sender");
+        let recv_addr = join(&state, "recv");
+
+        let sender_headers = auth_headers_for(&state, "sender");
+        let send_resp = handle_send(
+            &state,
+            &sender_headers,
+            recv_addr.clone(),
+            "please review".into(),
+            Some("Task X".into()),
+            vec![],
+            Some(false),
+            None,
+            false,
+        );
+        let sent_id = match send_resp {
+            ServerMsg::Ok { id } => id,
+            other => panic!("expected Ok, got {:?}", other),
+        };
+
+        let recv_headers = auth_headers_for(&state, "recv");
+        let reply_resp = handle_reply(
+            &state,
+            &recv_headers,
+            sent_id[..8].to_string(),
+            "done".into(),
+            vec![],
+            Some(false),
+            None,
+        );
+        let reply_id = match reply_resp {
+            ServerMsg::Ok { id } => id,
+            other => panic!("expected Ok, got {:?}", other),
+        };
+        let reply_msg = lookup::detail(&state.storage, &reply_id).unwrap().unwrap();
+        assert_eq!(reply_msg.subject.as_deref(), Some("Task X"));
+    }
+
+    #[test]
+    fn send_writes_subject_to_history() {
+        let (state, _tmp) = test_state();
+        join(&state, "sender");
+        let recv_addr = join(&state, "recv");
+
+        let headers = auth_headers_for(&state, "sender");
+        handle_send(
+            &state,
+            &headers,
+            recv_addr,
+            "body".into(),
+            Some("History S".into()),
+            vec![],
+            Some(false),
+            None,
+            false,
+        );
+
+        let sender_history = read_history_lines(&state.dot_agtalk, "sender");
+        let receiver_history = read_history_lines(&state.dot_agtalk, "recv");
+        assert_eq!(sender_history[0]["subject"], "History S");
+        assert_eq!(receiver_history[0]["subject"], "History S");
     }
 
     #[test]

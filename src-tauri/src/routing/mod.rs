@@ -46,6 +46,7 @@ pub struct SendRequest<'a> {
     pub body: &'a str,
     pub content_type: &'a str,
     pub reply_to_id: Option<&'a str>,
+    pub subject: Option<&'a str>,
     pub metadata: &'a str,
     pub more_coming: bool,
 }
@@ -67,6 +68,8 @@ pub struct Message {
     pub body: String,
     pub content_type: String,
     pub reply_to_id: Option<String>,
+    #[serde(default)]
+    pub subject: Option<String>,
     pub metadata: String,
     pub event_id: i64,
     pub status: String,
@@ -84,6 +87,7 @@ impl Message {
             body: row.get("body")?,
             content_type: row.get("content_type")?,
             reply_to_id: row.get("reply_to_id")?,
+            subject: row.get("subject")?,
             metadata: row.get("metadata")?,
             event_id: row.get("event_id")?,
             status: row.get("status")?,
