@@ -107,6 +107,12 @@ pub fn append_message(
     source: &str,
 ) -> Result<(), HistoryError> {
     if !validate_owner(dot_agtalk, owner_name, owner_address) {
+        tracing::warn!(
+            dot_agtalk = %dot_agtalk.display(),
+            owner_name,
+            owner_address,
+            "history message skip: 本地 session 缺失或 address 不匹配"
+        );
         return Ok(());
     }
 
@@ -159,6 +165,12 @@ pub fn append_status(
     reason: &str,
 ) -> Result<(), HistoryError> {
     if !validate_owner(dot_agtalk, owner_name, owner_address) {
+        tracing::warn!(
+            dot_agtalk = %dot_agtalk.display(),
+            owner_name,
+            owner_address,
+            "history status skip: 本地 session 缺失或 address 不匹配"
+        );
         return Ok(());
     }
 

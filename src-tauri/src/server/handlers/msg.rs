@@ -445,27 +445,61 @@ pub fn handle_wait(
     not_supported("服务端阻塞 wait")
 }
 
-/// 获取 peer 的最新 intro：优先读取本地 session.json（确认 address 匹配），否则 fallback。
-fn peer_intro(
-    dot_agtalk: &Path,
-    storage: &crate::storage::Storage,
-    address: &str,
-    fallback: &str,
-) -> String {
-    match mailbox_db::get_by_address(storage, address) {
-        Ok(Some(mb)) => {
-            if let Ok(session) = session_file::read(dot_agtalk, &mb.name) {
+/// 解析某个参与者（非 sender）本地可达的 workspace 根（即 `.agtalk` 目录）。
+///
+/// 优先使用 mailbox 在 `id join` 时持久化的 `workspace_root`：仅当其为绝对路径、且
+/// `<root>/<name>/session.json` 存在且 `session.address == address` 时采用；否则回退到
+/// daemon 自身 workspace（`state.dot_agtalk`）下确实存在该 agent session 的情形，以兼容迁移
+/// 前的存量单 workspace agent。都不可达时返回 `None`（远端 / human / 未在本机注册），
+/// 调用方据此跳过该侧写入，不影响消息投递。
+fn participant_root(state: &AppState, address: &str) -> Option<std::path::PathBuf> {
+    let mb = match mailbox_db::get_by_address(&state.storage, address) {
+        Ok(Some(mb)) => mb,
+        _ => return None,
+    };
+
+    if !mb.workspace_root.is_empty() {
+        let root = std::path::PathBuf::from(&mb.workspace_root);
+        if root.is_absolute() {
+            if let Ok(session) = session_file::read(&root, &mb.name) {
                 if session.address == address {
-                    return session.intro;
+                    return Some(root);
                 }
             }
-            mb.intro
         }
-        _ => fallback.to_string(),
     }
+
+    if let Ok(session) = session_file::read(&state.dot_agtalk, &mb.name) {
+        if session.address == address {
+            return Some(state.dot_agtalk.clone());
+        }
+    }
+
+    None
 }
 
-/// 发送成功后同时更新 sender / receiver 的 relations.json（仅当本地存在对应 session 时）。
+/// 获取 peer 的最新 intro：优先读取 peer 本地 session.json（确认 address 匹配），否则回退到 mailbox intro。
+fn peer_intro(
+    state: &AppState,
+    peer_root: Option<&Path>,
+    peer_address: &str,
+    fallback: &str,
+) -> String {
+    let mb = match mailbox_db::get_by_address(&state.storage, peer_address) {
+        Ok(Some(mb)) => mb,
+        _ => return fallback.to_string(),
+    };
+    if let Some(root) = peer_root {
+        if let Ok(session) = session_file::read(root, &mb.name) {
+            if session.address == peer_address {
+                return session.intro;
+            }
+        }
+    }
+    mb.intro
+}
+
+/// 发送成功后同时更新 sender / receiver 的 relations.json（仅当对应侧本地可达时）。
 fn record_send_relations(
     state: &AppState,
     sender: &crate::identity::auth::AuthenticatedSession,
@@ -473,9 +507,10 @@ fn record_send_relations(
     to_address: &str,
     msg: &crate::routing::Message,
 ) {
-    let peer_intro_value = peer_intro(&state.dot_agtalk, &state.storage, to_address, "");
+    let receiver_root = participant_root(state, to_address);
+    let peer_intro_value = peer_intro(state, receiver_root.as_deref(), to_address, "");
     if let Err(e) = relations::record_send(
-        &state.dot_agtalk,
+        &sender.workspace_root,
         relations::RelationEvent {
             owner_name: &sender.name,
             owner_address: &sender.address,
@@ -489,14 +524,11 @@ fn record_send_relations(
         tracing::warn!("record sender relation failed: {}", e);
     }
 
-    // receiver 也是本地 agent 时才写 receiver 侧关系。
-    let receiver_local = session_file::read(&state.dot_agtalk, to_name)
-        .map(|s| s.address == to_address)
-        .unwrap_or(false);
-    if receiver_local {
-        let sender_intro = peer_intro(&state.dot_agtalk, &state.storage, &sender.address, "");
+    // receiver 也是本地可达 agent 时才写 receiver 侧关系。
+    if let Some(root) = receiver_root {
+        let sender_intro = peer_intro(state, Some(&sender.workspace_root), &sender.address, "");
         if let Err(e) = relations::record_receive(
-            &state.dot_agtalk,
+            &root,
             relations::RelationEvent {
                 owner_name: to_name,
                 owner_address: to_address,
@@ -519,14 +551,10 @@ fn record_reply_relations(
     original: &crate::routing::Message,
     reply: &crate::routing::Message,
 ) {
-    let peer_intro_value = peer_intro(
-        &state.dot_agtalk,
-        &state.storage,
-        &original.from_address,
-        "",
-    );
+    let original_root = participant_root(state, &original.from_address);
+    let peer_intro_value = peer_intro(state, original_root.as_deref(), &original.from_address, "");
     if let Err(e) = relations::record_send(
-        &state.dot_agtalk,
+        &sender.workspace_root,
         relations::RelationEvent {
             owner_name: &sender.name,
             owner_address: &sender.address,
@@ -540,13 +568,10 @@ fn record_reply_relations(
         tracing::warn!("record reply sender relation failed: {}", e);
     }
 
-    let original_local = session_file::read(&state.dot_agtalk, &original.from_name)
-        .map(|s| s.address == original.from_address)
-        .unwrap_or(false);
-    if original_local {
-        let sender_intro = peer_intro(&state.dot_agtalk, &state.storage, &sender.address, "");
+    if let Some(root) = original_root {
+        let sender_intro = peer_intro(state, Some(&sender.workspace_root), &sender.address, "");
         if let Err(e) = relations::record_receive(
-            &state.dot_agtalk,
+            &root,
             relations::RelationEvent {
                 owner_name: &original.from_name,
                 owner_address: &original.from_address,
@@ -569,9 +594,8 @@ fn record_send_history(
     msg: &crate::routing::Message,
     source: &str,
 ) {
-    let dot = &state.dot_agtalk;
     if let Err(e) = crate::identity::history::append_message(
-        dot,
+        &sender.workspace_root,
         &sender.name,
         &sender.address,
         "out",
@@ -580,10 +604,26 @@ fn record_send_history(
     ) {
         tracing::warn!("sender history append failed: {}", e);
     }
-    if let Err(e) =
-        crate::identity::history::append_message(dot, to_name, &msg.to_address, "in", msg, source)
-    {
-        tracing::warn!("receiver history append failed: {}", e);
+    match participant_root(state, &msg.to_address) {
+        Some(root) => {
+            if let Err(e) = crate::identity::history::append_message(
+                &root,
+                to_name,
+                &msg.to_address,
+                "in",
+                msg,
+                source,
+            ) {
+                tracing::warn!("receiver history append failed: {}", e);
+            }
+        }
+        None => {
+            tracing::debug!(
+                to = %msg.to_address,
+                to_name,
+                "receiver workspace 不可达，跳过 receiver history"
+            );
+        }
     }
 }
 
@@ -594,10 +634,9 @@ fn record_reply_history(
     reply: &crate::routing::Message,
     original_status_change: Option<&crate::routing::StatusChange>,
 ) {
-    let dot = &state.dot_agtalk;
     // reply 发送方的 out 事件
     if let Err(e) = crate::identity::history::append_message(
-        dot,
+        &sender.workspace_root,
         &sender.name,
         &sender.address,
         "out",
@@ -607,20 +646,30 @@ fn record_reply_history(
         tracing::warn!("reply sender history append failed: {}", e);
     }
     // 原消息发送方收到 reply 的 in 事件
-    if let Err(e) = crate::identity::history::append_message(
-        dot,
-        &original.from_name,
-        &original.from_address,
-        "in",
-        reply,
-        "msg.reply",
-    ) {
-        tracing::warn!("reply receiver history append failed: {}", e);
+    match participant_root(state, &original.from_address) {
+        Some(root) => {
+            if let Err(e) = crate::identity::history::append_message(
+                &root,
+                &original.from_name,
+                &original.from_address,
+                "in",
+                reply,
+                "msg.reply",
+            ) {
+                tracing::warn!("reply receiver history append failed: {}", e);
+            }
+        }
+        None => {
+            tracing::debug!(
+                from = %original.from_address,
+                "original sender workspace 不可达，跳过 reply in history"
+            );
+        }
     }
-    // 原消息被 reply 后状态真实变化时才记录 status
+    // 原消息被 reply 后状态真实变化时才记录 status（归属操作者，即 reply 发送方）
     if let Some(change) = original_status_change {
         if let Err(e) = crate::identity::history::append_status(
-            dot,
+            &sender.workspace_root,
             &sender.name,
             &sender.address,
             &change.message_id,
@@ -634,7 +683,7 @@ fn record_reply_history(
 }
 
 fn record_status_history(
-    state: &AppState,
+    _state: &AppState,
     owner: &crate::identity::auth::AuthenticatedSession,
     msg: &crate::routing::Message,
     old_status: &str,
@@ -644,9 +693,8 @@ fn record_status_history(
     if old_status == new_status {
         return;
     }
-    let dot = &state.dot_agtalk;
     if let Err(e) = crate::identity::history::append_status(
-        dot,
+        &owner.workspace_root,
         &owner.name,
         &owner.address,
         &msg.id,
@@ -1582,5 +1630,270 @@ mod tests {
             .expect("recv should have sender peer");
         assert_eq!(r.sent_count, 1);
         assert_eq!(r.received_count, 1);
+    }
+
+    // ---- 跨 workspace：history/relations 写入各 agent 自身根 ----
+
+    fn test_state_at(daemon_dot: &std::path::Path) -> AppState {
+        let storage = Storage::open_in_memory().unwrap();
+        AppState::new(storage, AgConfig::default(), daemon_dot.to_path_buf())
+    }
+
+    fn join_at(state: &AppState, root: &std::path::Path, name: &str) -> String {
+        let pid = std::process::id();
+        let start_time = current_pid_start_time();
+        match id::handle_join(
+            state,
+            root,
+            Some(name.into()),
+            Some("intro".into()),
+            "none".into(),
+            None,
+            pid,
+            start_time,
+        ) {
+            ServerMsg::Identity { address, .. } => address,
+            other => panic!("expected Identity, got {:?}", other),
+        }
+    }
+
+    fn auth_headers_for_root(root: &std::path::Path, name: &str) -> HeaderMap {
+        let session = crate::identity::session_file::read(root, name).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("X-AgTalk-Address", session.address.parse().unwrap());
+        headers.insert(
+            "X-AgTalk-Workspace-Root",
+            root.to_str().unwrap().parse().unwrap(),
+        );
+        headers
+    }
+
+    #[test]
+    fn cross_workspace_history_written_to_each_agent_root() {
+        let daemon_tmp = TempDir::new().unwrap();
+        let sender_tmp = TempDir::new().unwrap();
+        let recv_tmp = TempDir::new().unwrap();
+        let daemon_dot = daemon_tmp.path().join(".agtalk");
+        let sender_dot = sender_tmp.path().join(".agtalk");
+        let recv_dot = recv_tmp.path().join(".agtalk");
+
+        let state = test_state_at(&daemon_dot);
+        join_at(&state, &sender_dot, "sender");
+        let recv_addr = join_at(&state, &recv_dot, "recv");
+
+        let headers = auth_headers_for_root(&sender_dot, "sender");
+        let resp = handle_send(
+            &state,
+            &headers,
+            recv_addr,
+            "hi cross".into(),
+            None,
+            vec![],
+            Some(false),
+            None,
+            false,
+        );
+        assert!(matches!(resp, ServerMsg::Ok { .. }), "send ok: {:?}", resp);
+
+        let sender_history = read_history_lines(&sender_dot, "sender");
+        assert_eq!(sender_history.len(), 1);
+        assert_eq!(sender_history[0]["dir"], "out");
+        assert_eq!(sender_history[0]["source"], "msg.send");
+
+        let recv_history = read_history_lines(&recv_dot, "recv");
+        assert_eq!(recv_history.len(), 1);
+        assert_eq!(recv_history[0]["dir"], "in");
+
+        // daemon 根目录下不应生成任何 agent 目录。
+        assert!(!daemon_dot.join("sender").exists());
+        assert!(!daemon_dot.join("recv").exists());
+    }
+
+    #[test]
+    fn cross_workspace_reply_history_and_relations() {
+        let daemon_tmp = TempDir::new().unwrap();
+        let sender_tmp = TempDir::new().unwrap();
+        let recv_tmp = TempDir::new().unwrap();
+        let daemon_dot = daemon_tmp.path().join(".agtalk");
+        let sender_dot = sender_tmp.path().join(".agtalk");
+        let recv_dot = recv_tmp.path().join(".agtalk");
+
+        let state = test_state_at(&daemon_dot);
+        let sender_addr = join_at(&state, &sender_dot, "sender");
+        let recv_addr = join_at(&state, &recv_dot, "recv");
+
+        let sender_headers = auth_headers_for_root(&sender_dot, "sender");
+        let send_resp = handle_send(
+            &state,
+            &sender_headers,
+            recv_addr.clone(),
+            "hello".into(),
+            None,
+            vec![],
+            Some(false),
+            None,
+            false,
+        );
+        let sent_id = match send_resp {
+            ServerMsg::Ok { id } => id,
+            other => panic!("expected Ok, got {:?}", other),
+        };
+
+        let recv_headers = auth_headers_for_root(&recv_dot, "recv");
+        let reply_resp = handle_reply(
+            &state,
+            &recv_headers,
+            sent_id[..8].to_string(),
+            "ok".into(),
+            vec![],
+            Some(false),
+            None,
+        );
+        assert!(
+            matches!(reply_resp, ServerMsg::Ok { .. }),
+            "reply ok: {:?}",
+            reply_resp
+        );
+
+        // sender 根：send out + reply in
+        let sender_history = read_history_lines(&sender_dot, "sender");
+        assert!(
+            sender_history.iter().any(|e| e["dir"] == "in"),
+            "sender 根应记录 reply 的 in 事件"
+        );
+        // recv 根：send in + reply out
+        let recv_history = read_history_lines(&recv_dot, "recv");
+        assert!(
+            recv_history.iter().any(|e| e["dir"] == "out"),
+            "recv 根应记录 reply 的 out 事件"
+        );
+
+        // relations 也写入各自根
+        let sender_relations = crate::identity::relations::read(&sender_dot, "sender")
+            .unwrap()
+            .peers;
+        let recv_relations = crate::identity::relations::read(&recv_dot, "recv")
+            .unwrap()
+            .peers;
+        assert_eq!(
+            sender_relations
+                .get(&recv_addr)
+                .expect("sender has recv peer")
+                .received_count,
+            1
+        );
+        assert_eq!(
+            recv_relations
+                .get(&sender_addr)
+                .expect("recv has sender peer")
+                .sent_count,
+            1
+        );
+
+        // daemon 根不下错写任何 agent 目录
+        assert!(!daemon_dot.join("sender").exists());
+        assert!(!daemon_dot.join("recv").exists());
+    }
+
+    #[test]
+    fn send_to_receiver_without_local_session_skips_receiver_side() {
+        let daemon_tmp = TempDir::new().unwrap();
+        let sender_tmp = TempDir::new().unwrap();
+        let daemon_dot = daemon_tmp.path().join(".agtalk");
+        let sender_dot = sender_tmp.path().join(".agtalk");
+
+        let state = test_state_at(&daemon_dot);
+        join_at(&state, &sender_dot, "sender");
+        // 仅在 DB 建 mailbox（workspace_root=""），不创建任何 session 文件。
+        let recv_addr =
+            crate::identity::mailbox::create(&state.storage, "recv", "receiver", "").unwrap();
+
+        let headers = auth_headers_for_root(&sender_dot, "sender");
+        let resp = handle_send(
+            &state,
+            &headers,
+            recv_addr,
+            "hi".into(),
+            None,
+            vec![],
+            Some(false),
+            None,
+            false,
+        );
+        assert!(
+            matches!(resp, ServerMsg::Ok { .. }),
+            "send to non-local receiver should still succeed: {:?}",
+            resp
+        );
+
+        // sender 侧写入
+        let sender_history = read_history_lines(&sender_dot, "sender");
+        assert_eq!(sender_history.len(), 1);
+        assert_eq!(sender_history[0]["dir"], "out");
+
+        // receiver 侧不可达：daemon 根下也不应错写 recv 目录
+        assert!(!daemon_dot.join("recv").exists());
+        assert!(!daemon_dot.join("sender").exists());
+    }
+
+    #[test]
+    fn done_status_written_to_actor_root_in_cross_workspace() {
+        let daemon_tmp = TempDir::new().unwrap();
+        let sender_tmp = TempDir::new().unwrap();
+        let recv_tmp = TempDir::new().unwrap();
+        let daemon_dot = daemon_tmp.path().join(".agtalk");
+        let sender_dot = sender_tmp.path().join(".agtalk");
+        let recv_dot = recv_tmp.path().join(".agtalk");
+
+        let state = test_state_at(&daemon_dot);
+        join_at(&state, &sender_dot, "sender");
+        let recv_addr = join_at(&state, &recv_dot, "recv");
+
+        let sender_headers = auth_headers_for_root(&sender_dot, "sender");
+        let send_resp = handle_send(
+            &state,
+            &sender_headers,
+            recv_addr,
+            "hello".into(),
+            None,
+            vec![],
+            Some(false),
+            None,
+            false,
+        );
+        let sent_id = match send_resp {
+            ServerMsg::Ok { id } => id,
+            other => panic!("expected Ok, got {:?}", other),
+        };
+
+        // recv 标记完成：status 事件应写入 recv（操作者）的根。
+        let recv_headers = auth_headers_for_root(&recv_dot, "recv");
+        let done_resp = handle_done(
+            &state,
+            &recv_headers,
+            Some(sent_id[..8].to_string()),
+            None,
+            vec![],
+        );
+        assert!(
+            matches!(done_resp, ServerMsg::Ok { .. }),
+            "done ok: {:?}",
+            done_resp
+        );
+
+        let recv_history = read_history_lines(&recv_dot, "recv");
+        assert!(
+            recv_history
+                .iter()
+                .any(|e| e["type"] == "status" && e["reason"] == "msg.done"),
+            "recv 根应记录 msg.done 的 status 事件"
+        );
+
+        // sender 根不应出现 status 事件（只有 send 的 out）
+        let sender_history = read_history_lines(&sender_dot, "sender");
+        assert!(
+            sender_history.iter().all(|e| e["type"] != "status"),
+            "sender 根不应写入 done 的 status 事件"
+        );
     }
 }
