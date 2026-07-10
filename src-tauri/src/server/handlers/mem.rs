@@ -128,10 +128,18 @@ pub fn handle_plan_update(
                 summary: st.summary,
             }
         }
-        Err(e) => ServerMsg::Error {
-            code: "mem_error".into(),
-            message: e.to_string(),
-        },
+        Err(e) => mem_error_msg(e),
+    }
+}
+
+fn mem_error_msg(e: mem::MemError) -> ServerMsg {
+    let code = match &e {
+        mem::MemError::InvalidStatus(_) => "invalid_status",
+        _ => "mem_error",
+    };
+    ServerMsg::Error {
+        code: code.into(),
+        message: e.to_string(),
     }
 }
 

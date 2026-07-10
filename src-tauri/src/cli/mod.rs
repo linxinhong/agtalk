@@ -434,7 +434,15 @@ fn agent_help_message() -> ServerMsg {
             title: "Memory / plan".to_string(),
             examples: vec![
                 AgentHelpExample {
-                    command: "agtalk mem plan show".to_string(),
+                    command: "agtalk mem plan update --status working --summary \"<current work>\"".to_string(),
+                    note: Some("status: idle | working | waiting | blocked".to_string()),
+                },
+                AgentHelpExample {
+                    command: "agtalk mem plan status --target <UUID-or-name>".to_string(),
+                    note: Some("read a peer's public summary".to_string()),
+                },
+                AgentHelpExample {
+                    command: "agtalk mem plan show --target <UUID-or-name>".to_string(),
                     note: None,
                 },
                 AgentHelpExample {

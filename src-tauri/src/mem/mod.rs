@@ -27,7 +27,12 @@ pub enum MemError {
     EntryNotFound(String),
     #[error("目标不明确: 找到 {0} 个候选")]
     Ambiguous(usize),
+    #[error("非法状态: {0}，允许值: idle, working, waiting, blocked")]
+    InvalidStatus(String),
 }
+
+/// plan status 允许的状态枚举。空字符串表示未设置，保持兼容。
+pub const ALLOWED_PLAN_STATUSES: &[&str] = &["idle", "working", "waiting", "blocked"];
 
 /// agent 当前计划与上下文。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,7 +157,11 @@ pub fn plan_update(
     let mut st = read_status(dot_agtalk, name)?;
     let mut changed = false;
     if let Some(s) = status {
-        st.status = s;
+        let normalized = s.trim().to_string();
+        if !normalized.is_empty() && !ALLOWED_PLAN_STATUSES.contains(&normalized.as_str()) {
+            return Err(MemError::InvalidStatus(normalized));
+        }
+        st.status = normalized;
         changed = true;
     }
     if let Some(s) = summary {
@@ -356,21 +365,48 @@ mod tests {
             "nora",
             Some("do X".into()),
             Some("ctx".into()),
-            Some("running".into()),
+            Some("working".into()),
             Some("50%".into()),
         )
         .unwrap();
-        assert_eq!(status.status, "running");
+        assert_eq!(status.status, "working");
         assert_eq!(status.summary, "50%");
         assert!(!status.updated_at.is_empty());
 
         let state = plan_show(&dot, "nora").unwrap();
         assert_eq!(state.plan, "do X");
         assert_eq!(state.context, "ctx");
-        assert_eq!(state.status.status, "running");
+        assert_eq!(state.status.status, "working");
 
         let status2 = plan_status(&dot, "nora").unwrap();
         assert_eq!(status2.summary, "50%");
+    }
+
+    #[test]
+    fn plan_update_accepts_allowed_statuses() {
+        for allowed in ALLOWED_PLAN_STATUSES {
+            let (_tmp, dot) = tmp_dot();
+            let status =
+                plan_update(&dot, "nora", None, None, Some((*allowed).into()), None).unwrap();
+            assert_eq!(status.status, *allowed);
+        }
+    }
+
+    #[test]
+    fn plan_update_allows_empty_status() {
+        let (_tmp, dot) = tmp_dot();
+        let status = plan_update(&dot, "nora", None, None, Some("   ".into()), None).unwrap();
+        assert_eq!(status.status, "");
+    }
+
+    #[test]
+    fn plan_update_rejects_invalid_status() {
+        let (_tmp, dot) = tmp_dot();
+        let err = plan_update(&dot, "nora", None, None, Some("running".into()), None).unwrap_err();
+        match err {
+            MemError::InvalidStatus(s) => assert_eq!(s, "running"),
+            other => panic!("expected InvalidStatus, got {:?}", other),
+        }
     }
 
     #[test]

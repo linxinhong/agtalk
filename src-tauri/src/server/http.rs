@@ -590,12 +590,37 @@ mod tests {
         )
         .unwrap();
 
+        session_file::write(
+            &dot,
+            "quinn",
+            &session_file::SessionFile {
+                version: 2,
+                address: quinn.clone(),
+                name: "quinn".to_string(),
+                intro: "后端".to_string(),
+                created_at: "2026-07-01T00:00:00Z".to_string(),
+                registered_by: None,
+                notify: session_file::SessionNotify {
+                    channel: "none".to_string(),
+                    endpoint: serde_json::Value::Null,
+                },
+            },
+        )
+        .unwrap();
+
         crate::mem::index::register(
             &storage,
             &nora,
             "nora",
             "projA",
             &dot.join("nora").join("memory"),
+        );
+        crate::mem::index::register(
+            &storage,
+            &quinn,
+            "quinn",
+            "projB",
+            &dot.join("quinn").join("memory"),
         );
 
         let state = AppState::new(storage, AgConfig::default(), dot);
@@ -1021,7 +1046,7 @@ mod tests {
         let update = serde_json::to_string(&serde_json::json!({
             "plan": "do X",
             "context": "ctx",
-            "status": "running",
+            "status": "working",
             "summary": "50%",
         }))
         .unwrap();
@@ -1059,7 +1084,7 @@ mod tests {
                 assert_eq!(address, nora);
                 assert_eq!(plan, "do X");
                 assert_eq!(context, "ctx");
-                assert_eq!(status, "running");
+                assert_eq!(status, "working");
                 assert_eq!(summary, "50%");
             }
             other => panic!("expected MemPlanShow, got {:?}", other),
@@ -1067,8 +1092,105 @@ mod tests {
 
         // mem_index 应被刷新
         let row = crate::mem::index::lookup_by_address(&state.storage, &nora).unwrap();
-        assert_eq!(row.status_summary, "running: 50%");
+        assert_eq!(row.status_summary, "working: 50%");
         assert!(row.plan_updated_at > 0.0);
+    }
+
+    #[tokio::test]
+    async fn v1_mem_plan_update_rejects_invalid_status() {
+        let (state, nora, _quinn, _tmp) = test_state();
+        let app = routes(state.clone());
+
+        let update = serde_json::to_string(&serde_json::json!({ "status": "running" })).unwrap();
+        let req = Request::builder()
+            .method("PATCH")
+            .uri("/api/v1/mem/plan")
+            .header("Content-Type", "application/json")
+            .header("X-AgTalk-Address", nora.clone())
+            .body(Body::from(update))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let msg: ServerMsg = serde_json::from_slice(&bytes).unwrap();
+        match msg {
+            ServerMsg::Error { code, message } => {
+                assert_eq!(code, "invalid_status");
+                assert!(message.contains("idle"), "{}", message);
+            }
+            other => panic!("expected Error, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn v1_mem_plan_status_with_target_reads_remote_plan() {
+        let (state, nora, quinn, _tmp) = test_state();
+        let app = routes(state.clone());
+
+        // 以 quinn 身份更新自己的 plan
+        let update = serde_json::to_string(&serde_json::json!({
+            "status": "waiting",
+            "summary": "waiting for nora",
+        }))
+        .unwrap();
+        let update_req = Request::builder()
+            .method("PATCH")
+            .uri("/api/v1/mem/plan")
+            .header("Content-Type", "application/json")
+            .header("X-AgTalk-Address", quinn.clone())
+            .body(Body::from(update))
+            .unwrap();
+        let update_resp = app.clone().oneshot(update_req).await.unwrap();
+        assert_eq!(update_resp.status(), StatusCode::OK);
+
+        // nora 通过 target=address 读取 quinn 的公开摘要
+        let status_req = Request::builder()
+            .method("GET")
+            .uri(format!("/api/v1/mem/plan/status?target={}", quinn))
+            .header("X-AgTalk-Address", nora.clone())
+            .body(Body::empty())
+            .unwrap();
+        let status_resp = app.clone().oneshot(status_req).await.unwrap();
+        assert_eq!(status_resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(status_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        match serde_json::from_slice::<ServerMsg>(&bytes).unwrap() {
+            ServerMsg::MemPlanStatus {
+                address,
+                status,
+                summary,
+                ..
+            } => {
+                assert_eq!(address, quinn);
+                assert_eq!(status, "waiting");
+                assert_eq!(summary, "waiting for nora");
+            }
+            other => panic!("expected MemPlanStatus, got {:?}", other),
+        }
+
+        // nora 通过 target=name 读取 quinn
+        let show_req = Request::builder()
+            .method("GET")
+            .uri("/api/v1/mem/plan?target=quinn")
+            .header("X-AgTalk-Address", nora.clone())
+            .body(Body::empty())
+            .unwrap();
+        let show_resp = app.clone().oneshot(show_req).await.unwrap();
+        assert_eq!(show_resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(show_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        match serde_json::from_slice::<ServerMsg>(&bytes).unwrap() {
+            ServerMsg::MemPlanShow { address, name, .. } => {
+                assert_eq!(address, quinn);
+                assert_eq!(name, "quinn");
+            }
+            other => panic!("expected MemPlanShow, got {:?}", other),
+        }
     }
 
     #[tokio::test]

@@ -130,7 +130,7 @@ Body: {execute?: bool}
 ```
 POST /api/v1/msg/send
 Headers: X-AgTalk-Address, X-AgTalk-Pid, X-AgTalk-Start-Time
-Body: {to: UUID, body: string, content_type?, reply_to_id?, metadata?, more_coming?}
+Body: {to: UUID, body: string, subject?: string, content_type?, reply_to_id?, metadata?, more_coming?}
 → {type: "ok", id: msg_id}
 
 POST /api/v1/msg/reply
@@ -163,10 +163,10 @@ GET /api/v1/msg/attachment/:id
 记忆（mem）：
 
 ```
-GET   /api/v1/mem/plan?address=...&name=...
+GET   /api/v1/mem/plan?target=<address-or-name>
 PATCH /api/v1/mem/plan
-Body: {plan?: string, context?: string, status?: string, summary?: string}
-GET   /api/v1/mem/plan/status?address=...&name=...
+Body: {plan?: string, context?: string, status?: "idle|working|waiting|blocked", summary?: string}
+GET   /api/v1/mem/plan/status?target=<address-or-name>
 ```
 
 推送：
@@ -324,6 +324,17 @@ id cleanup  → 移除 mem 索引
 ```
 
 SQLite 中的 mem 索引可随时从文件系统重建；agent 的长期记忆以 `.agtalk/<name>/memory/` 文件为准。
+
+#### 2.8.7 Plan 状态契约：idle / working / waiting / blocked
+
+`status.json` 的 `status` 只允许四个值：`idle`、`working`、`waiting`、`blocked`（空或缺省保持兼容）。它不扩展成任务系统，只是给其他 agent 一个可靠的“当前在做什么”信号；`summary` 用自由短文本补充等待对象或阻塞原因。
+
+约定：
+
+- **委派方**：`msg send` 任务后，把自己的 plan 更新为 `waiting`，`summary` 写明等待哪个 agent / 什么结果。
+- **接收方**：开始处理时更新为 `working`；完成后更新为 `idle`，并保留最近完成摘要。
+- **观察者**：用 `agtalk mem plan status --target <UUID-or-name>` 看公开摘要，用 `mem plan show --target ...` 看完整 plan/context。remote agent 只能读取 target plan，不能写对方 plan。
+- `msg send` / `run` 不自动改写 plan：消息也可能是通知或闲聊，状态更新由 agent 工作流显式执行。
 
 ### 2.9 run：YAML 编排入口
 
@@ -601,6 +612,7 @@ messages
   body        TEXT
   content_type TEXT            ← text / approval_request / approval_response / ...
   reply_to_id TEXT             ← 回复链
+  subject     TEXT             ← 简短任务标题（可空）；msg reply 继承被回复消息的 subject
   metadata    TEXT             ← JSON
   event_id    INTEGER          ← 单调递增，SSE Last-Event-ID 重放用
   created_at  REAL

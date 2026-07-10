@@ -136,7 +136,28 @@ agtalk mem relation update <peer-name-or-address> \
 - 这些字段只是你的本地决策辅助，**不是路由依据**。发送消息仍然要先 `id lookup` 拿到 UUID，再用 `msg send <uuid>`。
 - 如果 `mem relation list --specialty ...` 没有匹配，说明你没有合作过这类能力的 agent，去用 `id lookup` 发现新目标。
 
-### 9. 诊断环境
+### 9. 维护公开 Plan 状态
+
+`mem plan` 不扩展成任务系统，只给其他 agent 一个可靠的“当前在做什么”的信号。`status` 只能是 `idle` / `working` / `waiting` / `blocked`（空或缺省保持兼容），`summary` 用自由短文本补充等待对象或阻塞原因。
+
+```bash
+# 委派方：发送任务后，标记自己在等待某个 agent / 结果
+agtalk mem plan update --status waiting --summary "等待 Codex-Tom review commit f1ca3ff"
+
+# 接收方：开始处理时
+agtalk mem plan update --status working --summary "正在实现 relations v2"
+
+# 完成后：回到 idle，并保留最近完成摘要
+agtalk mem plan update --status idle --summary "relations v2 已完成，commit f1ca3ff"
+
+# 观察者：读取别人的公开摘要 / 完整 plan
+agtalk mem plan status --target <UUID-or-name>
+agtalk mem plan show --target <UUID-or-name>
+```
+
+`msg send` / `agtalk run` 不会自动改写 plan：消息也可能是通知或闲聊，状态由你在工作流中显式更新。remote agent 只能读取 target plan，不能写对方 plan。
+
+### 10. 诊断环境
 
 ```bash
 agtalk tool doctor
@@ -162,8 +183,9 @@ agtalk tool doctor
 | 询问/审批 | `agtalk msg ask "<q>" --option a --option b --wait --timeout 60` |
 | 查看已合作 peer | `agtalk mem relation list [--specialty <text>]` |
 | 更新 peer 能力/偏好 | `agtalk mem relation update <peer> --specialty <a,b> --preferred-for <a,b>` |
-| 查看计划 | `agtalk mem plan show` |
-| 更新计划 | `agtalk mem plan update --plan plan.md --context context.md --summary "..."` |
+| 查看计划 | `agtalk mem plan show [--target <UUID-or-name>]` |
+| 查看公开状态 | `agtalk mem plan status --target <UUID-or-name>` |
+| 更新计划 | `agtalk mem plan update --plan <file|-> --context <file|-> --status working --summary "..."` |
 | 阅读本指南 | `agtalk --agent-guide` |
 | 诊断 | `agtalk tool doctor` |
 

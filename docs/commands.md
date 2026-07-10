@@ -241,7 +241,9 @@ agtalk msg send <address> <body> [--subject <text>] [--file <path> ...] [--notif
 按 UUID 发送消息。
 
 - `<address>` 必须是目标 mailbox UUID。
-- `--notify` 只提醒对方查收，不传正文。
+- `--subject` 是简短任务标题，会随消息持久化，并出现在 `inbox` / `read` / `wait` / `--json` / `history.jsonl` 中；trim 后为空视为未设置。
+- `msg reply` 不新增 `--subject`，会自动继承被回复消息的 subject，方便按同一任务标题扫描历史。
+- `--notify` 只提醒对方查收，不传正文，也不传 subject。
 - `--more` 表示后续还有同一逻辑消息的下一段。
 
 ### 6.2 msg reply
@@ -395,14 +397,15 @@ public_topics
 ### 7.3 mem plan show
 
 ```bash
-agtalk mem plan show [address|name]
+agtalk mem plan show [--target <address-or-name>]
 ```
 
-查看某个 agent 的公开计划和上下文。
+查看某个 agent 的公开计划和上下文。省略 `--target` 时查看自己。
 
 - 优先按 address 查。
 - 按 name 查询如果多匹配，返回候选并要求消歧。
 - 只能查看在线 agent 已注册的公开 memory；离线 agent 不进入查询结果。
+- remote agent 只能读取 target plan，不能写对方 plan。
 
 ### 7.4 mem plan update
 
@@ -412,18 +415,29 @@ agtalk mem plan update [--plan <file|->] [--context <file|->] [--status <status>
 
 更新当前 agent 的公开计划、上下文和状态摘要。
 
+- `--plan <file>` / `--context <file>` 在 CLI 边界读取文件内容；值为 `-` 时从 stdin 读取。同一次命令不允许 plan 与 context 同时从 stdin 读取。
+- daemon 只接收内容，不根据客户端路径读取文件。
+- `--status` 仅允许 `idle` / `working` / `waiting` / `blocked`；空或缺省保持兼容，非法值返回 `invalid_status`。
+- `summary` 是自由短文本，用来描述当前工作、等待对象或阻塞原因。
 - 写入使用临时文件 + rename，避免读到半截文件。
 - 只能更新当前身份自己的 mem plan。
 - 更新成功后刷新 SQLite 中当前 agent 的在线 mem 索引。
 
+#### 协作状态约定
+
+- 委派方发送任务后，把自己的 plan 更新为 `waiting`，并在 `summary` 写明等待哪个 agent / 什么结果。
+- 接收方开始处理时把自己的 plan 更新为 `working`；完成后更新为 `idle`，并保留最近完成摘要。
+- 其他 agent 用 `agtalk mem plan status --target <UUID-or-name>` 查看公开摘要，用 `mem plan show --target ...` 查看完整 plan/context。
+- `msg send` / `run` 不会自动改写 plan；状态更新由 agent 工作流显式执行。
+
 ### 7.5 mem plan status
 
 ```bash
-agtalk mem plan status [address|name]
-agtalk --json mem plan status [address|name]
+agtalk mem plan status [--target <address-or-name>]
+agtalk --json mem plan status [--target <address-or-name>]
 ```
 
-读取机器可读状态摘要。
+读取机器可读状态摘要。省略 `--target` 时读取自己。
 
 示例：
 
@@ -732,11 +746,9 @@ GET  /api/v1/msg/attachment/:id
 ### 11.3 mem API
 
 ```text
-GET   /api/v1/mem/plan?address=<uuid>
-GET   /api/v1/mem/plan?name=<name>
+GET   /api/v1/mem/plan?target=<address-or-name>
 PATCH /api/v1/mem/plan
-GET   /api/v1/mem/plan/status?address=<uuid>
-GET   /api/v1/mem/plan/status?name=<name>
+GET   /api/v1/mem/plan/status?target=<address-or-name>
 ```
 
 第一阶段 REST 只暴露公开协作状态：
