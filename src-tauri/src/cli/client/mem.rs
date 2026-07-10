@@ -162,8 +162,7 @@ pub fn dispatch(ctx: Context, cmd: MemCmd, json: bool) -> Result<(), CliError> {
 
 /// 解析 `mem plan update` 的 `--plan` / `--context` 参数：
 /// - 值为 `-` 时从 `stdin` 读取；同一次命令 plan 与 context 不能同时读 stdin。
-/// - 值指向已存在文件时读取文件内容。
-/// - 否则按字面内容处理（保留对旧用法的兼容）。
+/// - 非 `-` 的值必须是可读取的常规文件；不存在、是目录或读取失败都返回 `plan_file_read_failed`。
 fn resolve_content_arg<R: std::io::Read>(
     value: &str,
     stdin: &mut R,
@@ -185,16 +184,18 @@ fn resolve_content_arg<R: std::io::Read>(
     }
 
     let path = std::path::Path::new(value);
-    if path.is_file() {
-        return std::fs::read_to_string(path).map_err(|e| {
-            CliError::new(
-                "plan_file_read_failed",
-                format!("无法读取 {}: {}", value, e),
-            )
-        });
+    if !path.is_file() {
+        return Err(CliError::new(
+            "plan_file_read_failed",
+            format!("路径不存在或不是常规文件: {}", value),
+        ));
     }
-
-    Ok(value.to_string())
+    std::fs::read_to_string(path).map_err(|e| {
+        CliError::new(
+            "plan_file_read_failed",
+            format!("无法读取 {}: {}", value, e),
+        )
+    })
 }
 
 #[cfg(test)]
@@ -234,11 +235,23 @@ mod tests {
     }
 
     #[test]
-    fn resolve_content_arg_literal_fallback() {
+    fn resolve_content_arg_rejects_missing_path() {
         let mut stdin = Cursor::new(Vec::new());
         let mut used = false;
-        let resolved = resolve_content_arg("literal markdown", &mut stdin, &mut used).unwrap();
-        assert_eq!(resolved, "literal markdown");
+        let err = resolve_content_arg("/definitely/not/exist/plan.md", &mut stdin, &mut used)
+            .unwrap_err();
+        assert_eq!(err.code, "plan_file_read_failed");
+        assert!(!used);
+    }
+
+    #[test]
+    fn resolve_content_arg_rejects_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut stdin = Cursor::new(Vec::new());
+        let mut used = false;
+        let err =
+            resolve_content_arg(tmp.path().to_str().unwrap(), &mut stdin, &mut used).unwrap_err();
+        assert_eq!(err.code, "plan_file_read_failed");
         assert!(!used);
     }
 }

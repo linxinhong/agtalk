@@ -143,3 +143,75 @@ pub fn run(conn: &mut Connection) -> Result<(), super::StorageError> {
     tx.commit()?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn message_columns(conn: &Connection) -> Vec<String> {
+        let mut stmt = conn.prepare("PRAGMA table_info(messages)").unwrap();
+        stmt.query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    }
+
+    fn max_migration(conn: &Connection) -> u32 {
+        conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM _migrations",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0)
+    }
+
+    #[test]
+    fn v6_to_v7_adds_subject_column_and_preserves_rows() {
+        let mut conn = Connection::open_in_memory().unwrap();
+
+        // 构造 v6 时代的数据库：SCHEMA_V1 + MIGRATE_V2..V6，但不包含 MIGRATE_V7。
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(MIGRATE_V2).unwrap();
+        conn.execute_batch(MIGRATE_V3).unwrap();
+        conn.execute_batch(MIGRATE_V4).unwrap();
+        conn.execute_batch(MIGRATE_V5).unwrap();
+        conn.execute_batch(MIGRATE_V6).unwrap();
+        conn.execute("INSERT OR REPLACE INTO _migrations(version) VALUES (6)", [])
+            .unwrap();
+
+        // 一条 v6 时代的 mailbox + message（不带 subject 列）。
+        conn.execute(
+            "INSERT INTO mailboxes (address, name) VALUES ('a1', 'alice')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages (id, to_address, from_address, body, event_id) \
+             VALUES ('m1', 'a1', 'a1', 'hello', 1)",
+            [],
+        )
+        .unwrap();
+
+        assert!(
+            !message_columns(&conn).iter().any(|c| c == "subject"),
+            "迁移前 messages 表不应存在 subject 列"
+        );
+        assert_eq!(max_migration(&conn), 6);
+
+        run(&mut conn).unwrap();
+
+        assert_eq!(max_migration(&conn), 7);
+        assert!(
+            message_columns(&conn).iter().any(|c| c == "subject"),
+            "迁移后 messages 表应新增 subject 列"
+        );
+
+        // 旧行的 subject 应为 NULL（列新增、不强制回填）。
+        let subject: Option<String> = conn
+            .query_row("SELECT subject FROM messages WHERE id = 'm1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(subject.is_none(), "旧 message 行的 subject 应保持 NULL");
+    }
+}
