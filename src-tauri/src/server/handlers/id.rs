@@ -564,9 +564,34 @@ mod tests {
         (state, tmp)
     }
 
-    /// 创建临时 mock plugin 目录，把 `<tmp>/plugins` 加入 PATH，并写入 `agtalk-notify-<name>`。
-    /// 返回 (TempDir, prev_path)；调用方需用 `_tmp` 持有 TempDir，并在测试结束后恢复 PATH。
-    fn mock_plugin_env(name: &str) -> (TempDir, std::ffi::OsString) {
+    /// 隔离真实环境的 RAII guard：临时 AGTALK_CONFIG_DIR + 临时 PATH 前缀。
+    ///
+    /// 创建 `<tmp>/plugins/agtalk-notify-<name>` mock 二进制，并把临时目录设为
+    /// `AGTALK_CONFIG_DIR`，同时在 PATH 最前面加入 `<tmp>/plugins`。Drop 时恢复。
+    struct MockPluginGuard {
+        _tmp: TempDir,
+        prev_config_dir: Option<std::ffi::OsString>,
+        prev_path: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for MockPluginGuard {
+        fn drop(&mut self) {
+            if let Some(dir) = &self.prev_config_dir {
+                std::env::set_var(crate::paths::CONFIG_DIR_ENV, dir);
+            } else {
+                std::env::remove_var(crate::paths::CONFIG_DIR_ENV);
+            }
+            if let Some(path) = &self.prev_path {
+                std::env::set_var("PATH", path);
+            } else {
+                std::env::remove_var("PATH");
+            }
+        }
+    }
+
+    /// 创建临时 mock plugin 目录并隔离全局配置目录。
+    /// 返回 guard，调用方用 `_guard` 持有；即使 panic 也会在作用域结束时恢复环境。
+    fn mock_plugin_env(name: &str) -> MockPluginGuard {
         let tmp = TempDir::new().unwrap();
         let plugins_dir = tmp.path().join("plugins");
         std::fs::create_dir_all(&plugins_dir).unwrap();
@@ -580,11 +605,21 @@ mod tests {
         {
             std::fs::set_permissions(&plugin_path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let prev_path = std::env::var_os("PATH").unwrap_or_default();
-        let mut paths = std::env::split_paths(&prev_path).collect::<Vec<_>>();
+
+        let prev_config_dir = std::env::var_os(crate::paths::CONFIG_DIR_ENV);
+        std::env::set_var(crate::paths::CONFIG_DIR_ENV, tmp.path());
+
+        let prev_path = std::env::var_os("PATH");
+        let mut paths =
+            std::env::split_paths(&prev_path.clone().unwrap_or_default()).collect::<Vec<_>>();
         paths.insert(0, plugins_dir);
         std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
-        (tmp, prev_path)
+
+        MockPluginGuard {
+            _tmp: tmp,
+            prev_config_dir,
+            prev_path,
+        }
     }
 
     fn current_pid_start_time() -> (u32, u64) {
@@ -725,7 +760,7 @@ mod tests {
 
     #[test]
     fn join_without_notify_upgrades_old_none_to_plugin_when_ready() {
-        let (_plugin_tmp, prev_path) = mock_plugin_env("zellij");
+        let _guard = mock_plugin_env("zellij");
         let (state, _tmp) = test_state();
         let (pid, start_time) = current_pid_start_time();
 
@@ -767,13 +802,11 @@ mod tests {
         }
         let session = session_file::read(&state.dot_agtalk, "reviewer").unwrap();
         assert_eq!(session.notify_channel(), "plugin:zellij");
-
-        std::env::set_var("PATH", prev_path);
     }
 
     #[test]
     fn join_without_notify_refreshes_existing_plugin_endpoint() {
-        let (_plugin_tmp, prev_path) = mock_plugin_env("zellij");
+        let _guard = mock_plugin_env("zellij");
         let (state, _tmp) = test_state();
         let (pid, start_time) = current_pid_start_time();
 
@@ -803,13 +836,11 @@ mod tests {
         );
         let second_session = session_file::read(&state.dot_agtalk, "reviewer").unwrap();
         assert_eq!(second_session.notify_channel(), "plugin:zellij");
-
-        std::env::set_var("PATH", prev_path);
     }
 
     #[test]
     fn join_explicit_notify_none_persists_none() {
-        let (_plugin_tmp, prev_path) = mock_plugin_env("zellij");
+        let _guard = mock_plugin_env("zellij");
         let (state, _tmp) = test_state();
         let (pid, start_time) = current_pid_start_time();
 
@@ -847,8 +878,6 @@ mod tests {
         }
         let session = session_file::read(&state.dot_agtalk, "reviewer").unwrap();
         assert_eq!(session.notify_channel(), "none");
-
-        std::env::set_var("PATH", prev_path);
     }
 
     #[test]
@@ -876,7 +905,7 @@ mod tests {
 
     #[test]
     fn lookup_includes_notify_zellij() {
-        let (_plugin_tmp, prev_path) = mock_plugin_env("zellij");
+        let _guard = mock_plugin_env("zellij");
         let (state, _tmp) = test_state();
         let (pid, start_time) = current_pid_start_time();
 
@@ -903,13 +932,11 @@ mod tests {
             }
             other => panic!("expected LookupResult, got {:?}", other),
         }
-
-        std::env::set_var("PATH", prev_path);
     }
 
     #[test]
     fn lookup_includes_notify_plugin() {
-        let (_plugin_tmp, prev_path) = mock_plugin_env("macos");
+        let _guard = mock_plugin_env("macos");
         let (state, _tmp) = test_state();
         let (pid, start_time) = current_pid_start_time();
 
@@ -935,13 +962,11 @@ mod tests {
             }
             other => panic!("expected LookupResult, got {:?}", other),
         }
-
-        std::env::set_var("PATH", prev_path);
     }
 
     #[test]
     fn lookup_stale_session_uses_db_notify() {
-        let (_plugin_tmp, prev_path) = mock_plugin_env("zellij");
+        let _guard = mock_plugin_env("zellij");
         let (state, _tmp) = test_state();
         let (pid, start_time) = current_pid_start_time();
 
@@ -971,8 +996,6 @@ mod tests {
             }
             other => panic!("expected LookupResult, got {:?}", other),
         }
-
-        std::env::set_var("PATH", prev_path);
     }
 
     #[test]
@@ -1120,7 +1143,7 @@ mod tests {
 
     #[test]
     fn lookup_missing_session_uses_db_notify() {
-        let (_plugin_tmp, prev_path) = mock_plugin_env("zellij");
+        let _guard = mock_plugin_env("zellij");
         let (state, _tmp) = test_state();
         let (pid, start_time) = current_pid_start_time();
 
@@ -1149,8 +1172,6 @@ mod tests {
             }
             other => panic!("expected LookupResult, got {:?}", other),
         }
-
-        std::env::set_var("PATH", prev_path);
     }
 
     #[test]
