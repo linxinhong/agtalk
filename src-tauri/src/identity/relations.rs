@@ -702,7 +702,7 @@ mod tests {
                 role: None,
                 tags: None,
                 note: None,
-                specialties: Some(vec!["rust 实现".to_string(), "Rust 实现".to_string()]),
+                specialties: Some(vec!["Rust 实现".to_string(), "rust 实现".to_string()]),
                 preferred_for: None,
             },
         )
@@ -711,7 +711,7 @@ mod tests {
         // 用另一种大小写过滤，仍能命中
         let filtered = list(&dot, "tom", Some("RUST 实现")).unwrap();
         assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].specialties, vec!["rust 实现".to_string()]);
+        assert_eq!(filtered[0].specialties, vec!["Rust 实现".to_string()]);
     }
 
     #[test]
