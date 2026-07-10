@@ -217,6 +217,19 @@ pub fn clean_strings(items: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+/// 清洗字符串数组：trim、去空、按大小写不敏感去重，保留首次出现的原始展示文本和顺序。
+///
+/// 用于 `specialties` / `preferred_for`，使其与 `list --specialty` 的大小写不敏感匹配语义一致。
+pub fn clean_case_insensitive_strings(items: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    items
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .filter(|s| seen.insert(s.to_lowercase()))
+        .collect()
+}
+
 /// 更新 peer 手动字段的参数包。
 pub struct RelationUpdate {
     pub role: Option<String>,
@@ -258,10 +271,10 @@ pub fn update(
             relation.note = Some(note);
         }
         if let Some(specialties) = update.specialties {
-            relation.specialties = clean_strings(specialties);
+            relation.specialties = clean_case_insensitive_strings(specialties);
         }
         if let Some(preferred_for) = update.preferred_for {
-            relation.preferred_for = clean_strings(preferred_for);
+            relation.preferred_for = clean_case_insensitive_strings(preferred_for);
         }
         write(dot_agtalk, name, &relations)?;
         Ok(relations.peers.get(&key).cloned())
@@ -609,6 +622,96 @@ mod tests {
         let all = list(&dot, "tom", None).unwrap();
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].name, "b");
+    }
+
+    #[test]
+    fn update_normalizes_specialties_and_preferred_for_case_insensitive() {
+        let (dot, _tmp) = tmp_dot();
+        record_send(
+            &dot,
+            RelationEvent {
+                owner_name: "tom",
+                owner_address: "addr-tom",
+                peer_name: "jerry",
+                peer_address: "addr-jerry",
+                peer_intro: "",
+                message_id: "m1",
+                timestamp: 1.0,
+            },
+        )
+        .unwrap();
+
+        update(
+            &dot,
+            "tom",
+            "addr-jerry",
+            RelationUpdate {
+                role: None,
+                tags: None,
+                note: None,
+                specialties: Some(vec![
+                    "Rust 实现".to_string(),
+                    "rust 实现".to_string(),
+                    "  Rust 实现 ".to_string(),
+                    "测试隔离".to_string(),
+                    "".to_string(),
+                ]),
+                preferred_for: Some(vec![
+                    "功能开发".to_string(),
+                    "功能开发".to_string(),
+                    "  修复 Rust 测试 ".to_string(),
+                ]),
+            },
+        )
+        .unwrap();
+
+        let r = read(&dot, "tom").unwrap().peers["addr-jerry"].clone();
+        assert_eq!(
+            r.specialties,
+            vec!["Rust 实现".to_string(), "测试隔离".to_string()]
+        );
+        assert_eq!(
+            r.preferred_for,
+            vec!["功能开发".to_string(), "修复 Rust 测试".to_string()]
+        );
+    }
+
+    #[test]
+    fn list_filter_matches_case_insensitive_normalized_specialty() {
+        let (dot, _tmp) = tmp_dot();
+        record_send(
+            &dot,
+            RelationEvent {
+                owner_name: "tom",
+                owner_address: "addr-tom",
+                peer_name: "jerry",
+                peer_address: "addr-jerry",
+                peer_intro: "",
+                message_id: "m1",
+                timestamp: 1.0,
+            },
+        )
+        .unwrap();
+
+        // 通过大小写混合的输入写入，最终保留首次出现的展示文本 "Rust 实现"
+        update(
+            &dot,
+            "tom",
+            "addr-jerry",
+            RelationUpdate {
+                role: None,
+                tags: None,
+                note: None,
+                specialties: Some(vec!["rust 实现".to_string(), "Rust 实现".to_string()]),
+                preferred_for: None,
+            },
+        )
+        .unwrap();
+
+        // 用另一种大小写过滤，仍能命中
+        let filtered = list(&dot, "tom", Some("RUST 实现")).unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].specialties, vec!["rust 实现".to_string()]);
     }
 
     #[test]

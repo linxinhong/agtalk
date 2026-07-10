@@ -185,71 +185,92 @@ fn print_wait_result(messages: &[Message], body: &str) {
     }
 }
 
-fn print_relation_list(relations: &[crate::identity::relations::Relation]) {
+fn format_relation_list(relations: &[crate::identity::relations::Relation]) -> String {
+    let mut lines: Vec<String> = Vec::new();
     if relations.is_empty() {
-        println!("no relations yet");
-        return;
+        lines.push("no relations yet".to_string());
+        return lines.join("\n");
     }
-    println!(
+    lines.push(format!(
         "{} peer{}",
         relations.len(),
         if relations.len() == 1 { "" } else { "s" }
-    );
+    ));
     for r in relations {
         let short = crate::routing::short_id_of(&r.address);
         let counts = format!("sent {} / recv {}", r.sent_count, r.received_count);
-        println!();
-        println!("{}  {}  {}", short, r.name, counts);
+        lines.push(String::new());
+        lines.push(format!("{}  {}  {}", short, r.name, counts));
         if !r.intro.is_empty() {
-            println!("    {}", r.intro);
+            lines.push(format!("    {}", r.intro));
         }
         if let Some(role) = &r.role {
-            println!("    role: {}", role);
+            lines.push(format!("    role: {}", role));
         }
         if !r.specialties.is_empty() {
-            println!("    specialties: {}", r.specialties.join(", "));
+            lines.push(format!("    specialties: {}", r.specialties.join(", ")));
         }
         if !r.preferred_for.is_empty() {
-            println!("    preferred_for: {}", r.preferred_for.join(", "));
+            lines.push(format!("    preferred_for: {}", r.preferred_for.join(", ")));
         }
         if !r.tags.is_empty() {
-            println!("    tags: {}", r.tags.join(", "));
+            lines.push(format!("    tags: {}", r.tags.join(", ")));
         }
     }
+    lines.join("\n")
+}
+
+fn print_relation_list(relations: &[crate::identity::relations::Relation]) {
+    println!("{}", format_relation_list(relations));
+}
+
+fn format_relation(relation: &crate::identity::relations::Relation) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    lines.push(format!("address       : {}", relation.address));
+    lines.push(format!("name          : {}", relation.name));
+    if !relation.intro.is_empty() {
+        lines.push(format!("intro         : {}", relation.intro));
+    }
+    lines.push(format!("sent_count    : {}", relation.sent_count));
+    lines.push(format!("received_count: {}", relation.received_count));
+    if let Some(first) = relation.first_seen_at {
+        lines.push(format!("first_seen_at : {}", first));
+    }
+    if let Some(last) = relation.last_seen_at {
+        lines.push(format!("last_seen_at  : {}", last));
+    }
+    if let Some(last_id) = &relation.last_message_id {
+        lines.push(format!(
+            "last_message  : {}",
+            crate::routing::short_id_of(last_id)
+        ));
+    }
+    if let Some(role) = &relation.role {
+        lines.push(format!("role          : {}", role));
+    }
+    if !relation.specialties.is_empty() {
+        lines.push(format!(
+            "specialties   : {}",
+            relation.specialties.join(", ")
+        ));
+    }
+    if !relation.preferred_for.is_empty() {
+        lines.push(format!(
+            "preferred_for : {}",
+            relation.preferred_for.join(", ")
+        ));
+    }
+    if !relation.tags.is_empty() {
+        lines.push(format!("tags          : {}", relation.tags.join(", ")));
+    }
+    if let Some(note) = &relation.note {
+        lines.push(format!("note          : {}", note));
+    }
+    lines.join("\n")
 }
 
 fn print_relation(relation: &crate::identity::relations::Relation) {
-    println!("address       : {}", relation.address);
-    println!("name          : {}", relation.name);
-    if !relation.intro.is_empty() {
-        println!("intro         : {}", relation.intro);
-    }
-    println!("sent_count    : {}", relation.sent_count);
-    println!("received_count: {}", relation.received_count);
-    if let Some(first) = relation.first_seen_at {
-        println!("first_seen_at : {}", first);
-    }
-    if let Some(last) = relation.last_seen_at {
-        println!("last_seen_at  : {}", last);
-    }
-    if let Some(last_id) = &relation.last_message_id {
-        println!("last_message  : {}", crate::routing::short_id_of(last_id));
-    }
-    if let Some(role) = &relation.role {
-        println!("role          : {}", role);
-    }
-    if !relation.specialties.is_empty() {
-        println!("specialties   : {}", relation.specialties.join(", "));
-    }
-    if !relation.preferred_for.is_empty() {
-        println!("preferred_for : {}", relation.preferred_for.join(", "));
-    }
-    if !relation.tags.is_empty() {
-        println!("tags          : {}", relation.tags.join(", "));
-    }
-    if let Some(note) = &relation.note {
-        println!("note          : {}", note);
-    }
+    println!("{}", format_relation(relation));
 }
 
 fn print_cleanup_result(
@@ -896,5 +917,83 @@ mod tests {
     #[test]
     fn format_uptime_one_day_one_second() {
         assert_eq!(format_uptime(86401), "1days 0h 0m 1s");
+    }
+
+    #[test]
+    fn relation_list_text_includes_specialties_and_preferred_for() {
+        let text = format_relation_list(&[crate::identity::relations::Relation {
+            name: "Codex-Tom".to_string(),
+            address: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            intro: "reviewer".to_string(),
+            first_seen_at: None,
+            last_seen_at: None,
+            last_message_id: None,
+            sent_count: 1,
+            received_count: 2,
+            tags: vec!["rust".to_string()],
+            role: Some("reviewer".to_string()),
+            note: None,
+            specialties: vec!["Rust 实现".to_string(), "测试隔离".to_string()],
+            preferred_for: vec!["功能开发".to_string()],
+        }]);
+        assert!(
+            text.contains("specialties: Rust 实现, 测试隔离"),
+            "{}",
+            text
+        );
+        assert!(text.contains("preferred_for: 功能开发"), "{}", text);
+        assert!(text.contains("role: reviewer"), "{}", text);
+    }
+
+    #[test]
+    fn relation_show_text_includes_specialties_and_preferred_for() {
+        let text = format_relation(&crate::identity::relations::Relation {
+            name: "Codex-Tom".to_string(),
+            address: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            intro: "reviewer".to_string(),
+            first_seen_at: None,
+            last_seen_at: None,
+            last_message_id: None,
+            sent_count: 3,
+            received_count: 0,
+            tags: vec![],
+            role: None,
+            note: Some("good partner".to_string()),
+            specialties: vec!["Rust 实现".to_string()],
+            preferred_for: vec!["功能开发".to_string(), "修复 Rust 测试".to_string()],
+        });
+        assert!(text.contains("specialties   : Rust 实现"), "{}", text);
+        assert!(
+            text.contains("preferred_for : 功能开发, 修复 Rust 测试"),
+            "{}",
+            text
+        );
+        assert!(text.contains("note          : good partner"), "{}", text);
+    }
+
+    #[test]
+    fn relation_list_json_includes_specialties_and_preferred_for() {
+        let msg = ServerMsg::MemRelationList {
+            relations: vec![crate::identity::relations::Relation {
+                name: "Codex-Tom".to_string(),
+                address: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+                intro: "reviewer".to_string(),
+                first_seen_at: None,
+                last_seen_at: None,
+                last_message_id: None,
+                sent_count: 1,
+                received_count: 0,
+                tags: vec![],
+                role: None,
+                note: None,
+                specialties: vec!["Rust 实现".to_string()],
+                preferred_for: vec!["功能开发".to_string()],
+            }],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("specialties"), "{}", json);
+        assert!(json.contains("preferred_for"), "{}", json);
+        assert!(json.contains("Rust 实现"), "{}", json);
+        assert!(json.contains("功能开发"), "{}", json);
     }
 }

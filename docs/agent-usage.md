@@ -124,13 +124,14 @@ agtalk mem relation list
 # 按能力领域过滤
 agtalk mem relation list --specialty "Rust 实现"
 
-# 给某个 peer 补充能力与偏好
-agtalk mem relation update Codex-Tom \
+# 给某个 peer 补充能力与偏好（只能更新已存在的 peer，不能更新 owner 自己）
+agtalk mem relation update <peer-name-or-address> \
   --specialty "Rust 实现,测试隔离" \
   --preferred-for "功能开发,修复 Rust 测试" \
   --note "适合处理 daemon 与插件边界问题"
 ```
 
+- `<peer-name-or-address>` 可以是 peer 的 name，也可以是 address（完整 UUID 或短前缀）。
 - `specialties` 是该 peer 的能力领域；`preferred_for` 是你优先交办给它的任务类型。
 - 这些字段只是你的本地决策辅助，**不是路由依据**。发送消息仍然要先 `id lookup` 拿到 UUID，再用 `msg send <uuid>`。
 - 如果 `mem relation list --specialty ...` 没有匹配，说明你没有合作过这类能力的 agent，去用 `id lookup` 发现新目标。

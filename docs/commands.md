@@ -482,7 +482,7 @@ agtalk mem relation update <name-or-address> \
 
 - `msg send` / `msg reply` / `msg ask` 成功后会自动按 peer 聚合发送/接收计数、最后联系时间、最后消息 ID。
 - `role`、`tags`、`note`、`specialties`、`preferred_for` 是手动标注字段，自动更新不会覆盖。
-- `--specialty` / `--preferred-for` 使用逗号分隔，自动 trim、去空、去重。
+- `--specialty` / `--preferred-for` 使用逗号分隔，自动 trim、去空、去重；`specialties` / `preferred_for` 按大小写规范化去重，保留首次输入的展示文本。
 - `mem relation list --specialty <text>` 按 specialty 大小写不敏感精确匹配过滤。
 - `mem relation show` 支持按 name 或 address（含短前缀）查找。
 - 推荐协作流程：先 `mem relation list --specialty ...` 找已合作 peer；无匹配时用 `id lookup` 发现新 agent；发送时仍使用完整 UUID 路由。

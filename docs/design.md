@@ -282,7 +282,7 @@ Android APK 无法访问本地 `.agtalk/` 文件系统，因此 Android BLE tran
 ```
 
 - **owner 是当前 agent 身份锚点**，不会把 owner 自己写入 `peers`。
-- `specialties` / `preferred_for` 是手动维护的能力与任务偏好；`role` / `tags` / `note` 保留原有语义。
+- `specialties` / `preferred_for` 是手动维护的能力与任务偏好；写入时按大小写规范化去重，保留首次输入的展示文本，并与 `list --specialty` 的大小写不敏感匹配语义一致。`role` / `tags` / `note` 保留原有语义。
 - 自动字段（`first_seen_at`、`last_seen_at`、`last_message_id`、`sent_count`、`received_count`）在 `msg send` / `msg reply` 成功后更新。
 - `relations.json` 不复制实时在线状态、notify endpoint、消息正文或任务状态；这些分别属于 `id lookup`、session、history 和 plan。
 - 推荐协作流程：`mem relation list --specialty ...` 找已合作 peer；无匹配时用 `id lookup` 发现新 agent；发送时仍使用完整 UUID 路由。
