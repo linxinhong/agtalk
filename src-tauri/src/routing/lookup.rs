@@ -1,6 +1,6 @@
 //! lookup：按 name 查询候选 mailbox，以及消息详情。
 
-use super::{Message, RoutingError};
+use super::{Message, RoutingError, StatusChange};
 use crate::identity::mailbox;
 use crate::storage::Storage;
 use rusqlite::{params, OptionalExtension};
@@ -54,42 +54,53 @@ pub fn detail(storage: &Storage, message_id: &str) -> Result<Option<Message>, Ro
 }
 
 /// 查询消息详情并标记已读。
+/// 返回消息及真实状态变化；未发生状态变化时第二项为 None。
 pub fn detail_and_mark_read(
     storage: &Storage,
     address: &str,
     message_id: &str,
-) -> Result<Option<Message>, RoutingError> {
+) -> Result<Option<(Message, Option<StatusChange>)>, RoutingError> {
     let conn = storage.conn();
     let msg: Option<Message> = if message_id == "-" {
+        // 默认读取最新一条真正未读（pending/delivered）消息；没有则空。
         conn.query_row(
-            "SELECT * FROM messages WHERE to_address = ?1 AND status != 'done' \
+            "SELECT * FROM messages WHERE to_address = ?1 AND status IN ('pending', 'delivered') \
              ORDER BY event_id DESC LIMIT 1",
             [address],
             Message::from_row,
         )
         .optional()?
-        .or_else(|| {
-            conn.query_row(
-                "SELECT * FROM messages WHERE to_address = ?1 ORDER BY event_id DESC LIMIT 1",
-                [address],
-                Message::from_row,
-            )
-            .optional()
-            .unwrap_or(None)
-        })
     } else {
         let mut stmt = conn.prepare("SELECT * FROM messages WHERE id = ?1")?;
         stmt.query_row([message_id], Message::from_row).optional()?
     };
 
     if let Some(ref m) = msg {
-        let _ = conn.execute(
-            "UPDATE messages SET status = 'read' WHERE id = ?1 AND status IN ('pending', 'delivered')",
-            [&m.id],
-        );
+        let old_status: Option<String> = conn
+            .query_row(
+                "SELECT status FROM messages WHERE id = ?1 AND status IN ('pending', 'delivered')",
+                [&m.id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(old_status) = old_status {
+            conn.execute(
+                "UPDATE messages SET status = 'read' WHERE id = ?1 AND status IN ('pending', 'delivered')",
+                [&m.id],
+            )?;
+            return Ok(Some((
+                m.clone(),
+                Some(StatusChange {
+                    message_id: m.id.clone(),
+                    old_status,
+                    new_status: "read".to_string(),
+                }),
+            )));
+        }
+        return Ok(Some((m.clone(), None)));
     }
 
-    Ok(msg)
+    Ok(None)
 }
 
 #[cfg(test)]

@@ -138,7 +138,7 @@ pub fn handle_reply(
         &body,
         None,
     ) {
-        Ok(msg) => {
+        Ok((msg, original_status_change)) => {
             state.registry.notify(
                 &msg.to_address,
                 SseEvent {
@@ -166,7 +166,13 @@ pub fn handle_reply(
                     }
                 });
             }
-            record_reply_history(state, &session, &original, &msg);
+            record_reply_history(
+                state,
+                &session,
+                &original,
+                &msg,
+                original_status_change.as_ref(),
+            );
             ServerMsg::Ok { id: msg.id }
         }
         Err(e) => ServerMsg::Error {
@@ -215,7 +221,7 @@ pub fn handle_done(
         None => {
             // 未指定 message_id 时，取最新一条未完成的（同时标记 read）
             match lookup::detail_and_mark_read(&state.storage, &session.address, "-") {
-                Ok(Some(m)) => m,
+                Ok(Some((m, _))) => m,
                 Ok(None) => {
                     return ServerMsg::Error {
                         code: "inbox_empty".into(),
@@ -233,17 +239,18 @@ pub fn handle_done(
     };
 
     match inbox::mark_done(&state.storage, &target_msg.id, &session.address) {
-        Ok(()) => {
+        Ok(Some(change)) => {
             record_status_history(
                 state,
                 &session,
                 &target_msg,
-                &target_msg.status,
-                "done",
+                &change.old_status,
+                &change.new_status,
                 "msg.done",
             );
             ServerMsg::Ok { id: target_msg.id }
         }
+        Ok(None) => ServerMsg::Ok { id: target_msg.id },
         Err(e) => ServerMsg::Error {
             code: "done_failed".into(),
             message: e.to_string(),
@@ -370,10 +377,18 @@ pub fn handle_read(state: &AppState, headers: &HeaderMap, message_id: Option<Str
             }
         };
         match lookup::detail_and_mark_read(&state.storage, &session.address, &resolved) {
-            Ok(Some(msg)) => {
-                record_status_history(state, &session, &msg, &msg.status, "read", "msg.read");
+            Ok(Some((msg, Some(change)))) => {
+                record_status_history(
+                    state,
+                    &session,
+                    &msg,
+                    &change.old_status,
+                    &change.new_status,
+                    "msg.read",
+                );
                 ServerMsg::MsgDetail(msg)
             }
+            Ok(Some((msg, None))) => ServerMsg::MsgDetail(msg),
             Ok(None) => ServerMsg::Error {
                 code: "message_not_found".into(),
                 message: "消息不存在".into(),
@@ -384,16 +399,24 @@ pub fn handle_read(state: &AppState, headers: &HeaderMap, message_id: Option<Str
             },
         }
     } else {
-        // 读取所有未读并标记 read；空 inbox 返回稳定错误码 inbox_empty
-        match inbox::inbox(&state.storage, &session.address, false) {
+        // 读取真正未读（pending/delivered）消息并标记 read；空 inbox 返回稳定错误码 inbox_empty
+        match inbox::unread_inbox(&state.storage, &session.address) {
             Ok(msgs) if msgs.is_empty() => ServerMsg::Error {
                 code: "inbox_empty".into(),
                 message: "当前 inbox 没有可查看的消息".into(),
             },
             Ok(msgs) => {
                 for msg in &msgs {
-                    let _ = inbox::mark_read(&state.storage, &msg.id);
-                    record_status_history(state, &session, msg, &msg.status, "read", "msg.read");
+                    if let Ok(Some(change)) = inbox::mark_read(&state.storage, &msg.id) {
+                        record_status_history(
+                            state,
+                            &session,
+                            msg,
+                            &change.old_status,
+                            &change.new_status,
+                            "msg.read",
+                        );
+                    }
                 }
                 ServerMsg::InboxResult { messages: msgs }
             }
@@ -445,6 +468,7 @@ fn record_reply_history(
     sender: &crate::identity::auth::AuthenticatedSession,
     original: &crate::routing::Message,
     reply: &crate::routing::Message,
+    original_status_change: Option<&crate::routing::StatusChange>,
 ) {
     let dot = &state.dot_agtalk;
     // reply 发送方的 out 事件
@@ -469,17 +493,19 @@ fn record_reply_history(
     ) {
         tracing::warn!("reply receiver history append failed: {}", e);
     }
-    // 原消息被 reply 后状态变为 read，记录给原消息的接收方（即当前 reply 发送方）
-    if let Err(e) = crate::identity::history::append_status(
-        dot,
-        &sender.name,
-        &sender.address,
-        &original.id,
-        &original.status,
-        "read",
-        "msg.reply",
-    ) {
-        tracing::warn!("reply status history append failed: {}", e);
+    // 原消息被 reply 后状态真实变化时才记录 status
+    if let Some(change) = original_status_change {
+        if let Err(e) = crate::identity::history::append_status(
+            dot,
+            &sender.name,
+            &sender.address,
+            &change.message_id,
+            &change.old_status,
+            &change.new_status,
+            "msg.reply",
+        ) {
+            tracing::warn!("reply status history append failed: {}", e);
+        }
     }
 }
 
@@ -491,6 +517,9 @@ fn record_status_history(
     new_status: &str,
     reason: &str,
 ) {
+    if old_status == new_status {
+        return;
+    }
     let dot = &state.dot_agtalk;
     if let Err(e) = crate::identity::history::append_status(
         dot,
@@ -806,7 +835,8 @@ mod tests {
             .iter()
             .any(|h| h["dir"] == "in" && h["source"] == "msg.reply"));
 
-        // receiver: original in message (from send), out reply message, status for original pending->read (from handle_read), status original read->read (from reply)
+        // receiver: original in message (from send), out reply message, status for original pending->read (from handle_read)
+        // 已 read 消息被 reply 不再产生 read->read 的冗余 status
         assert!(recv_history
             .iter()
             .any(|h| h["dir"] == "in" && h["source"] == "msg.send"));
@@ -816,7 +846,7 @@ mod tests {
         assert!(recv_history
             .iter()
             .any(|h| h["type"] == "status" && h["reason"] == "msg.read"));
-        assert!(recv_history
+        assert!(!recv_history
             .iter()
             .any(|h| h["type"] == "status" && h["reason"] == "msg.reply"));
     }
@@ -875,6 +905,227 @@ mod tests {
         assert!(recv_history
             .iter()
             .any(|h| h["type"] == "status" && h["to"] == "done" && h["reason"] == "msg.done"));
+    }
+
+    #[test]
+    fn read_twice_does_not_duplicate_status() {
+        let (state, _tmp) = test_state();
+        join(&state, "sender");
+        let recv_addr = join(&state, "recv");
+
+        let sender_headers = auth_headers_for(&state, "sender");
+        handle_send(
+            &state,
+            &sender_headers,
+            recv_addr,
+            "hello".into(),
+            None,
+            vec![],
+            Some(false),
+            None,
+            false,
+        );
+
+        let recv_headers = auth_headers_for(&state, "recv");
+        let first = handle_read(&state, &recv_headers, None);
+        assert!(matches!(first, ServerMsg::InboxResult { .. }));
+
+        let second = handle_read(&state, &recv_headers, None);
+        assert!(
+            matches!(second, ServerMsg::Error { code, .. } if code == "inbox_empty"),
+            "第二次 read 应返回 inbox_empty"
+        );
+
+        let recv_history = read_history_lines(&state.dot_agtalk, "recv");
+        let status_events: Vec<_> = recv_history
+            .iter()
+            .filter(|h| h["type"] == "status")
+            .collect();
+        assert_eq!(status_events.len(), 1);
+        assert_eq!(status_events[0]["from"], "pending");
+        assert_eq!(status_events[0]["to"], "read");
+        assert_eq!(status_events[0]["reason"], "msg.read");
+    }
+
+    #[test]
+    fn read_done_message_does_not_write_status() {
+        let (state, _tmp) = test_state();
+        join(&state, "sender");
+        let recv_addr = join(&state, "recv");
+
+        let sender_headers = auth_headers_for(&state, "sender");
+        handle_send(
+            &state,
+            &sender_headers,
+            recv_addr,
+            "hello".into(),
+            None,
+            vec![],
+            Some(false),
+            None,
+            false,
+        );
+
+        let recv_headers = auth_headers_for(&state, "recv");
+        handle_done(&state, &recv_headers, None, None, vec![]);
+
+        let done_history = read_history_lines(&state.dot_agtalk, "recv");
+        let before_count = done_history
+            .iter()
+            .filter(|h| h["type"] == "status")
+            .count();
+
+        // 对已 done 消息执行 read 不应产生 done->read
+        let read_resp = handle_read(&state, &recv_headers, None);
+        assert!(
+            matches!(read_resp, ServerMsg::Error { code, .. } if code == "inbox_empty"),
+            "已 done 消息不应被 read 再次列出"
+        );
+
+        let recv_history = read_history_lines(&state.dot_agtalk, "recv");
+        let after_count = recv_history
+            .iter()
+            .filter(|h| h["type"] == "status")
+            .count();
+        assert_eq!(before_count, after_count);
+    }
+
+    #[test]
+    fn reply_read_message_does_not_write_read_to_read() {
+        let (state, _tmp) = test_state();
+        join(&state, "sender");
+        let recv_addr = join(&state, "recv");
+
+        let sender_headers = auth_headers_for(&state, "sender");
+        let send_resp = handle_send(
+            &state,
+            &sender_headers,
+            recv_addr.clone(),
+            "hello".into(),
+            None,
+            vec![],
+            Some(false),
+            None,
+            false,
+        );
+        let sent_id = match send_resp {
+            ServerMsg::Ok { id } => id,
+            other => panic!("expected Ok, got {:?}", other),
+        };
+
+        let recv_headers = auth_headers_for(&state, "recv");
+        handle_read(&state, &recv_headers, Some(sent_id[..8].to_string()));
+        let after_read = read_history_lines(&state.dot_agtalk, "recv");
+        let status_count_before = after_read.iter().filter(|h| h["type"] == "status").count();
+
+        handle_reply(
+            &state,
+            &recv_headers,
+            sent_id[..8].to_string(),
+            "ok".into(),
+            vec![],
+            Some(false),
+            None,
+        );
+
+        let after_reply = read_history_lines(&state.dot_agtalk, "recv");
+        let status_count_after = after_reply.iter().filter(|h| h["type"] == "status").count();
+        assert_eq!(
+            status_count_before, status_count_after,
+            "已 read 消息被 reply 不应再产生 status 事件"
+        );
+    }
+
+    #[test]
+    fn reply_done_message_does_not_write_done_to_read() {
+        let (state, _tmp) = test_state();
+        join(&state, "sender");
+        let recv_addr = join(&state, "recv");
+
+        let sender_headers = auth_headers_for(&state, "sender");
+        let send_resp = handle_send(
+            &state,
+            &sender_headers,
+            recv_addr.clone(),
+            "hello".into(),
+            None,
+            vec![],
+            Some(false),
+            None,
+            false,
+        );
+        let sent_id = match send_resp {
+            ServerMsg::Ok { id } => id,
+            other => panic!("expected Ok, got {:?}", other),
+        };
+
+        let recv_headers = auth_headers_for(&state, "recv");
+        handle_done(
+            &state,
+            &recv_headers,
+            Some(sent_id[..8].to_string()),
+            None,
+            vec![],
+        );
+        let after_done = read_history_lines(&state.dot_agtalk, "recv");
+        let status_count_before = after_done.iter().filter(|h| h["type"] == "status").count();
+
+        handle_reply(
+            &state,
+            &recv_headers,
+            sent_id[..8].to_string(),
+            "ok".into(),
+            vec![],
+            Some(false),
+            None,
+        );
+
+        let after_reply = read_history_lines(&state.dot_agtalk, "recv");
+        let status_count_after = after_reply.iter().filter(|h| h["type"] == "status").count();
+        assert_eq!(
+            status_count_before, status_count_after,
+            "已 done 消息被 reply 不应再产生 status 事件"
+        );
+    }
+
+    #[test]
+    fn done_twice_does_not_duplicate_status() {
+        let (state, _tmp) = test_state();
+        join(&state, "sender");
+        let recv_addr = join(&state, "recv");
+
+        let sender_headers = auth_headers_for(&state, "sender");
+        handle_send(
+            &state,
+            &sender_headers,
+            recv_addr,
+            "hello".into(),
+            None,
+            vec![],
+            Some(false),
+            None,
+            false,
+        );
+
+        let recv_headers = auth_headers_for(&state, "recv");
+        let first = handle_done(&state, &recv_headers, None, None, vec![]);
+        assert!(matches!(first, ServerMsg::Ok { .. }));
+
+        let after_first = read_history_lines(&state.dot_agtalk, "recv");
+        let status_count_before = after_first.iter().filter(|h| h["type"] == "status").count();
+
+        let second = handle_done(&state, &recv_headers, None, None, vec![]);
+        assert!(
+            matches!(second, ServerMsg::Error { code, .. } if code == "inbox_empty"),
+            "没有未完成消息时 done 应返回 inbox_empty"
+        );
+
+        let after_second = read_history_lines(&state.dot_agtalk, "recv");
+        let status_count_after = after_second
+            .iter()
+            .filter(|h| h["type"] == "status")
+            .count();
+        assert_eq!(status_count_before, status_count_after);
     }
 
     #[test]

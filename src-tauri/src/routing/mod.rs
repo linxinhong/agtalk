@@ -50,6 +50,13 @@ pub struct SendRequest<'a> {
     pub more_coming: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct StatusChange {
+    pub message_id: String,
+    pub old_status: String,
+    pub new_status: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub id: String,

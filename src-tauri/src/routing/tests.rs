@@ -71,13 +71,14 @@ fn inbox_filters_done() {
             .id,
     )
     .unwrap();
-    inbox::mark_read(
+    let change = inbox::mark_read(
         &storage,
         &send::send(&storage, req(&b, "quinn", &a, "nora", "m4"))
             .unwrap()
             .id,
     )
     .unwrap();
+    assert!(change.is_some());
 
     let open = inbox::inbox(&storage, &b, false).unwrap();
     assert_eq!(open.len(), 4);
@@ -114,7 +115,7 @@ fn reply_to_message() {
         },
     )
     .unwrap();
-    let resp = reply::reply(
+    let (resp, original_change) = reply::reply(
         &storage,
         &original.id,
         &b,
@@ -126,9 +127,73 @@ fn reply_to_message() {
     assert_eq!(resp.content_type, "approval_response");
     assert_eq!(resp.reply_to_id, Some(original.id.clone()));
     assert_eq!(resp.to_address, a);
+    assert!(original_change.is_some());
 
     let original_after = lookup::detail(&storage, &original.id).unwrap().unwrap();
     assert_eq!(original_after.status, "done");
+}
+
+#[test]
+fn mark_read_returns_change_only_once() {
+    let (storage, a, b) = setup();
+    let msg = send::send(&storage, req(&b, "quinn", &a, "nora", "m1")).unwrap();
+
+    let first = inbox::mark_read(&storage, &msg.id).unwrap();
+    assert!(first.is_some());
+    assert_eq!(first.as_ref().unwrap().old_status, "pending");
+    assert_eq!(first.unwrap().new_status, "read");
+
+    let second = inbox::mark_read(&storage, &msg.id).unwrap();
+    assert!(second.is_none(), "已 read 消息再次 mark_read 应返回 None");
+}
+
+#[test]
+fn mark_done_returns_change_only_once() {
+    let (storage, a, b) = setup();
+    let msg = send::send(&storage, req(&b, "quinn", &a, "nora", "m1")).unwrap();
+
+    let first = inbox::mark_done(&storage, &msg.id, &b).unwrap();
+    assert!(first.is_some());
+    assert_eq!(first.as_ref().unwrap().old_status, "pending");
+    assert_eq!(first.unwrap().new_status, "done");
+
+    let second = inbox::mark_done(&storage, &msg.id, &b).unwrap();
+    assert!(second.is_none(), "已 done 消息再次 mark_done 应返回 None");
+}
+
+#[test]
+fn unread_inbox_excludes_read_and_done() {
+    let (storage, a, b) = setup();
+    let m1 = send::send(&storage, req(&b, "quinn", &a, "nora", "m1")).unwrap();
+    let m2 = send::send(&storage, req(&b, "quinn", &a, "nora", "m2")).unwrap();
+    let m3 = send::send(&storage, req(&b, "quinn", &a, "nora", "m3")).unwrap();
+
+    inbox::mark_read(&storage, &m1.id).unwrap();
+    inbox::mark_done(&storage, &m2.id, &b).unwrap();
+
+    let unread = inbox::unread_inbox(&storage, &b).unwrap();
+    assert_eq!(unread.len(), 1);
+    assert_eq!(unread[0].id, m3.id);
+}
+
+#[test]
+fn reply_to_already_read_message_does_not_change_original_status() {
+    let (storage, a, b) = setup();
+    let original = send::send(&storage, req(&b, "quinn", &a, "nora", "hello")).unwrap();
+    inbox::mark_read(&storage, &original.id).unwrap();
+
+    let (_reply, change) = reply::reply(&storage, &original.id, &b, "quinn", "ok", None).unwrap();
+    assert!(change.is_none(), "已 read 原消息被 reply 不应产生状态变化");
+}
+
+#[test]
+fn reply_to_already_done_message_does_not_change_original_status() {
+    let (storage, a, b) = setup();
+    let original = send::send(&storage, req(&b, "quinn", &a, "nora", "hello")).unwrap();
+    inbox::mark_done(&storage, &original.id, &b).unwrap();
+
+    let (_reply, change) = reply::reply(&storage, &original.id, &b, "quinn", "ok", None).unwrap();
+    assert!(change.is_none(), "已 done 原消息被 reply 不应产生状态变化");
 }
 
 #[test]

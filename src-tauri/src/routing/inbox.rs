@@ -1,8 +1,9 @@
 //! inbox：一次性查询收件箱。
 
-use super::{Message, RoutingError};
+use super::{Message, RoutingError, StatusChange};
 use crate::storage::Storage;
 use rusqlite::params;
+use rusqlite::OptionalExtension;
 
 /// 按 event_id 顺序重放某地址 event_id > after 的消息（SSE 断线续传）。
 pub fn events_since(
@@ -29,6 +30,16 @@ pub fn max_event_id(storage: &Storage, address: &str) -> Result<i64, RoutingErro
         )
         .unwrap_or(0);
     Ok(id)
+}
+
+/// 返回 status 为 pending 或 delivered 的消息（即真正未读）。
+pub fn unread_inbox(storage: &Storage, address: &str) -> Result<Vec<Message>, RoutingError> {
+    let conn = storage.conn();
+    let mut stmt = conn.prepare(
+        "SELECT * FROM messages WHERE to_address = ?1 AND status IN ('pending', 'delivered') ORDER BY event_id DESC",
+    )?;
+    let mapped = stmt.query_map([address], super::Message::from_row)?;
+    Ok(mapped.collect::<Result<_, _>>()?)
 }
 
 pub fn inbox(
@@ -78,24 +89,74 @@ pub fn mark_delivered(storage: &Storage, message_id: &str) -> Result<(), Routing
 }
 
 /// 将消息状态标记为 read。
-pub fn mark_read(storage: &Storage, message_id: &str) -> Result<(), RoutingError> {
+/// 只有 pending/delivered -> read 才返回 Some(StatusChange)。
+pub fn mark_read(
+    storage: &Storage,
+    message_id: &str,
+) -> Result<Option<StatusChange>, RoutingError> {
     let conn = storage.conn();
+    let old_status: Option<String> = conn
+        .query_row(
+            "SELECT status FROM messages WHERE id = ?1 AND status IN ('pending', 'delivered')",
+            [message_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let old_status = match old_status {
+        Some(s) => s,
+        None => return Ok(None),
+    };
     conn.execute(
         "UPDATE messages SET status = 'read' WHERE id = ?1 AND status IN ('pending', 'delivered')",
         [message_id],
     )?;
-    Ok(())
+    Ok(Some(super::StatusChange {
+        message_id: message_id.to_string(),
+        old_status,
+        new_status: "read".to_string(),
+    }))
 }
 
 /// 将消息状态标记为 done；验证该消息确实属于指定 address。
-pub fn mark_done(storage: &Storage, message_id: &str, address: &str) -> Result<(), RoutingError> {
+/// 只有非 done -> done 才返回 Some(StatusChange)。
+pub fn mark_done(
+    storage: &Storage,
+    message_id: &str,
+    address: &str,
+) -> Result<Option<StatusChange>, RoutingError> {
     let conn = storage.conn();
-    let affected = conn.execute(
-        "UPDATE messages SET status = 'done' WHERE id = ?1 AND to_address = ?2",
+    let old_status: Option<String> = conn
+        .query_row(
+            "SELECT status FROM messages WHERE id = ?1 AND to_address = ?2 AND status != 'done'",
+            [message_id, address],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let old_status = match old_status {
+        Some(s) => s,
+        None => {
+            // 确认消息存在但已经是 done，返回 None；不存在才报错
+            let exists: bool = conn
+                .query_row(
+                    "SELECT 1 FROM messages WHERE id = ?1 AND to_address = ?2",
+                    [message_id, address],
+                    |_| Ok(true),
+                )
+                .optional()?
+                .unwrap_or(false);
+            if exists {
+                return Ok(None);
+            }
+            return Err(RoutingError::MessageNotFound(message_id.to_string()));
+        }
+    };
+    conn.execute(
+        "UPDATE messages SET status = 'done' WHERE id = ?1 AND to_address = ?2 AND status != 'done'",
         [message_id, address],
     )?;
-    if affected == 0 {
-        return Err(RoutingError::MessageNotFound(message_id.to_string()));
-    }
-    Ok(())
+    Ok(Some(super::StatusChange {
+        message_id: message_id.to_string(),
+        old_status,
+        new_status: "done".to_string(),
+    }))
 }
