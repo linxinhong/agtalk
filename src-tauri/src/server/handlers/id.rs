@@ -582,7 +582,7 @@ mod tests {
         }
         let prev_path = std::env::var_os("PATH").unwrap_or_default();
         let mut paths = std::env::split_paths(&prev_path).collect::<Vec<_>>();
-        paths.push(plugins_dir);
+        paths.insert(0, plugins_dir);
         std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
         (tmp, prev_path)
     }

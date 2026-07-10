@@ -302,7 +302,7 @@ SQLite 中的 mem 索引可随时从文件系统重建；agent 的长期记忆�
 agtalk run [file.yaml]
 ```
 
-不传文件时默认读取 `.agtalk/runs/<current-agent-name>.yaml`。
+不传文件时默认读取 `.agtalk/<current-agent-name>/runs/default.yaml`；传入名称时读取 `.agtalk/<current-agent-name>/runs/<name>.yaml`；传入路径时直接使用该 YAML 文件。
 
 约束：
 
