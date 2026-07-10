@@ -118,13 +118,33 @@ pub fn run(ctx: Context, file: Option<PathBuf>, json: bool) -> Result<(), CliErr
 }
 
 fn resolve_run_file(ctx: &Context, file: Option<PathBuf>) -> Result<PathBuf, CliError> {
+    let runs_dir = ctx.dot_agtalk.join(ctx.name.as_str()).join("runs");
     match file {
-        Some(p) => Ok(p),
+        Some(p) => {
+            // 显式存在的路径直接使用；否则按 <agent>/runs/<name>.yaml 解析
+            if p.exists() {
+                Ok(p)
+            } else {
+                let name = p
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_else(|| p.to_str().unwrap_or("default"));
+                let path = runs_dir.join(format!("{}.yaml", name));
+                if !path.exists() {
+                    return Err(CliError::new(
+                        "run_file_missing",
+                        format!(
+                            "运行文件不存在: {}（也未找到 {}）",
+                            p.display(),
+                            path.display()
+                        ),
+                    ));
+                }
+                Ok(path)
+            }
+        }
         None => {
-            let path = ctx
-                .dot_agtalk
-                .join("runs")
-                .join(format!("{}.yaml", ctx.name));
+            let path = runs_dir.join("default.yaml");
             if !path.exists() {
                 return Err(CliError::new(
                     "run_file_missing",
@@ -529,5 +549,70 @@ steps:
         } else {
             std::env::remove_var(crate::paths::CONFIG_DIR_ENV);
         }
+    }
+
+    fn test_ctx(tmp: &tempfile::TempDir, name: &str) -> Context {
+        let dot = tmp.path().join(".agtalk");
+        std::fs::create_dir_all(dot.join(name).join("runs")).unwrap();
+        Context {
+            dot_agtalk: dot,
+            address: "addr".into(),
+            name: name.into(),
+            pid: 1,
+            start_time: 1,
+            base_url: "http://127.0.0.1:19527".into(),
+        }
+    }
+
+    #[test]
+    fn resolve_run_file_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_ctx(&tmp, "nora");
+        let default = ctx
+            .dot_agtalk
+            .join("nora")
+            .join("runs")
+            .join("default.yaml");
+        std::fs::write(&default, "version: 1\nsteps: []\n").unwrap();
+
+        let resolved = resolve_run_file(&ctx, None).unwrap();
+        assert_eq!(resolved, default);
+    }
+
+    #[test]
+    fn resolve_run_file_by_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_ctx(&tmp, "nora");
+        let review = ctx.dot_agtalk.join("nora").join("runs").join("review.yaml");
+        std::fs::write(&review, "version: 1\nsteps: []\n").unwrap();
+
+        let resolved = resolve_run_file(&ctx, Some(PathBuf::from("review"))).unwrap();
+        assert_eq!(resolved, review);
+    }
+
+    #[test]
+    fn resolve_run_file_explicit_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_ctx(&tmp, "nora");
+        let explicit = tmp.path().join("some").join("spec.yaml");
+        std::fs::create_dir_all(explicit.parent().unwrap()).unwrap();
+        std::fs::write(&explicit, "version: 1\nsteps: []\n").unwrap();
+
+        let resolved = resolve_run_file(&ctx, Some(explicit.clone())).unwrap();
+        assert_eq!(resolved, explicit);
+    }
+
+    #[test]
+    fn resolve_run_file_missing_shows_new_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_ctx(&tmp, "nora");
+
+        let err = resolve_run_file(&ctx, None).unwrap_err();
+        assert_eq!(err.code, "run_file_missing");
+        assert!(
+            err.message.contains(".agtalk/nora/runs/default.yaml"),
+            "错误应提示新的默认路径: {}",
+            err.message
+        );
     }
 }

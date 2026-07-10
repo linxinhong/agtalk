@@ -19,10 +19,10 @@ msg      消息与询问
 mem      计划、上下文与长期记忆
 tool     运行时辅助
 config   配置
-run      YAML 编排入口
+run      发送/协作 spec 优先入口
 ```
 
-`run` 是高频入口，不是一个功能领域。它只执行 agtalk 内部白名单动作，不执行任意 shell。
+`run` 是 agent 优先使用的发送/协作入口，不限单次或多次发送。只要消息发送需要模板化、复用或记录发送意图，就可以优先用 `run`。它只执行 agtalk 内部白名单动作，不执行任意 shell。
 
 ---
 
@@ -82,7 +82,7 @@ agtalk msg ...
 agtalk mem ...
 agtalk tool ...
 agtalk config ...
-agtalk run [file.yaml]
+agtalk run [spec-name|path.yaml]
 ```
 
 不再新增这些顶层命令：
@@ -544,20 +544,26 @@ message.inbox_inline_limit_bytes
 
 ---
 
-## 10. run：YAML 编排入口
+## 10. run：发送/协作 spec 优先入口
 
 ```bash
-agtalk run [file.yaml]
-agtalk --json run [file.yaml]
+agtalk run              # 读取 .agtalk/<agent>/runs/default.yaml
+agtalk run review       # 读取 .agtalk/<agent>/runs/review.yaml
+agtalk run ./path/to/spec.yaml  # 使用显式路径
+agtalk --json run [spec-name|path.yaml]
 ```
 
-`run` 在 CLI 本进程执行编排，不经过 REST API。
+`run` 在 CLI 本进程解析 YAML 并逐步执行，不经过 REST API。
 
-不传文件时读取：
+- `runs/` 只保存发送/协作 spec，不保存执行结果。
+- 实际消息收发、正文、状态变化由 `.agtalk/<agent>/history.jsonl` 记录。
+- 只要消息发送需要模板化、复用或记录发送意图，即使单次发送也优先用 `run`。
 
-```text
-.agtalk/runs/<current-agent-name>.yaml
-```
+路径解析规则：
+
+- 无参数：`.agtalk/<agent>/runs/default.yaml`
+- `<name>`（不是现有文件路径）：`.agtalk/<agent>/runs/<name>.yaml`
+- `<path/to/file.yaml>`（现有文件路径）：直接使用显式路径
 
 约束：
 
@@ -571,7 +577,7 @@ agtalk --json run [file.yaml]
   {
     "type": "run_result",
     "status": "ok",
-    "file": ".agtalk/runs/nora.yaml",
+    "file": ".agtalk/nora/runs/default.yaml",
     "stopped_at": null,
     "steps": [
       {

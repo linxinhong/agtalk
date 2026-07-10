@@ -71,8 +71,12 @@ enum Commands {
         #[command(subcommand)]
         cmd: ConfigCmd,
     },
-    /// 运行 YAML 编排
-    Run { file: Option<PathBuf> },
+    /// 运行 agent 私有 runs 目录中的 YAML 发送/协作 spec
+    Run {
+        /// run spec 名称（无扩展名）或显式 YAML 文件路径；省略时读取 default.yaml
+        #[arg(value_name = "NAME_OR_PATH")]
+        file: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -358,6 +362,20 @@ fn agent_help_message() -> ServerMsg {
         },
         AgentHelpSection {
             index: 4,
+            title: "Run (preferred send entry)".to_string(),
+            examples: vec![
+                AgentHelpExample {
+                    command: "agtalk run".to_string(),
+                    note: Some("Run .agtalk/<agent>/runs/default.yaml".to_string()),
+                },
+                AgentHelpExample {
+                    command: "agtalk run review".to_string(),
+                    note: Some("Run .agtalk/<agent>/runs/review.yaml".to_string()),
+                },
+            ],
+        },
+        AgentHelpSection {
+            index: 5,
             title: "Read loop".to_string(),
             examples: vec![
                 AgentHelpExample {
@@ -367,7 +385,7 @@ fn agent_help_message() -> ServerMsg {
             ],
         },
         AgentHelpSection {
-            index: 5,
+            index: 6,
             title: "Wait / ask human".to_string(),
             examples: vec![
                 AgentHelpExample {
@@ -381,7 +399,7 @@ fn agent_help_message() -> ServerMsg {
             ],
         },
         AgentHelpSection {
-            index: 6,
+            index: 7,
             title: "Memory / plan".to_string(),
             examples: vec![
                 AgentHelpExample {
@@ -395,7 +413,7 @@ fn agent_help_message() -> ServerMsg {
             ],
         },
         AgentHelpSection {
-            index: 7,
+            index: 8,
             title: "Diagnose".to_string(),
             examples: vec![AgentHelpExample {
                 command: "agtalk tool doctor".to_string(),
@@ -436,6 +454,12 @@ fn format_agent_help_text(more: &[AgentHelpMore], sections: &[AgentHelpSection])
         "Rules:".to_string(),
         "  - Route only by UUID. Use id lookup to find address.".to_string(),
         "  - name is display only, not routing.".to_string(),
+        "  - Prefer agtalk run for reusable or record-worthy sends, even single-message workflows."
+            .to_string(),
+        "  - If target notify_ready=true, do not wait after send; rely on notify + msg read."
+            .to_string(),
+        "  - Wait only when target has no reliable notify or you need a short synchronous answer."
+            .to_string(),
         "  - Before replying to user, run msg read.".to_string(),
         "  - inbox_empty means no message, not failure.".to_string(),
         "  - Use --json when parsing output.".to_string(),
@@ -788,6 +812,11 @@ mod tests {
         assert!(text.contains("agtalk <cmd> --help"));
         assert!(!text.contains("agtalk mem pack agtalk/agent-guide"));
         assert!(text.contains("inbox_empty means no message, not failure"));
+        assert!(text.contains("Prefer agtalk run for reusable or record-worthy sends"));
+        assert!(text.contains("If target notify_ready=true, do not wait after send"));
+        assert!(text.contains("Wait only when target has no reliable notify"));
+        assert!(text.contains("4. Run (preferred send entry)"));
+        assert!(text.contains("agtalk run"));
         assert!(!text.contains("agent-learning-handbook"));
         // quick guide 不展开完整 Commands: 树
         assert!(!text.contains("Commands:"));
@@ -804,10 +833,11 @@ mod tests {
             "1. Identity",
             "2. Find target",
             "3. Send / reply / done",
-            "4. Read loop",
-            "5. Wait / ask human",
-            "6. Memory / plan",
-            "7. Diagnose",
+            "4. Run (preferred send entry)",
+            "5. Read loop",
+            "6. Wait / ask human",
+            "7. Memory / plan",
+            "8. Diagnose",
         ];
         for s in sections {
             assert!(text.contains(s), "missing section: {}", s);
@@ -831,9 +861,10 @@ mod tests {
         assert!(more.iter().any(|m| m["command"] == "agtalk <cmd> --help"));
 
         let sections = parsed["sections"].as_array().unwrap();
-        assert_eq!(sections.len(), 7);
+        assert_eq!(sections.len(), 8);
         assert_eq!(sections[0]["title"], "Identity");
-        assert_eq!(sections[5]["title"], "Memory / plan");
+        assert_eq!(sections[3]["title"], "Run (preferred send entry)");
+        assert_eq!(sections[6]["title"], "Memory / plan");
     }
 
     #[test]
@@ -849,5 +880,8 @@ mod tests {
         assert!(!markdown.is_empty());
         assert!(markdown.contains("agtalk --agent-guide"));
         assert!(markdown.contains("inbox_empty"));
+        assert!(markdown.contains("agtalk run"));
+        assert!(markdown.contains("notify_ready"));
+        assert!(markdown.contains("history.jsonl"));
     }
 }

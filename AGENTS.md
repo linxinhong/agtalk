@@ -328,7 +328,7 @@ agtalk msg read
 agtalk msg wait [sent-msg-id] --timeout <sec>
 agtalk mem pack [topic]
 agtalk tool doctor
-agtalk run [file.yaml]                 # YAML 安全宏编排
+agtalk run [spec-name]                 # 发送/协作 spec 优先入口
 ```
 
 **提交前必过**：`cargo check` + `cargo test -p agtalk -- --test-threads=1` + `cargo clippy -p agtalk -- -D warnings` + `cargo fmt --check` + `pnpm typecheck` + `pnpm build` + `pnpm typecheck:extension` + `pnpm build:extension`。
@@ -425,7 +425,14 @@ agtalk msg read
 
 ### 12.3 主动发消息后的等待约定
 
-如果本轮刚通过 `agtalk msg send` / `agtalk msg ask` 主动发出一条**期待对方回复**的消息，不要立刻 `agtalk msg read` 后就结束；应先等待一次：
+`msg wait` 不是默认动作，只在以下场景使用：
+
+- 目标 `notify_ready=false`（没有可靠 notify 通道）。
+- 你刚发出审批/询问，并预期 30 秒内有回复。
+
+如果目标 `notify_ready=true`，发送后不要 wait，依赖 notify 打扰 + 每轮 `msg read` 兜底。
+
+需要 wait 时：
 
 ```bash
 agtalk msg wait <sent-msg-id> --timeout 30
@@ -441,15 +448,14 @@ agtalk msg wait <sent-msg-id> --timeout 30
 ```
 agent 标准循环：
   1. 接收用户/上游消息
-  2. 调工具完成任务（含可能调 agtalk send 发消息给其他 agent/human）
-  3. 如果刚发送了期待回复的 agtalk 消息：
-       agtalk msg wait <sent-msg-id> --timeout 30
-       有回复 → 处理回复
-       timeout → 继续，不要无限等
-  4. 【必做】agtalk msg read   ← 检查 agtalk 收件箱
+  2. 调工具完成任务
+       - 可复用或需记录意图的发送：agtalk run [spec-name]
+       - 临时发送：agtalk msg send <uuid> "<body>"
+       - 目标 notify_ready=false 或需要短期同步答案：agtalk msg wait <sent-msg-id> --timeout 30
+  3. 【必做】agtalk msg read   ← 检查 agtalk 收件箱
        有新消息 → 处理（可能触发新一轮循环）
        无新消息 → 继续
-  5. 回复用户
+  4. 回复用户
 ```
 
 ### 12.5 局限（必须知晓）
@@ -461,6 +467,8 @@ agent 标准循环：
 ### 12.6 给 agent 实现者/skill 编写者的指引
 
 - 把"每轮任务后 `agtalk msg read`"写进 agent 的系统提示或 skill（见 `skills/agtalk-bridge/`）。
-- 把"主动发送期待回复的消息后，先 `agtalk msg wait <sent-msg-id> --timeout 30`"写进 agent 的系统提示或 skill。
+- 把"可复用或需记录意图的发送优先用 `agtalk run [spec-name]`"写进 agent 的系统提示或 skill。
+- 把"目标 `notify_ready=true` 时不主动 wait，发送后继续工作，靠 `msg read` 兜底"写进 agent 的系统提示或 skill。
+- 把"目标 `notify_ready=false` 或需要短期同步答案时，才用 `agtalk msg wait <sent-msg-id> --timeout 30`"写进 agent 的系统提示或 skill。
 - 在 agent 的工作循环代码里（若有），把 `msg read` 检查放在"回复用户前"的固定位置。
 - 不要依赖 agent"自觉"——把这条作为明确指令写入 prompt/skill，而非含糊建议。
