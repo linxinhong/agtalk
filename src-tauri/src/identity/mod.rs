@@ -3,6 +3,7 @@
 pub mod agents_map;
 pub mod auth;
 pub mod browser_session;
+pub mod history;
 pub mod mailbox;
 pub mod session_file;
 

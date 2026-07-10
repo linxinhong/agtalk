@@ -542,7 +542,7 @@ fn find_registered_ancestor(dot: &Path) -> Result<Option<agents_map::AgentEntry>
 
     let mut pid = std::process::id();
 
-    if let Some(entry) = map.agents.get(&pid.to_string()) {
+    if let Some(entry) = map.anchors.get(&pid.to_string()) {
         let st = os_process_start_time(&mut sys, pid);
         if st != 0 && st == entry.start_time {
             return Ok(Some(entry.clone()));
@@ -558,7 +558,7 @@ fn find_registered_ancestor(dot: &Path) -> Result<Option<agents_map::AgentEntry>
         if ppid == 0 || ppid == pid {
             break;
         }
-        if let Some(entry) = map.agents.get(&ppid.to_string()) {
+        if let Some(entry) = map.anchors.get(&ppid.to_string()) {
             let st = os_process_start_time(&mut sys, ppid);
             if st != 0 && st == entry.start_time {
                 return Ok(Some(entry.clone()));

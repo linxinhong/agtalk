@@ -123,6 +123,8 @@ pub fn handle_join(
             message: e.to_string(),
         };
     }
+    // join 前清理同 name 的 dead anchors，保留 live PID 复用能力。
+    let _ = agents_map::cleanup_dead_anchors_for_name(workspace_root, &name);
     if let Err(e) = agents_map::register_pid(workspace_root, pid, &name, start_time) {
         return ServerMsg::Error {
             code: "agents_map_failed".into(),
@@ -350,7 +352,7 @@ pub fn handle_cleanup(
 
     // 5. stale pid anchor：agents.json 指向的 session 已不存在。
     let valid_session_names: Vec<String> = session_by_name.keys().cloned().collect();
-    match agents_map::cleanup_stale_pids(workspace_root, &valid_session_names) {
+    match agents_map::cleanup_stale_anchors(workspace_root, &valid_session_names) {
         Ok(stale_pids) => {
             for (pid, name) in stale_pids {
                 let address = session_by_name
@@ -368,6 +370,31 @@ pub fn handle_cleanup(
             return ServerMsg::Error {
                 code: "cleanup_failed".into(),
                 message: e.to_string(),
+            }
+        }
+    }
+
+    // 6. dead pid anchor：进程已不存在或 start_time 不匹配。
+    if execute {
+        match agents_map::cleanup_dead_anchors(workspace_root) {
+            Ok(dead_pids) => {
+                for (pid, name) in dead_pids {
+                    let address = session_by_name
+                        .get(&name)
+                        .map(|s| s.address.clone())
+                        .unwrap_or_default();
+                    removed.push(crate::proto::CleanupItem {
+                        name: format!("{} (pid {})", name, pid),
+                        address,
+                        reason: "dead_pid_anchor".into(),
+                    });
+                }
+            }
+            Err(e) => {
+                return ServerMsg::Error {
+                    code: "cleanup_failed".into(),
+                    message: e.to_string(),
+                }
             }
         }
     }

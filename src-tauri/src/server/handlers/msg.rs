@@ -83,6 +83,7 @@ pub fn handle_send(
                     }
                 });
             }
+            record_send_history(state, &session, &to_name, &msg, "msg.send");
             ServerMsg::Ok { id: msg.id }
         }
         Err(e) => ServerMsg::Error {
@@ -110,6 +111,21 @@ pub fn handle_reply(
         Err(e) => {
             return ServerMsg::Error {
                 code: routing_error_code(&e).into(),
+                message: e.to_string(),
+            }
+        }
+    };
+    let original = match lookup::detail(&state.storage, &resolved) {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            return ServerMsg::Error {
+                code: "message_not_found".into(),
+                message: "消息不存在".into(),
+            }
+        }
+        Err(e) => {
+            return ServerMsg::Error {
+                code: "reply_failed".into(),
                 message: e.to_string(),
             }
         }
@@ -150,6 +166,7 @@ pub fn handle_reply(
                     }
                 });
             }
+            record_reply_history(state, &session, &original, &msg);
             ServerMsg::Ok { id: msg.id }
         }
         Err(e) => ServerMsg::Error {
@@ -171,9 +188,23 @@ pub fn handle_done(
         Err(e) => return e,
     };
 
-    let target_id = match message_id {
+    let target_msg = match message_id {
         Some(id) => match lookup::resolve_id(&state.storage, &session.address, &id) {
-            Ok(full_id) => full_id,
+            Ok(full_id) => match lookup::detail(&state.storage, &full_id) {
+                Ok(Some(m)) => m,
+                Ok(None) => {
+                    return ServerMsg::Error {
+                        code: "message_not_found".into(),
+                        message: "消息不存在".into(),
+                    }
+                }
+                Err(e) => {
+                    return ServerMsg::Error {
+                        code: "done_failed".into(),
+                        message: e.to_string(),
+                    }
+                }
+            },
             Err(e) => {
                 return ServerMsg::Error {
                     code: routing_error_code(&e).into(),
@@ -182,9 +213,9 @@ pub fn handle_done(
             }
         },
         None => {
-            // 未指定 message_id 时，取最新一条未完成的
+            // 未指定 message_id 时，取最新一条未完成的（同时标记 read）
             match lookup::detail_and_mark_read(&state.storage, &session.address, "-") {
-                Ok(Some(m)) => m.id,
+                Ok(Some(m)) => m,
                 Ok(None) => {
                     return ServerMsg::Error {
                         code: "inbox_empty".into(),
@@ -201,8 +232,18 @@ pub fn handle_done(
         }
     };
 
-    match inbox::mark_done(&state.storage, &target_id, &session.address) {
-        Ok(()) => ServerMsg::Ok { id: target_id },
+    match inbox::mark_done(&state.storage, &target_msg.id, &session.address) {
+        Ok(()) => {
+            record_status_history(
+                state,
+                &session,
+                &target_msg,
+                &target_msg.status,
+                "done",
+                "msg.done",
+            );
+            ServerMsg::Ok { id: target_msg.id }
+        }
         Err(e) => ServerMsg::Error {
             code: "done_failed".into(),
             message: e.to_string(),
@@ -288,6 +329,7 @@ pub fn handle_ask(
                     }
                 });
             }
+            record_send_history(state, &session, &state.config.human.name, &msg, "msg.ask");
             ServerMsg::AskResult { message_id: msg.id }
         }
         Err(e) => ServerMsg::Error {
@@ -328,7 +370,10 @@ pub fn handle_read(state: &AppState, headers: &HeaderMap, message_id: Option<Str
             }
         };
         match lookup::detail_and_mark_read(&state.storage, &session.address, &resolved) {
-            Ok(Some(msg)) => ServerMsg::MsgDetail(msg),
+            Ok(Some(msg)) => {
+                record_status_history(state, &session, &msg, &msg.status, "read", "msg.read");
+                ServerMsg::MsgDetail(msg)
+            }
             Ok(None) => ServerMsg::Error {
                 code: "message_not_found".into(),
                 message: "消息不存在".into(),
@@ -346,9 +391,9 @@ pub fn handle_read(state: &AppState, headers: &HeaderMap, message_id: Option<Str
                 message: "当前 inbox 没有可查看的消息".into(),
             },
             Ok(msgs) => {
-                let ids: Vec<String> = msgs.iter().map(|m| m.id.clone()).collect();
-                for id in &ids {
-                    let _ = inbox::mark_read(&state.storage, id);
+                for msg in &msgs {
+                    let _ = inbox::mark_read(&state.storage, &msg.id);
+                    record_status_history(state, &session, msg, &msg.status, "read", "msg.read");
                 }
                 ServerMsg::InboxResult { messages: msgs }
             }
@@ -368,6 +413,96 @@ pub fn handle_wait(
     _since: Option<i64>,
 ) -> ServerMsg {
     not_supported("服务端阻塞 wait")
+}
+
+fn record_send_history(
+    state: &AppState,
+    sender: &crate::identity::auth::AuthenticatedSession,
+    to_name: &str,
+    msg: &crate::routing::Message,
+    source: &str,
+) {
+    let dot = &state.dot_agtalk;
+    if let Err(e) = crate::identity::history::append_message(
+        dot,
+        &sender.name,
+        &sender.address,
+        "out",
+        msg,
+        source,
+    ) {
+        tracing::warn!("sender history append failed: {}", e);
+    }
+    if let Err(e) =
+        crate::identity::history::append_message(dot, to_name, &msg.to_address, "in", msg, source)
+    {
+        tracing::warn!("receiver history append failed: {}", e);
+    }
+}
+
+fn record_reply_history(
+    state: &AppState,
+    sender: &crate::identity::auth::AuthenticatedSession,
+    original: &crate::routing::Message,
+    reply: &crate::routing::Message,
+) {
+    let dot = &state.dot_agtalk;
+    // reply 发送方的 out 事件
+    if let Err(e) = crate::identity::history::append_message(
+        dot,
+        &sender.name,
+        &sender.address,
+        "out",
+        reply,
+        "msg.reply",
+    ) {
+        tracing::warn!("reply sender history append failed: {}", e);
+    }
+    // 原消息发送方收到 reply 的 in 事件
+    if let Err(e) = crate::identity::history::append_message(
+        dot,
+        &original.from_name,
+        &original.from_address,
+        "in",
+        reply,
+        "msg.reply",
+    ) {
+        tracing::warn!("reply receiver history append failed: {}", e);
+    }
+    // 原消息被 reply 后状态变为 read，记录给原消息的接收方（即当前 reply 发送方）
+    if let Err(e) = crate::identity::history::append_status(
+        dot,
+        &sender.name,
+        &sender.address,
+        &original.id,
+        &original.status,
+        "read",
+        "msg.reply",
+    ) {
+        tracing::warn!("reply status history append failed: {}", e);
+    }
+}
+
+fn record_status_history(
+    state: &AppState,
+    owner: &crate::identity::auth::AuthenticatedSession,
+    msg: &crate::routing::Message,
+    old_status: &str,
+    new_status: &str,
+    reason: &str,
+) {
+    let dot = &state.dot_agtalk;
+    if let Err(e) = crate::identity::history::append_status(
+        dot,
+        &owner.name,
+        &owner.address,
+        &msg.id,
+        old_status,
+        new_status,
+        reason,
+    ) {
+        tracing::warn!("status history append failed: {}", e);
+    }
 }
 
 fn routing_error_code(e: &crate::routing::RoutingError) -> &'static str {
@@ -591,6 +726,197 @@ mod tests {
             ServerMsg::Ok { id } => assert_eq!(id, first_id),
             other => panic!("expected Ok, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn send_writes_history_for_sender_and_receiver() {
+        let (state, _tmp) = test_state();
+        join(&state, "sender");
+        let recv_addr = join(&state, "recv");
+
+        let headers = auth_headers_for(&state, "sender");
+        handle_send(
+            &state,
+            &headers,
+            recv_addr,
+            "hi".into(),
+            None,
+            vec![],
+            Some(false),
+            None,
+            false,
+        );
+
+        let sender_history = read_history_lines(&state.dot_agtalk, "sender");
+        let receiver_history = read_history_lines(&state.dot_agtalk, "recv");
+        assert_eq!(sender_history.len(), 1);
+        assert_eq!(receiver_history.len(), 1);
+        assert_eq!(sender_history[0]["type"], "message");
+        assert_eq!(sender_history[0]["dir"], "out");
+        assert_eq!(sender_history[0]["source"], "msg.send");
+        assert_eq!(receiver_history[0]["dir"], "in");
+        assert_eq!(receiver_history[0]["source"], "msg.send");
+    }
+
+    #[test]
+    fn reply_writes_history_and_status() {
+        let (state, _tmp) = test_state();
+        join(&state, "sender");
+        let recv_addr = join(&state, "recv");
+
+        let sender_headers = auth_headers_for(&state, "sender");
+        let send_resp = handle_send(
+            &state,
+            &sender_headers,
+            recv_addr.clone(),
+            "hello".into(),
+            None,
+            vec![],
+            Some(false),
+            None,
+            false,
+        );
+        let sent_id = match send_resp {
+            ServerMsg::Ok { id } => id,
+            other => panic!("expected Ok, got {:?}", other),
+        };
+
+        let recv_headers = auth_headers_for(&state, "recv");
+        handle_read(&state, &recv_headers, Some(sent_id[..8].to_string()));
+
+        let reply_resp = handle_reply(
+            &state,
+            &recv_headers,
+            sent_id[..8].to_string(),
+            "ok".into(),
+            vec![],
+            Some(false),
+            None,
+        );
+        assert!(matches!(reply_resp, ServerMsg::Ok { .. }));
+
+        let sender_history = read_history_lines(&state.dot_agtalk, "sender");
+        let recv_history = read_history_lines(&state.dot_agtalk, "recv");
+
+        // sender: original out message, reply in message
+        assert!(sender_history
+            .iter()
+            .any(|h| h["dir"] == "out" && h["source"] == "msg.send"));
+        assert!(sender_history
+            .iter()
+            .any(|h| h["dir"] == "in" && h["source"] == "msg.reply"));
+
+        // receiver: original in message (from send), out reply message, status for original pending->read (from handle_read), status original read->read (from reply)
+        assert!(recv_history
+            .iter()
+            .any(|h| h["dir"] == "in" && h["source"] == "msg.send"));
+        assert!(recv_history
+            .iter()
+            .any(|h| h["dir"] == "out" && h["source"] == "msg.reply"));
+        assert!(recv_history
+            .iter()
+            .any(|h| h["type"] == "status" && h["reason"] == "msg.read"));
+        assert!(recv_history
+            .iter()
+            .any(|h| h["type"] == "status" && h["reason"] == "msg.reply"));
+    }
+
+    #[test]
+    fn read_writes_status_history() {
+        let (state, _tmp) = test_state();
+        join(&state, "sender");
+        let recv_addr = join(&state, "recv");
+
+        let sender_headers = auth_headers_for(&state, "sender");
+        handle_send(
+            &state,
+            &sender_headers,
+            recv_addr,
+            "hello".into(),
+            None,
+            vec![],
+            Some(false),
+            None,
+            false,
+        );
+
+        let recv_headers = auth_headers_for(&state, "recv");
+        handle_read(&state, &recv_headers, None);
+
+        let recv_history = read_history_lines(&state.dot_agtalk, "recv");
+        assert!(recv_history
+            .iter()
+            .any(|h| h["type"] == "status" && h["to"] == "read" && h["reason"] == "msg.read"));
+    }
+
+    #[test]
+    fn done_writes_status_history() {
+        let (state, _tmp) = test_state();
+        join(&state, "sender");
+        let recv_addr = join(&state, "recv");
+
+        let sender_headers = auth_headers_for(&state, "sender");
+        handle_send(
+            &state,
+            &sender_headers,
+            recv_addr,
+            "hello".into(),
+            None,
+            vec![],
+            Some(false),
+            None,
+            false,
+        );
+
+        let recv_headers = auth_headers_for(&state, "recv");
+        handle_done(&state, &recv_headers, None, None, vec![]);
+
+        let recv_history = read_history_lines(&state.dot_agtalk, "recv");
+        assert!(recv_history
+            .iter()
+            .any(|h| h["type"] == "status" && h["to"] == "done" && h["reason"] == "msg.done"));
+    }
+
+    #[test]
+    fn send_skips_receiver_history_when_no_session() {
+        let (state, _tmp) = test_state();
+        join(&state, "sender");
+        let recv_addr =
+            crate::identity::mailbox::create(&state.storage, "recv", "receiver", "").unwrap();
+
+        let headers = auth_headers_for(&state, "sender");
+        handle_send(
+            &state,
+            &headers,
+            recv_addr,
+            "hi".into(),
+            None,
+            vec![],
+            Some(false),
+            None,
+            false,
+        );
+
+        let sender_history = read_history_lines(&state.dot_agtalk, "sender");
+        assert_eq!(sender_history.len(), 1);
+        assert!(!history_path(&state.dot_agtalk, "recv").exists());
+    }
+
+    fn history_path(dot: &std::path::Path, name: &str) -> std::path::PathBuf {
+        dot.join(name).join("history.jsonl")
+    }
+
+    fn read_history_lines(dot: &std::path::Path, name: &str) -> Vec<serde_json::Value> {
+        let path = history_path(dot, name);
+        if !path.exists() {
+            return Vec::new();
+        }
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
     }
 
     #[test]
