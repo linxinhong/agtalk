@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 
-pub const CURRENT_VERSION: u32 = 7;
+pub const CURRENT_VERSION: u32 = 8;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS _migrations (
@@ -96,6 +96,10 @@ const MIGRATE_V7: &str = r#"
 ALTER TABLE messages ADD COLUMN subject TEXT DEFAULT NULL;
 "#;
 
+const MIGRATE_V8: &str = r#"
+ALTER TABLE mailboxes ADD COLUMN workspace_root TEXT NOT NULL DEFAULT '';
+"#;
+
 pub fn run(conn: &mut Connection) -> Result<(), super::StorageError> {
     let tx = conn.transaction()?;
 
@@ -133,6 +137,9 @@ pub fn run(conn: &mut Connection) -> Result<(), super::StorageError> {
     }
     if version < 7 {
         tx.execute_batch(MIGRATE_V7)?;
+    }
+    if version < 8 {
+        tx.execute_batch(MIGRATE_V8)?;
     }
 
     tx.execute(
@@ -200,7 +207,7 @@ mod tests {
 
         run(&mut conn).unwrap();
 
-        assert_eq!(max_migration(&conn), 7);
+        assert_eq!(max_migration(&conn), CURRENT_VERSION);
         assert!(
             message_columns(&conn).iter().any(|c| c == "subject"),
             "迁移后 messages 表应新增 subject 列"
@@ -213,5 +220,59 @@ mod tests {
             })
             .unwrap();
         assert!(subject.is_none(), "旧 message 行的 subject 应保持 NULL");
+    }
+
+    fn mailbox_columns(conn: &Connection) -> Vec<String> {
+        let mut stmt = conn.prepare("PRAGMA table_info(mailboxes)").unwrap();
+        stmt.query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn v7_to_v8_adds_workspace_root_column_with_empty_default() {
+        let mut conn = Connection::open_in_memory().unwrap();
+
+        // 构造 v7 时代的数据库：SCHEMA_V1 + MIGRATE_V2..V7，但不包含 MIGRATE_V8。
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(MIGRATE_V2).unwrap();
+        conn.execute_batch(MIGRATE_V3).unwrap();
+        conn.execute_batch(MIGRATE_V4).unwrap();
+        conn.execute_batch(MIGRATE_V5).unwrap();
+        conn.execute_batch(MIGRATE_V6).unwrap();
+        conn.execute_batch(MIGRATE_V7).unwrap();
+        conn.execute("INSERT OR REPLACE INTO _migrations(version) VALUES (7)", [])
+            .unwrap();
+
+        conn.execute(
+            "INSERT INTO mailboxes (address, name) VALUES ('a1', 'alice')",
+            [],
+        )
+        .unwrap();
+
+        assert!(
+            !mailbox_columns(&conn).iter().any(|c| c == "workspace_root"),
+            "迁移前 mailboxes 表不应存在 workspace_root 列"
+        );
+        assert_eq!(max_migration(&conn), 7);
+
+        run(&mut conn).unwrap();
+
+        assert_eq!(max_migration(&conn), 8);
+        assert!(
+            mailbox_columns(&conn).iter().any(|c| c == "workspace_root"),
+            "迁移后 mailboxes 表应新增 workspace_root 列"
+        );
+
+        // 旧行的 workspace_root 应为空串（NOT NULL DEFAULT ''）。
+        let root: String = conn
+            .query_row(
+                "SELECT workspace_root FROM mailboxes WHERE address = 'a1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(root, "", "旧 mailbox 行的 workspace_root 应为空串");
     }
 }

@@ -29,6 +29,7 @@ pub fn handle_join(
 
     let name = name.unwrap_or_else(|| format!("agent-{}", short_id()));
     let existing_session = session_file_mod::read(workspace_root, &name).ok();
+    let workspace_root_str = workspace_root.to_string_lossy().into_owned();
 
     let (address, final_intro, notify_channel, notify_target) =
         if let Some(ref session) = existing_session {
@@ -53,6 +54,7 @@ pub fn handle_join(
                 "",
                 &notify_channel,
                 &notify_target_json(&notify_target),
+                &workspace_root_str,
             ) {
                 return ServerMsg::Error {
                     code: "join_failed".into(),
@@ -85,6 +87,7 @@ pub fn handle_join(
                 "",
                 &notify_channel,
                 &notify_target_json(&notify_target),
+                &workspace_root_str,
             ) {
                 Ok(addr) => addr,
                 Err(e) => {
@@ -636,6 +639,70 @@ mod tests {
                     .as_secs()
             });
         (pid, start)
+    }
+
+    #[test]
+    fn join_persists_workspace_root_on_create_and_revive() {
+        let (state, _tmp) = test_state();
+        let (pid, start_time) = current_pid_start_time();
+
+        // agent 的 .agtalk 根与 daemon 的 state.dot_agtalk 不同（模拟跨 workspace）。
+        let agent_tmp = TempDir::new().unwrap();
+        let agent_dot = agent_tmp.path().join(".agtalk");
+
+        let msg = handle_join(
+            &state,
+            &agent_dot,
+            Some("agentx".into()),
+            Some("intro".into()),
+            "none".into(),
+            None,
+            pid,
+            start_time,
+        );
+        let address = match msg {
+            ServerMsg::Identity { address, .. } => address,
+            other => panic!("expected Identity, got {:?}", other),
+        };
+
+        let mb = mailbox_db::get_by_address(&state.storage, &address)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            mb.workspace_root,
+            agent_dot.to_string_lossy(),
+            "create 应持久化 agent 的绝对 .agtalk 根"
+        );
+        assert_ne!(
+            mb.workspace_root,
+            state.dot_agtalk.to_string_lossy(),
+            "workspace_root 不应等于 daemon 的 state.dot_agtalk"
+        );
+
+        // 复用身份（revive 路径）也应刷新 workspace_root。
+        let msg2 = handle_join(
+            &state,
+            &agent_dot,
+            Some("agentx".into()),
+            Some("intro2".into()),
+            "none".into(),
+            None,
+            pid,
+            start_time,
+        );
+        let address2 = match msg2 {
+            ServerMsg::Identity { address, .. } => address,
+            other => panic!("expected Identity, got {:?}", other),
+        };
+        assert_eq!(address, address2, "同 name 复用应保持同一 address");
+        let mb2 = mailbox_db::get_by_address(&state.storage, &address2)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            mb2.workspace_root,
+            agent_dot.to_string_lossy(),
+            "revive 应刷新 workspace_root"
+        );
     }
 
     #[test]

@@ -13,6 +13,7 @@ pub struct Mailbox {
     pub name: String,
     pub intro: String,
     pub workspace: String,
+    pub workspace_root: String,
     pub notify_channel: String,
     pub notify_target: serde_json::Value,
     pub created_at: f64,
@@ -28,6 +29,7 @@ impl Mailbox {
             name: row.get("name")?,
             intro: row.get("intro")?,
             workspace: row.get("workspace")?,
+            workspace_root: row.get("workspace_root")?,
             notify_channel: row.get("notify_channel")?,
             notify_target,
             created_at: row.get("created_at")?,
@@ -50,10 +52,12 @@ pub fn create(
         workspace,
         "none",
         &serde_json::Value::Null,
+        "",
     )
 }
 
 /// 创建 mailbox 并同时设置 notify 配置。
+#[allow(clippy::too_many_arguments)]
 pub fn create_with_notify(
     storage: &Storage,
     name: &str,
@@ -61,19 +65,21 @@ pub fn create_with_notify(
     workspace: &str,
     notify_channel: &str,
     notify_target: &serde_json::Value,
+    workspace_root: &str,
 ) -> Result<String, IdentityError> {
     let address = Uuid::new_v4().to_string();
     let mut conn = storage.conn();
     let tx = conn.transaction()?;
     tx.execute(
-        "INSERT INTO mailboxes (address, name, intro, workspace, notify_channel, notify_target) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO mailboxes (address, name, intro, workspace, notify_channel, notify_target, workspace_root) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             address,
             name,
             intro,
             workspace,
             notify_channel,
-            notify_target.to_string()
+            notify_target.to_string(),
+            workspace_root,
         ],
     )?;
     tx.execute(
@@ -189,10 +195,12 @@ pub fn revive(
         workspace,
         "none",
         &serde_json::Value::Null,
+        "",
     )
 }
 
 /// 恢复 mailbox 并同时设置 notify 配置。
+#[allow(clippy::too_many_arguments)]
 pub fn revive_with_notify(
     storage: &Storage,
     address: &str,
@@ -201,6 +209,7 @@ pub fn revive_with_notify(
     workspace: &str,
     notify_channel: &str,
     notify_target: &serde_json::Value,
+    workspace_root: &str,
 ) -> Result<(), IdentityError> {
     let mut conn = storage.conn();
     let tx = conn.transaction()?;
@@ -216,26 +225,28 @@ pub fn revive_with_notify(
 
     if exists {
         tx.execute(
-            "UPDATE mailboxes SET name = ?2, intro = ?3, workspace = ?4, left_at = NULL, notify_channel = ?5, notify_target = ?6 WHERE address = ?1",
+            "UPDATE mailboxes SET name = ?2, intro = ?3, workspace = ?4, left_at = NULL, notify_channel = ?5, notify_target = ?6, workspace_root = ?7 WHERE address = ?1",
             params![
                 address,
                 name,
                 intro,
                 workspace,
                 notify_channel,
-                notify_target.to_string()
+                notify_target.to_string(),
+                workspace_root,
             ],
         )?;
     } else {
         tx.execute(
-            "INSERT INTO mailboxes (address, name, intro, workspace, notify_channel, notify_target) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO mailboxes (address, name, intro, workspace, notify_channel, notify_target, workspace_root) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 address,
                 name,
                 intro,
                 workspace,
                 notify_channel,
-                notify_target.to_string()
+                notify_target.to_string(),
+                workspace_root,
             ],
         )?;
     }
@@ -371,5 +382,58 @@ mod tests {
         let mb = get_by_address(&storage, &addr).unwrap().unwrap();
         assert_eq!(mb.intro, "后端");
         assert_eq!(mb.workspace, "projB");
+    }
+
+    #[test]
+    fn create_with_notify_persists_workspace_root() {
+        let storage = Storage::open_in_memory().unwrap();
+        let addr = create_with_notify(
+            &storage,
+            "nora",
+            "前端",
+            "",
+            "none",
+            &serde_json::Value::Null,
+            "/tmp/agentA/.agtalk",
+        )
+        .unwrap();
+        let mb = get_by_address(&storage, &addr).unwrap().unwrap();
+        assert_eq!(mb.workspace_root, "/tmp/agentA/.agtalk");
+    }
+
+    #[test]
+    fn revive_with_notify_refreshes_workspace_root() {
+        let storage = Storage::open_in_memory().unwrap();
+        let addr = create_with_notify(
+            &storage,
+            "nora",
+            "前端",
+            "",
+            "none",
+            &serde_json::Value::Null,
+            "/tmp/old/.agtalk",
+        )
+        .unwrap();
+        revive_with_notify(
+            &storage,
+            &addr,
+            "nora",
+            "前端",
+            "",
+            "none",
+            &serde_json::Value::Null,
+            "/tmp/new/.agtalk",
+        )
+        .unwrap();
+        let mb = get_by_address(&storage, &addr).unwrap().unwrap();
+        assert_eq!(mb.workspace_root, "/tmp/new/.agtalk");
+    }
+
+    #[test]
+    fn create_wrapper_defaults_workspace_root_empty() {
+        let storage = Storage::open_in_memory().unwrap();
+        let addr = create(&storage, "nora", "前端", "projA").unwrap();
+        let mb = get_by_address(&storage, &addr).unwrap().unwrap();
+        assert_eq!(mb.workspace_root, "");
     }
 }

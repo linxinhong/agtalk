@@ -1896,6 +1896,7 @@ mod tests {
                 "",
                 "plugin:missing",
                 &serde_json::json!({"type":"plugin","name":"missing","endpoint":null}),
+                "",
             )
             .unwrap();
         }
@@ -1959,6 +1960,7 @@ mod tests {
                 "",
                 "plugin:bad",
                 &serde_json::json!({"type":"plugin","name":"bad","endpoint":null}),
+                "",
             )
             .unwrap();
         }
@@ -2022,6 +2024,7 @@ mod tests {
                 "",
                 "none",
                 &serde_json::json!({"type":"none"}),
+                "",
             )
             .unwrap();
         }
