@@ -3,6 +3,7 @@
 use crate::config::AgConfig;
 use crate::identity::agents_map;
 use crate::identity::mailbox;
+use crate::identity::relations;
 use crate::identity::session_file::{self, NotifyTarget};
 use crate::notify;
 use crate::notify::NotifyHint;
@@ -23,6 +24,7 @@ pub fn run(ctx: DoctorContext) -> ServerMsg {
 
     let identity = resolve_identity_readonly(&ctx);
     checks.extend(identity_checks(&ctx, &identity));
+    checks.extend(local_state_checks(&ctx, &identity));
     checks.extend(message_checks(&ctx, &identity));
     checks.extend(wait_checks(&ctx, &identity));
     checks.extend(notify_checks(&ctx, &identity));
@@ -823,6 +825,121 @@ fn identity_checks(
     checks
 }
 
+/// 检查已解析身份对应 agent 目录下的 history.jsonl / relations.json 状态，
+/// 暴露 history 写入失败、权限错误、relations owner 与身份不一致等问题。
+/// 身份未解析时返回空（由 identity_checks 的 skip 路径覆盖）。
+fn local_state_checks(
+    ctx: &DoctorContext,
+    identity: &Option<ResolvedIdentity>,
+) -> Vec<DiagnosisCheck> {
+    let mut checks = Vec::new();
+    let Some(id) = identity else {
+        return checks;
+    };
+
+    let dot = &ctx.dot_agtalk;
+    let agent_dir = match id.session_path.parent() {
+        Some(p) => p.to_path_buf(),
+        None => return checks,
+    };
+
+    // agent 目录可写性（append_jsonl 需要 owner 可写，否则 history 会静默失败）
+    let dir_writable = path_mode(&agent_dir)
+        .map(|m| m & 0o200 != 0)
+        .unwrap_or(false);
+    checks.push(check(
+        "identity",
+        "identity.agent_dir_writable",
+        if dir_writable { "ok" } else { "warn" },
+        if dir_writable {
+            format!("agent 目录可写: {}", agent_dir.display())
+        } else {
+            format!("agent 目录不可写或不存在: {}", agent_dir.display())
+        },
+        if dir_writable {
+            None
+        } else {
+            Some("history/relations 写入会静默失败，请检查目录权限")
+        },
+        None,
+        serde_json::json!({ "dir": agent_dir.display().to_string() }),
+    ));
+
+    // history.jsonl：存在则校验 0600
+    let history_path = agent_dir.join("history.jsonl");
+    if history_path.exists() {
+        let perm_ok = path_mode(&history_path) == Some(0o600);
+        checks.push(check(
+            "identity",
+            "identity.history_file",
+            if perm_ok { "ok" } else { "warn" },
+            if perm_ok {
+                "history.jsonl 权限为 0600".to_string()
+            } else {
+                "history.jsonl 权限不是 0600".to_string()
+            },
+            if perm_ok {
+                None
+            } else {
+                Some("建议: chmod 600 history.jsonl")
+            },
+            None,
+            serde_json::json!({ "path": history_path.display().to_string() }),
+        ));
+    }
+
+    // relations.json：存在则校验 0600 且 owner.address 与身份一致（磁盘上的 validate_owner 信号）
+    let relations_path = agent_dir.join("relations.json");
+    if relations_path.exists() {
+        let perm_ok = path_mode(&relations_path) == Some(0o600);
+        let owner_ok = relations::read(dot, &id.name)
+            .map(|rf| rf.owner.address == id.address)
+            .unwrap_or(false);
+        let status = if perm_ok && owner_ok { "ok" } else { "warn" };
+        let mut msg = String::new();
+        if !perm_ok {
+            msg.push_str("relations.json 权限不是 0600");
+        }
+        if !owner_ok {
+            if !msg.is_empty() {
+                msg.push('；');
+            }
+            msg.push_str("relations.owner.address 与当前身份不一致（可能曾写入错误 workspace）");
+        }
+        if msg.is_empty() {
+            msg.push_str("relations.json 权限与 owner 均正常");
+        }
+        checks.push(check(
+            "identity",
+            "identity.relations_file",
+            status,
+            msg,
+            if status == "ok" {
+                None
+            } else {
+                Some("若 owner 不匹配，删除该 relations.json 后重新收发消息即可重建")
+            },
+            None,
+            serde_json::json!({ "path": relations_path.display().to_string() }),
+        ));
+    }
+
+    checks
+}
+
+#[cfg(unix)]
+fn path_mode(path: &Path) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .ok()
+        .map(|m| m.permissions().mode() & 0o777)
+}
+
+#[cfg(not(unix))]
+fn path_mode(_path: &Path) -> Option<u32> {
+    Some(0o600)
+}
+
 // ---- message ----
 
 fn message_checks(ctx: &DoctorContext, identity: &Option<ResolvedIdentity>) -> Vec<DiagnosisCheck> {
@@ -1561,6 +1678,83 @@ mod tests {
             find_check(&checks, "message.read_ready").unwrap().status,
             "ok" // 身份可解析即认为 read 就绪
         );
+    }
+
+    fn write_nora_session(ctx: &DoctorContext, address: &str) {
+        let session = SessionFile {
+            version: 2,
+            address: address.to_string(),
+            name: "nora".to_string(),
+            intro: "前端".to_string(),
+            created_at: "2026-07-01T00:00:00Z".to_string(),
+            registered_by: Some("agtalk".to_string()),
+            notify: session_file::SessionNotify {
+                channel: "none".to_string(),
+                endpoint: serde_json::Value::Null,
+            },
+        };
+        session_file::write(&ctx.dot_agtalk, "nora", &session).unwrap();
+    }
+
+    #[test]
+    fn doctor_warns_on_relations_owner_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let (ctx, _guard) = test_ctx(&tmp);
+        write_nora_session(&ctx, "550e8400-e29b-41d4-a716-446655440000");
+
+        // relations.json 的 owner.address 与当前身份不一致（模拟曾写入错误 workspace）。
+        let rf = relations::RelationsFile {
+            version: 2,
+            owner: relations::RelationOwner {
+                name: "nora".to_string(),
+                address: "00000000-0000-0000-0000-000000000000".to_string(),
+            },
+            peers: Default::default(),
+        };
+        relations::write(&ctx.dot_agtalk, "nora", &rf).unwrap();
+
+        let msg = run(ctx.clone());
+        let checks = match msg {
+            ServerMsg::ToolDiagnosis { checks, .. } => checks,
+            other => panic!("expected ToolDiagnosis, got {:?}", other),
+        };
+
+        assert_eq!(
+            find_check(&checks, "identity.agent_dir_writable")
+                .unwrap()
+                .status,
+            "ok"
+        );
+        let rel = find_check(&checks, "identity.relations_file").unwrap();
+        assert_eq!(rel.status, "warn");
+        assert!(rel.message.contains("owner.address"));
+    }
+
+    #[test]
+    fn doctor_relations_file_ok_when_owner_matches() {
+        let tmp = TempDir::new().unwrap();
+        let (ctx, _guard) = test_ctx(&tmp);
+        let addr = "550e8400-e29b-41d4-a716-446655440000";
+        write_nora_session(&ctx, addr);
+
+        let rf = relations::RelationsFile {
+            version: 2,
+            owner: relations::RelationOwner {
+                name: "nora".to_string(),
+                address: addr.to_string(),
+            },
+            peers: Default::default(),
+        };
+        relations::write(&ctx.dot_agtalk, "nora", &rf).unwrap();
+
+        let msg = run(ctx.clone());
+        let checks = match msg {
+            ServerMsg::ToolDiagnosis { checks, .. } => checks,
+            other => panic!("expected ToolDiagnosis, got {:?}", other),
+        };
+
+        let rel = find_check(&checks, "identity.relations_file").unwrap();
+        assert_eq!(rel.status, "ok");
     }
 
     #[test]
