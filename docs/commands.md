@@ -468,16 +468,24 @@ fact decision rule procedure issue snippet preference summary note context
 ### 7.7 协作关系索引
 
 ```bash
-agtalk mem relation list
+agtalk mem relation list [--specialty <text>]
 agtalk mem relation show <name-or-address>
-agtalk mem relation update <name-or-address> --role <text> --tag <tag1,tag2> --note <text>
+agtalk mem relation update <name-or-address> \
+  --role <text> \
+  --tag <tag1,tag2> \
+  --note <text> \
+  --specialty <a,b> \
+  --preferred-for <a,b>
 ```
 
 `relations.json` 是 agent 私有的协作关系索引，位于 `.agtalk/<agent-name>/relations.json`。
 
 - `msg send` / `msg reply` / `msg ask` 成功后会自动按 peer 聚合发送/接收计数、最后联系时间、最后消息 ID。
-- `role`、`tags`、`note` 是手动标注字段，自动更新不会覆盖。
+- `role`、`tags`、`note`、`specialties`、`preferred_for` 是手动标注字段，自动更新不会覆盖。
+- `--specialty` / `--preferred-for` 使用逗号分隔，自动 trim、去空、去重。
+- `mem relation list --specialty <text>` 按 specialty 大小写不敏感精确匹配过滤。
 - `mem relation show` 支持按 name 或 address（含短前缀）查找。
+- 推荐协作流程：先 `mem relation list --specialty ...` 找已合作 peer；无匹配时用 `id lookup` 发现新 agent；发送时仍使用完整 UUID 路由。
 
 ---
 

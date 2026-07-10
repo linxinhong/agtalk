@@ -265,10 +265,14 @@ pub(crate) enum MemCmd {
 #[derive(Subcommand)]
 pub(crate) enum MemRelationCmd {
     /// 列出所有协作 peer
-    List,
+    List {
+        /// 按 specialty 大小写不敏感精确匹配过滤
+        #[arg(short, long)]
+        specialty: Option<String>,
+    },
     /// 查看某个 peer 的关系详情
     Show { name_or_address: String },
-    /// 更新 peer 的手动字段（role / tags / note）
+    /// 更新 peer 的手动字段（role / tags / note / specialties / preferred_for）
     Update {
         name_or_address: String,
         #[arg(short, long)]
@@ -277,6 +281,10 @@ pub(crate) enum MemRelationCmd {
         tag: Vec<String>,
         #[arg(short, long)]
         note: Option<String>,
+        #[arg(short, long, value_delimiter = ',')]
+        specialty: Vec<String>,
+        #[arg(short = 'p', long, value_delimiter = ',')]
+        preferred_for: Vec<String>,
     },
 }
 
@@ -897,12 +905,35 @@ mod tests {
             Some(Commands::Mem { cmd }) => cmd,
             _ => panic!("expected Mem relation list"),
         };
-        assert!(matches!(
-            cmd,
+        match cmd {
             MemCmd::Relation {
-                cmd: MemRelationCmd::List
-            }
-        ));
+                cmd: MemRelationCmd::List { specialty },
+            } => assert!(specialty.is_none()),
+            _ => panic!("expected relation list"),
+        }
+    }
+
+    #[test]
+    fn parse_mem_relation_list_with_specialty() {
+        let cli = Cli::try_parse_from([
+            "agtalk",
+            "mem",
+            "relation",
+            "list",
+            "--specialty",
+            "Rust 实现",
+        ])
+        .unwrap();
+        let cmd = match cli.command {
+            Some(Commands::Mem { cmd }) => cmd,
+            _ => panic!("expected Mem relation list"),
+        };
+        match cmd {
+            MemCmd::Relation {
+                cmd: MemRelationCmd::List { specialty },
+            } => assert_eq!(specialty, Some("Rust 实现".to_string())),
+            _ => panic!("expected relation list"),
+        }
     }
 
     #[test]
@@ -934,6 +965,10 @@ mod tests {
             "rust,frontend",
             "--note",
             "good partner",
+            "--specialty",
+            "Rust 实现,测试隔离",
+            "--preferred-for",
+            "功能开发",
         ])
         .unwrap();
         let cmd = match cli.command {
@@ -948,12 +983,19 @@ mod tests {
                         role,
                         tag,
                         note,
+                        specialty,
+                        preferred_for,
                     },
             } => {
                 assert_eq!(name_or_address, "nora");
                 assert_eq!(role, Some("reviewer".to_string()));
                 assert_eq!(tag, vec!["rust".to_string(), "frontend".to_string()]);
                 assert_eq!(note, Some("good partner".to_string()));
+                assert_eq!(
+                    specialty,
+                    vec!["Rust 实现".to_string(), "测试隔离".to_string()]
+                );
+                assert_eq!(preferred_for, vec!["功能开发".to_string()]);
             }
             _ => panic!("expected relation update"),
         }

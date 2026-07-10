@@ -10,8 +10,8 @@ use crate::proto::ServerMsg;
 pub fn dispatch(ctx: Context, cmd: MemCmd, json: bool) -> Result<(), CliError> {
     let resp = match cmd {
         MemCmd::Relation { cmd } => match cmd {
-            MemRelationCmd::List => {
-                let list = relations::list(&ctx.dot_agtalk, &ctx.name)
+            MemRelationCmd::List { specialty } => {
+                let list = relations::list(&ctx.dot_agtalk, &ctx.name, specialty.as_deref())
                     .map_err(|e| CliError::new("relation_list_failed", e.to_string()))?;
                 ServerMsg::MemRelationList { relations: list }
             }
@@ -31,15 +31,31 @@ pub fn dispatch(ctx: Context, cmd: MemCmd, json: bool) -> Result<(), CliError> {
                 role,
                 tag,
                 note,
+                specialty,
+                preferred_for,
             } => {
                 let tags = if tag.is_empty() { None } else { Some(tag) };
+                let specialties = if specialty.is_empty() {
+                    None
+                } else {
+                    Some(specialty)
+                };
+                let preferred_for = if preferred_for.is_empty() {
+                    None
+                } else {
+                    Some(preferred_for)
+                };
                 let updated = relations::update(
                     &ctx.dot_agtalk,
                     &ctx.name,
                     &name_or_address,
-                    role,
-                    tags,
-                    note,
+                    relations::RelationUpdate {
+                        role,
+                        tags,
+                        note,
+                        specialties,
+                        preferred_for,
+                    },
                 )
                 .map_err(|e| CliError::new("relation_update_failed", e.to_string()))?;
                 match updated {

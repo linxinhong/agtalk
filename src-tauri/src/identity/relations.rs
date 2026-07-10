@@ -36,6 +36,10 @@ pub struct Relation {
     pub role: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub specialties: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preferred_for: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -67,7 +71,7 @@ pub fn read(dot_agtalk: &Path, name: &str) -> Result<RelationsFile, IdentityErro
     Ok(serde_json::from_str(&content)?)
 }
 
-/// 写入 relations.json。
+/// 写入 relations.json。首次写入时升级到 version 2。
 pub fn write(
     dot_agtalk: &Path,
     name: &str,
@@ -76,7 +80,9 @@ pub fn write(
     let dir = dot_agtalk.join(name);
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("relations.json");
-    let content = serde_json::to_string_pretty(relations)?;
+    let mut to_write = relations.clone();
+    to_write.version = 2;
+    let content = serde_json::to_string_pretty(&to_write)?;
     std::fs::write(&path, content)?;
     set_permissions_0600(&path)?;
     Ok(path)
@@ -105,6 +111,9 @@ pub struct RelationEvent<'a> {
 
 /// 更新发送方的 relation：peer 是接收方。
 pub fn record_send(dot_agtalk: &Path, event: RelationEvent<'_>) -> Result<(), IdentityError> {
+    if event.peer_address == event.owner_address {
+        return Ok(());
+    }
     let mut relations = read(dot_agtalk, event.owner_name)?;
     ensure_owner(&mut relations, event.owner_name, event.owner_address);
 
@@ -135,6 +144,9 @@ pub fn record_send(dot_agtalk: &Path, event: RelationEvent<'_>) -> Result<(), Id
 
 /// 更新接收方的 relation：peer 是发送方。
 pub fn record_receive(dot_agtalk: &Path, event: RelationEvent<'_>) -> Result<(), IdentityError> {
+    if event.peer_address == event.owner_address {
+        return Ok(());
+    }
     let mut relations = read(dot_agtalk, event.owner_name)?;
     ensure_owner(&mut relations, event.owner_name, event.owner_address);
 
@@ -163,10 +175,18 @@ pub fn record_receive(dot_agtalk: &Path, event: RelationEvent<'_>) -> Result<(),
     Ok(())
 }
 
-/// 列出所有 peers。
-pub fn list(dot_agtalk: &Path, name: &str) -> Result<Vec<Relation>, IdentityError> {
+/// 列出所有 peers；可按 specialty 大小写不敏感精确匹配过滤。
+pub fn list(
+    dot_agtalk: &Path,
+    name: &str,
+    specialty: Option<&str>,
+) -> Result<Vec<Relation>, IdentityError> {
     let relations = read(dot_agtalk, name)?;
     let mut peers: Vec<Relation> = relations.peers.into_values().collect();
+    if let Some(filter) = specialty {
+        let filter = filter.to_lowercase();
+        peers.retain(|r| r.specialties.iter().any(|s| s.to_lowercase() == filter));
+    }
     peers.sort_by(|a, b| b.last_seen_at.partial_cmp(&a.last_seen_at).unwrap());
     Ok(peers)
 }
@@ -186,14 +206,32 @@ pub fn find(dot_agtalk: &Path, name: &str, query: &str) -> Result<Option<Relatio
         .cloned())
 }
 
+/// 清洗字符串数组：trim、去空、去重（保留原顺序）。
+pub fn clean_strings(items: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    items
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .filter(|s| seen.insert(s.clone()))
+        .collect()
+}
+
+/// 更新 peer 手动字段的参数包。
+pub struct RelationUpdate {
+    pub role: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub note: Option<String>,
+    pub specialties: Option<Vec<String>>,
+    pub preferred_for: Option<Vec<String>>,
+}
+
 /// 按 name 或 address 更新 peer 的手动字段。
 pub fn update(
     dot_agtalk: &Path,
     name: &str,
     query: &str,
-    role: Option<String>,
-    tags: Option<Vec<String>>,
-    note: Option<String>,
+    update: RelationUpdate,
 ) -> Result<Option<Relation>, IdentityError> {
     let mut relations = read(dot_agtalk, name)?;
     let query_lower = query.to_lowercase();
@@ -210,14 +248,20 @@ pub fn update(
 
     if let Some(key) = key {
         let relation = relations.peers.get_mut(&key).unwrap();
-        if let Some(role) = role {
+        if let Some(role) = update.role {
             relation.role = Some(role);
         }
-        if let Some(tags) = tags {
-            relation.tags = tags;
+        if let Some(tags) = update.tags {
+            relation.tags = clean_strings(tags);
         }
-        if let Some(note) = note {
+        if let Some(note) = update.note {
             relation.note = Some(note);
+        }
+        if let Some(specialties) = update.specialties {
+            relation.specialties = clean_strings(specialties);
+        }
+        if let Some(preferred_for) = update.preferred_for {
+            relation.preferred_for = clean_strings(preferred_for);
         }
         write(dot_agtalk, name, &relations)?;
         Ok(relations.peers.get(&key).cloned())
@@ -307,9 +351,13 @@ mod tests {
             &dot,
             "tom",
             "addr-jerry",
-            Some("implementation".to_string()),
-            Some(vec!["rust".to_string()]),
-            Some("good partner".to_string()),
+            RelationUpdate {
+                role: Some("implementation".to_string()),
+                tags: Some(vec!["rust".to_string()]),
+                note: Some("good partner".to_string()),
+                specialties: None,
+                preferred_for: None,
+            },
         )
         .unwrap();
 
@@ -377,7 +425,7 @@ mod tests {
         )
         .unwrap();
 
-        let list = list(&dot, "tom").unwrap();
+        let list = list(&dot, "tom", None).unwrap();
         assert_eq!(list[0].name, "b");
         assert_eq!(list[1].name, "a");
     }
@@ -401,5 +449,186 @@ mod tests {
 
         let found = find(&dot, "tom", "550e8400").unwrap();
         assert!(found.is_some());
+    }
+
+    #[test]
+    fn v1_file_readable_and_write_upgrades_to_v2() {
+        let (dot, _tmp) = tmp_dot();
+        std::fs::create_dir_all(dot.join("tom")).unwrap();
+        let v1 = r#"{
+            "version": 1,
+            "owner": { "name": "tom", "address": "addr-tom" },
+            "peers": {
+                "addr-jerry": {
+                    "name": "jerry",
+                    "address": "addr-jerry",
+                    "intro": "designer",
+                    "sent_count": 3,
+                    "received_count": 2,
+                    "role": "reviewer",
+                    "tags": ["rust"]
+                }
+            }
+        }"#;
+        std::fs::write(dot.join("tom").join("relations.json"), v1).unwrap();
+
+        // v1 可读，新增字段默认为空
+        let relations = read(&dot, "tom").unwrap();
+        let r = relations.peers.get("addr-jerry").unwrap();
+        assert_eq!(r.role, Some("reviewer".to_string()));
+        assert!(r.specialties.is_empty());
+        assert!(r.preferred_for.is_empty());
+
+        // 任意写操作升级到 version 2，不丢失旧字段
+        update(
+            &dot,
+            "tom",
+            "addr-jerry",
+            RelationUpdate {
+                role: None,
+                tags: None,
+                note: None,
+                specialties: Some(vec!["Rust 实现".to_string()]),
+                preferred_for: None,
+            },
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(dot.join("tom").join("relations.json")).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(json["version"], 2);
+        assert_eq!(json["peers"]["addr-jerry"]["role"], "reviewer");
+        assert_eq!(json["peers"]["addr-jerry"]["specialties"][0], "Rust 实现");
+    }
+
+    #[test]
+    fn update_cleans_specialties_and_preferred_for() {
+        let (dot, _tmp) = tmp_dot();
+        record_send(
+            &dot,
+            RelationEvent {
+                owner_name: "tom",
+                owner_address: "addr-tom",
+                peer_name: "jerry",
+                peer_address: "addr-jerry",
+                peer_intro: "",
+                message_id: "m1",
+                timestamp: 1.0,
+            },
+        )
+        .unwrap();
+
+        update(
+            &dot,
+            "tom",
+            "addr-jerry",
+            RelationUpdate {
+                role: None,
+                tags: None,
+                note: None,
+                specialties: Some(vec![
+                    "  Rust 实现 ".to_string(),
+                    "Rust 实现".to_string(),
+                    "".to_string(),
+                    "测试隔离".to_string(),
+                ]),
+                preferred_for: Some(vec!["功能开发".to_string(), "  ".to_string()]),
+            },
+        )
+        .unwrap();
+
+        let r = read(&dot, "tom").unwrap().peers["addr-jerry"].clone();
+        assert_eq!(
+            r.specialties,
+            vec!["Rust 实现".to_string(), "测试隔离".to_string()]
+        );
+        assert_eq!(r.preferred_for, vec!["功能开发".to_string()]);
+    }
+
+    #[test]
+    fn list_filters_by_specialty_case_insensitive() {
+        let (dot, _tmp) = tmp_dot();
+        record_send(
+            &dot,
+            RelationEvent {
+                owner_name: "tom",
+                owner_address: "addr-tom",
+                peer_name: "a",
+                peer_address: "addr-a",
+                peer_intro: "",
+                message_id: "m1",
+                timestamp: 1.0,
+            },
+        )
+        .unwrap();
+        update(
+            &dot,
+            "tom",
+            "addr-a",
+            RelationUpdate {
+                role: None,
+                tags: None,
+                note: None,
+                specialties: Some(vec!["Rust 实现".to_string()]),
+                preferred_for: None,
+            },
+        )
+        .unwrap();
+
+        record_send(
+            &dot,
+            RelationEvent {
+                owner_name: "tom",
+                owner_address: "addr-tom",
+                peer_name: "b",
+                peer_address: "addr-b",
+                peer_intro: "",
+                message_id: "m2",
+                timestamp: 2.0,
+            },
+        )
+        .unwrap();
+        update(
+            &dot,
+            "tom",
+            "addr-b",
+            RelationUpdate {
+                role: None,
+                tags: None,
+                note: None,
+                specialties: Some(vec!["前端".to_string()]),
+                preferred_for: None,
+            },
+        )
+        .unwrap();
+
+        let filtered = list(&dot, "tom", Some("rust 实现")).unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "a");
+
+        let all = list(&dot, "tom", None).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].name, "b");
+    }
+
+    #[test]
+    fn record_send_does_not_add_owner_as_peer() {
+        let (dot, _tmp) = tmp_dot();
+        record_send(
+            &dot,
+            RelationEvent {
+                owner_name: "tom",
+                owner_address: "addr-tom",
+                peer_name: "tom",
+                peer_address: "addr-tom",
+                peer_intro: "self",
+                message_id: "m1",
+                timestamp: 1.0,
+            },
+        )
+        .unwrap();
+
+        let relations = read(&dot, "tom").unwrap();
+        assert!(relations.peers.is_empty());
     }
 }

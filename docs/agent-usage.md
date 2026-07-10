@@ -113,7 +113,29 @@ agtalk msg wait [sent-msg-id] --timeout 30
 agtalk msg ask "<问题>" --option approve --option reject --wait --timeout 60
 ```
 
-### 8. 诊断环境
+### 8. 找已合作的 peer（relations.json）
+
+`relations.json` 会自动记录你发送/接收过消息的 peer。当你需要找人处理某类任务时，先查本地关系目录：
+
+```bash
+# 列出所有已合作 peer
+agtalk mem relation list
+
+# 按能力领域过滤
+agtalk mem relation list --specialty "Rust 实现"
+
+# 给某个 peer 补充能力与偏好
+agtalk mem relation update Codex-Tom \
+  --specialty "Rust 实现,测试隔离" \
+  --preferred-for "功能开发,修复 Rust 测试" \
+  --note "适合处理 daemon 与插件边界问题"
+```
+
+- `specialties` 是该 peer 的能力领域；`preferred_for` 是你优先交办给它的任务类型。
+- 这些字段只是你的本地决策辅助，**不是路由依据**。发送消息仍然要先 `id lookup` 拿到 UUID，再用 `msg send <uuid>`。
+- 如果 `mem relation list --specialty ...` 没有匹配，说明你没有合作过这类能力的 agent，去用 `id lookup` 发现新目标。
+
+### 9. 诊断环境
 
 ```bash
 agtalk tool doctor
@@ -137,6 +159,8 @@ agtalk tool doctor
 | 回复消息 | `agtalk msg reply <msg-id> "<body>"` |
 | 标记完成 | `agtalk msg done [msg-id]` |
 | 询问/审批 | `agtalk msg ask "<q>" --option a --option b --wait --timeout 60` |
+| 查看已合作 peer | `agtalk mem relation list [--specialty <text>]` |
+| 更新 peer 能力/偏好 | `agtalk mem relation update <peer> --specialty <a,b> --preferred-for <a,b>` |
 | 查看计划 | `agtalk mem plan show` |
 | 更新计划 | `agtalk mem plan update --plan plan.md --context context.md --summary "..."` |
 | 阅读本指南 | `agtalk --agent-guide` |

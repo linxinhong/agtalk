@@ -206,6 +206,12 @@ fn print_relation_list(relations: &[crate::identity::relations::Relation]) {
         if let Some(role) = &r.role {
             println!("    role: {}", role);
         }
+        if !r.specialties.is_empty() {
+            println!("    specialties: {}", r.specialties.join(", "));
+        }
+        if !r.preferred_for.is_empty() {
+            println!("    preferred_for: {}", r.preferred_for.join(", "));
+        }
         if !r.tags.is_empty() {
             println!("    tags: {}", r.tags.join(", "));
         }
@@ -231,6 +237,12 @@ fn print_relation(relation: &crate::identity::relations::Relation) {
     }
     if let Some(role) = &relation.role {
         println!("role          : {}", role);
+    }
+    if !relation.specialties.is_empty() {
+        println!("specialties   : {}", relation.specialties.join(", "));
+    }
+    if !relation.preferred_for.is_empty() {
+        println!("preferred_for : {}", relation.preferred_for.join(", "));
     }
     if !relation.tags.is_empty() {
         println!("tags          : {}", relation.tags.join(", "));

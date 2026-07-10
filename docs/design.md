@@ -256,13 +256,44 @@ Android APK 无法访问本地 `.agtalk/` 文件系统，因此 Android BLE tran
 - `entries.jsonl` 是长期知识沉淀，默认不跨 agent 开放。
 - 这些文件只参与展示/协作，不参与认证、路由、PID 校验。
 
-#### 2.8.3 全局用户 memory（跨 workspace，预留）
+#### 2.8.3 relations.json v2：本地协作目录
+
+`.agtalk/<agent-name>/relations.json` 是当前 agent 私有的 peer 画像，按 address 聚合：
+
+```json
+{
+  "version": 2,
+  "owner": { "name": "kimi-Lin", "address": "..." },
+  "peers": {
+    "550e8400-e29b-41d4-a716-446655440000": {
+      "name": "Codex-Tom",
+      "address": "550e8400-e29b-41d4-a716-446655440000",
+      "intro": "产品经理、代码 review 专家",
+      "sent_count": 12,
+      "received_count": 8,
+      "role": "实现负责人",
+      "tags": ["rust", "core"],
+      "specialties": ["Rust 实现", "测试隔离", "notify plugin"],
+      "preferred_for": ["功能开发", "修复 Rust 测试"],
+      "note": "适合处理 daemon 与插件边界问题"
+    }
+  }
+}
+```
+
+- **owner 是当前 agent 身份锚点**，不会把 owner 自己写入 `peers`。
+- `specialties` / `preferred_for` 是手动维护的能力与任务偏好；`role` / `tags` / `note` 保留原有语义。
+- 自动字段（`first_seen_at`、`last_seen_at`、`last_message_id`、`sent_count`、`received_count`）在 `msg send` / `msg reply` 成功后更新。
+- `relations.json` 不复制实时在线状态、notify endpoint、消息正文或任务状态；这些分别属于 `id lookup`、session、history 和 plan。
+- 推荐协作流程：`mem relation list --specialty ...` 找已合作 peer；无匹配时用 `id lookup` 发现新 agent；发送时仍使用完整 UUID 路由。
+
+#### 2.8.4 全局用户 memory（跨 workspace，预留）
 
 - 路径：`<config_dir>/memory/`。
 - 用于未来用户可写的全局记忆，跨 workspace 生效。
 - 当前只建立目录与文档约定，不引入复杂写入命令。
 
-#### 2.8.4 SQLite 在线索引（daemon 派生视图）
+#### 2.8.5 SQLite 在线索引（daemon 派生视图）
 
 daemon 维护 `mem_index` 表，只记录**当前在线** agent 的公开 mem 元数据：
 
@@ -281,7 +312,7 @@ public_topics    TEXT
 - 离线 agent 的长期记忆仍在文件系统，但不再进入 daemon 的在线查询结果。
 - 其他 agent 通过 `GET /api/v1/mem/plan` / `mem plan status` 只能看到已注册的在线 agent 的公开 plan/context/status。
 
-#### 2.8.5 与身份生命周期的关系
+#### 2.8.6 与身份生命周期的关系
 
 mem 索引生命周期严格跟随 mailbox 生命周期：
 
