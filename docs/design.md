@@ -554,7 +554,7 @@ agent 可能跑在任何环境（终端+zellij/tmux、普通终端、GUI/IDE、�
 
 | agent 环境 | notify 通道 | 机制 | 局限 |
 |---|---|---|---|
-| 终端 + zellij | `plugin:zellij` | 外部插件 `agtalk-notify-zellij` 调用 `zellij action write-chars` | 需要插件二进制；daemon 作为后台进程时可能无法访问 active zellij session |
+| 终端 + zellij | `plugin:zellij` | 外部插件 `agtalk-notify-zellij` 调用 `zellij action paste` + `send-keys Enter` | 需要插件二进制；daemon 作为后台进程时可能无法访问 active zellij session |
 | 终端 + tmux | `plugin:tmux` | 外部插件 `agtalk-notify-tmux` 调用 `tmux send-keys` | 需要插件二进制；依赖 TMUX_PANE |
 | 普通终端（无多路复用器） | **无标准方式** | — | **难点**：没有 API 往另一个终端进程的 stdin 写字。agtalk-office 对此无解（跳过）。v2 也不假装能解决，仅依赖 agent 自查（msg read）或安装对应 plugin |
 | GUI / IDE / 系统通知 / webhook | `plugin:<name>` | 用户自定义插件 | 由插件自行实现；agtalk core 不经 shell 执行 |
