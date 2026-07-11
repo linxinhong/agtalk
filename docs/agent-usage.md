@@ -110,8 +110,11 @@ agtalk msg wait [sent-msg-id] --timeout 30
 ### 7. 向人类提问/请求审批
 
 ```bash
-agtalk msg ask "<问题>" --option approve --option reject --wait --timeout 60
+agtalk msg ask "<问题>" --option approve --option reject --timeout 60
 ```
+
+- 默认经 SSE 等待人类回复，超时 300 秒；`--timeout` 覆盖；`--no-wait` 只发送不等待。
+- 超时不取消 pending：人类之后回复仍可通过 `msg read` / `msg wait <sent-msg-id>` 收到。
 
 ### 8. 找已合作的 peer（relations.json）
 
@@ -180,7 +183,7 @@ agtalk tool doctor
 | 等待回复（notify 不可靠或短期同步） | `agtalk msg wait [sent-msg-id] --timeout 30` |
 | 回复消息 | `agtalk msg reply <msg-id> "<body>"` |
 | 标记完成 | `agtalk msg done [msg-id]` |
-| 询问/审批 | `agtalk msg ask "<q>" --option a --option b --wait --timeout 60` |
+| 询问/审批 | `agtalk msg ask "<q>" --option a --option b --timeout 60` |
 | 查看已合作 peer | `agtalk mem relation list [--specialty <text>]` |
 | 更新 peer 能力/偏好 | `agtalk mem relation update <peer> --specialty <a,b> --preferred-for <a,b>` |
 | 查看计划 | `agtalk mem plan show [--target <UUID-or-name>]` |

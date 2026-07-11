@@ -424,8 +424,8 @@ fn agent_help_message() -> ServerMsg {
                     note: Some("<sent-msg-id> is the id returned by msg send / msg ask".to_string()),
                 },
                 AgentHelpExample {
-                    command: "agtalk msg ask \"<question>\" --option approve --option reject --wait --timeout 60".to_string(),
-                    note: None,
+                    command: "agtalk msg ask \"<question>\" --option approve --option reject --timeout 60".to_string(),
+                    note: Some("waits up to 300s by default; --no-wait to skip".to_string()),
                 },
             ],
         },

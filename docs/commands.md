@@ -280,15 +280,21 @@ agtalk msg ask <message> [options]
 --recommended <text>         添加推荐选项
 --single                     单选
 --select-only                禁止自由文本
---wait                       发送后等待回复
---timeout <sec>              等待超时
+--no-wait                    发送后不等待回复（默认阻塞等待，超时 300 秒）
+--timeout <sec>              等待回复的超时秒数（默认 300）
 ```
 
 示例：
 
 ```bash
-agtalk msg ask "要继续部署吗？" --option 继续 --recommended 停止 --single --wait --timeout 60
+agtalk msg ask "要继续部署吗？" --option 继续 --recommended 停止 --single --timeout 60
 ```
+
+行为：
+
+- 默认发送后经 SSE 阻塞等待人类回复，超时 300 秒；`--timeout` 覆盖；`--no-wait` 只发送不等待。
+- 超时不取消 pending：询问仍在 human inbox，人类之后回复仍可通过 `msg read` / `msg wait <sent-msg-id>` 收到。
+- `--json` 输出先打印 `AskResult`（message_id），等待结束后打印 `WaitResult`；超时返回稳定错误码 `timeout`。
 
 `ask` 属于消息域，不提供顶层 `agtalk ask`。
 
@@ -784,9 +790,33 @@ X-AgTalk-Browser-Token: <token>
 Last-Event-ID: <event_id>
 ```
 
+本机 human 客户端（popup/GUI）使用 human token，订阅 human mailbox 的统一 SSE（无需 `X-AgTalk-Address`）：
+
+```text
+X-AgTalk-Human-Token: <token>
+Last-Event-ID: <event_id>
+```
+
 REST API 不新增轮询收信接口。需要“现在有什么”用 `msg inbox/read`，需要推送用 events。
 
-### 11.5 旧 REST 路径映射
+### 11.5 human API（仅本机 human 客户端）
+
+```text
+GET  /api/v1/human/inbox?all=true|false
+POST /api/v1/human/read
+POST /api/v1/human/reply
+POST /api/v1/human/done
+GET  /api/v1/human/agents
+POST /api/v1/human/send
+```
+
+认证：仅接受 `X-AgTalk-Human-Token`（daemon 启动时在 `<config_dir>/human/session.json` 颁发，0600），agent / browser 凭据一律拒绝。token 绝不暴露给 agent。详见 `docs/human-surfaces.md`。
+
+- `POST /api/v1/human/reply`：请求体 `{message_id, body, choice?, surface?, external_event_id?}`。approval_request 首个有效回复原子胜出，后续返回 `already_resolved`；`select_only` 无 choice 返回 `select_only_requires_choice`；`external_event_id` 提供时按 `(surface, external_event_id)` 去重，重复返回 `duplicate_event`。
+- `GET /api/v1/human/agents`：返回在线 agent 列表（活跃 mailbox，排除 human 自身），人类主动发信只能从该列表选择。
+- `POST /api/v1/human/send`：请求体 `{to, body, subject?}`，`to` 必须是活跃 mailbox UUID，复用 routing::send，触发目标 agent 的 SSE/notify。
+
+### 11.6 旧 REST 路径映射
 
 | 旧路径 | NG canonical |
 |---|---|
@@ -844,7 +874,7 @@ Rules:
 
 5. Wait / ask human
   agtalk msg wait [sent-msg-id] --timeout 30
-  agtalk msg ask "<question>" --option approve --option reject --wait --timeout 60
+  agtalk msg ask "<question>" --option approve --option reject --timeout 60
 
 6. Memory / plan
   agtalk mem plan show
@@ -901,6 +931,11 @@ lookup_ambiguous
 memory_unavailable
 invalid_command
 not_supported
+already_resolved
+select_only_requires_choice
+invalid_choice
+duplicate_event
+agent_not_found
 ```
 
 `--json` 错误格式：
