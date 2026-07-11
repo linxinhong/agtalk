@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod commands;
 pub mod config;
+pub mod human;
 pub mod identity;
 pub mod mem;
 pub mod notify;

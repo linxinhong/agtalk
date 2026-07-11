@@ -344,10 +344,7 @@ mod tests {
     #[test]
     fn ensure_human_creates_once() {
         let storage = Storage::open_in_memory().unwrap();
-        let cfg = HumanConfig {
-            name: "human".to_string(),
-            intro: "人类收件箱".to_string(),
-        };
+        let cfg = HumanConfig::default();
         let a = ensure_human(&storage, &cfg).unwrap();
         let b = ensure_human(&storage, &cfg).unwrap();
         assert_eq!(a, b);

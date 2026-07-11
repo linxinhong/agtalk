@@ -89,6 +89,7 @@ pub fn handle_send(
             }
             record_send_history(state, &session, &to_name, &msg, "msg.send");
             record_send_relations(state, &session, &to_name, &to, &msg);
+            fanout_if_human(state, &to, &msg);
             ServerMsg::Ok { id: msg.id }
         }
         Err(e) => ServerMsg::Error {
@@ -179,6 +180,7 @@ pub fn handle_reply(
                 original_status_change.as_ref(),
             );
             record_reply_relations(state, &session, &original, &msg);
+            fanout_if_human(state, &msg.to_address, &msg);
             ServerMsg::Ok { id: msg.id }
         }
         Err(e) => ServerMsg::Error {
@@ -344,6 +346,9 @@ pub fn handle_ask(
                 });
             }
             record_send_history(state, &session, &state.config.human.name, &msg, "msg.ask");
+            if let Err(e) = crate::human::fanout(&state.storage, &state.config.human, &msg) {
+                tracing::warn!("human fanout failed: {}", e);
+            }
             ServerMsg::AskResult { message_id: msg.id }
         }
         Err(e) => ServerMsg::Error {
@@ -706,6 +711,28 @@ fn record_status_history(
     }
 }
 
+/// 消息发往 human mailbox 时，按配置为各 surface 记账 pending delivery。
+/// fanout 失败不影响消息投递（消息已落库 + SSE 已推送）。
+fn fanout_if_human(state: &AppState, to_address: &str, msg: &crate::routing::Message) {
+    let human_address = match crate::human::human_address(&state.storage) {
+        Ok(addr) => addr,
+        Err(e) => {
+            tracing::debug!("human address lookup skipped: {}", e);
+            return;
+        }
+    };
+    if to_address != human_address {
+        return;
+    }
+    match crate::human::fanout(&state.storage, &state.config.human, msg) {
+        Ok(n) if n > 0 => {
+            tracing::info!(message_id = %msg.id, surfaces = n, "human fanout recorded")
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!("human fanout failed: {}", e),
+    }
+}
+
 fn routing_error_code(e: &crate::routing::RoutingError) -> &'static str {
     use crate::routing::RoutingError;
     match e {
@@ -931,6 +958,94 @@ mod tests {
         let receiver_history = read_history_lines(&state.dot_agtalk, "recv");
         assert_eq!(sender_history[0]["subject"], "History S");
         assert_eq!(receiver_history[0]["subject"], "History S");
+    }
+
+    #[test]
+    fn send_to_human_records_pending_deliveries() {
+        let (state, _tmp) = test_state();
+        join(&state, "sender");
+        let human_addr =
+            crate::identity::mailbox::ensure_human(&state.storage, &state.config.human).unwrap();
+
+        let headers = auth_headers_for(&state, "sender");
+        let resp = handle_send(
+            &state,
+            &headers,
+            human_addr,
+            "hi human".into(),
+            None,
+            vec![],
+            Some(false),
+            None,
+            false,
+        );
+        let id = match resp {
+            ServerMsg::Ok { id } => id,
+            other => panic!("expected Ok, got {:?}", other),
+        };
+
+        let deliveries = crate::human::delivery::list_for_message(&state.storage, &id).unwrap();
+        assert_eq!(deliveries.len(), state.config.human.surfaces.len());
+        assert!(deliveries.iter().all(|d| d.status == "pending"));
+    }
+
+    #[test]
+    fn send_to_agent_records_no_human_delivery() {
+        let (state, _tmp) = test_state();
+        join(&state, "sender");
+        let recv_addr = join(&state, "recv");
+
+        let headers = auth_headers_for(&state, "sender");
+        let resp = handle_send(
+            &state,
+            &headers,
+            recv_addr,
+            "hi agent".into(),
+            None,
+            vec![],
+            Some(false),
+            None,
+            false,
+        );
+        let id = match resp {
+            ServerMsg::Ok { id } => id,
+            other => panic!("expected Ok, got {:?}", other),
+        };
+        assert!(
+            crate::human::delivery::list_for_message(&state.storage, &id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn ask_records_pending_deliveries_for_human() {
+        let (state, _tmp) = test_state();
+        join(&state, "asker");
+
+        let headers = auth_headers_for(&state, "asker");
+        let resp = handle_ask(
+            &state,
+            &headers,
+            "approve deploy?".into(),
+            vec![],
+            AskOptions {
+                questions: vec![],
+                options: vec!["yes".into(), "no".into()],
+                recommended: Some("yes".into()),
+                single: true,
+                select_only: false,
+            },
+            false,
+            None,
+            false,
+        );
+        let id = match resp {
+            ServerMsg::AskResult { message_id } => message_id,
+            other => panic!("expected AskResult, got {:?}", other),
+        };
+        let deliveries = crate::human::delivery::list_for_message(&state.storage, &id).unwrap();
+        assert_eq!(deliveries.len(), state.config.human.surfaces.len());
     }
 
     #[test]

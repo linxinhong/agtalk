@@ -8,6 +8,7 @@ use thiserror::Error;
 const DEFAULT_HTTP_PORT: u16 = 19527;
 const DEFAULT_HUMAN_NAME: &str = "human";
 const DEFAULT_HUMAN_INTRO: &str = "人类收件箱";
+const DEFAULT_HUMAN_SURFACE: &str = "popup";
 const DEFAULT_PREVIEW_CHARS: usize = 4000;
 const DEFAULT_INLINE_LIMIT: usize = 2048;
 
@@ -31,6 +32,9 @@ pub struct HumanConfig {
     pub name: String,
     #[serde(default = "default_human_intro")]
     pub intro: String,
+    /// human 消息的投递面（surface）列表；每条发给 human 的消息为每个 surface 记一条 delivery。
+    #[serde(default = "default_human_surfaces")]
+    pub surfaces: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +101,7 @@ impl Default for HumanConfig {
         Self {
             name: DEFAULT_HUMAN_NAME.to_string(),
             intro: DEFAULT_HUMAN_INTRO.to_string(),
+            surfaces: default_human_surfaces(),
         }
     }
 }
@@ -120,6 +125,10 @@ fn default_human_name() -> String {
 
 fn default_human_intro() -> String {
     DEFAULT_HUMAN_INTRO.to_string()
+}
+
+fn default_human_surfaces() -> Vec<String> {
+    vec![DEFAULT_HUMAN_SURFACE.to_string()]
 }
 
 fn default_preview_chars() -> usize {
