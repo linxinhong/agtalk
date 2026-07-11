@@ -33,12 +33,26 @@ if [ "$CMD" = "send" ]; then
         DRY_RUN=true
     fi
 
+    # Parse the JSON payload from stdin and validate its version. The python
+    # helper emits shell-safe KEY=VALUE lines; capturing into FIELDS first and
+    # eval'ing afterwards lets a parse failure propagate under `set -e`
+    # (eval "$(...)" would hide the inner failure).
     PAYLOAD=$(cat)
-    ENDPOINT=$(printf '%s' "$PAYLOAD" | python3 -c 'import sys,json; print(json.dumps(json.load(sys.stdin).get("endpoint",{})))' 2>/dev/null || echo '{}')
-    PANE=$(printf '%s' "$ENDPOINT" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("pane",""))' 2>/dev/null || true)
+    FIELDS=$(printf '%s' "$PAYLOAD" | python3 -c '
+import sys,json,shlex
+p=json.load(sys.stdin)
+if p.get("version")!=1:
+    sys.stderr.write("unsupported payload version\n"); sys.exit(2)
+ep=p.get("endpoint",{}) or {}
+def kv(k,v): print("%s=%s" % (k, shlex.quote(str(v))))
+kv("PANE", ep.get("pane",""))
+kv("TEXT", p.get("text","[agtalk] 新消息"))
+kv("SEND_ENTER", "1" if p.get("send_enter",True) in (True,"True","true",1) else "0")
+') || { echo "tmux plugin: payload 解析失败" >&2; exit 1; }
+    eval "$FIELDS"
 
     if [ -z "$PANE" ]; then
-        echo "missing endpoint.pane" >&2
+        echo "tmux plugin: missing endpoint.pane" >&2
         exit 1
     fi
 
@@ -46,15 +60,12 @@ if [ "$CMD" = "send" ]; then
         if tmux list-panes -t "$PANE" >/dev/null 2>&1; then
             exit 0
         fi
-        echo "tmux pane $PANE not reachable" >&2
+        echo "tmux plugin: pane $PANE not reachable" >&2
         exit 1
     fi
 
-    # Inject the pre-assembled text from daemon. The payload contains no body/secret.
-    TEXT=$(printf '%s' "$PAYLOAD" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("text","[agtalk] 新消息"))' 2>/dev/null || echo "[agtalk] 新消息")
-
-    SEND_ENTER=$(printf '%s' "$PAYLOAD" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("send_enter",True))' 2>/dev/null || echo "True")
-    if [ "$SEND_ENTER" = "True" ] || [ "$SEND_ENTER" = "true" ]; then
+    # Inject the pre-assembled text. The payload has no body/secret.
+    if [ "$SEND_ENTER" = "1" ]; then
         tmux send-keys -t "$PANE" -R "$TEXT" Enter
     else
         tmux send-keys -t "$PANE" -R "$TEXT"
