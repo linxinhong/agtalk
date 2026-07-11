@@ -6,7 +6,6 @@ export default defineConfig({
   extensionApi: 'chrome',
   manifest: {
     name: 'agtalk',
-    version: '0.1.0',
     permissions: ['storage'],
     host_permissions: ['http://127.0.0.1:19527/*'],
   },
