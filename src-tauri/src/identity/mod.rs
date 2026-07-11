@@ -4,6 +4,7 @@ pub mod agents_map;
 pub mod auth;
 pub mod browser_session;
 pub mod history;
+pub mod human_session;
 pub mod mailbox;
 pub mod relations;
 pub mod session_file;
@@ -28,6 +29,8 @@ pub enum IdentityError {
     SessionMismatch,
     #[error("agent 未在 agents.json 注册")]
     AgentNotRegistered,
+    #[error("human token 无效或 system-human session 不存在")]
+    InvalidHumanToken,
     #[error("PID 已复用（start_time 不一致）")]
     PidReused,
     #[error("进程不存在")]

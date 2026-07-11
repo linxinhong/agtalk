@@ -114,6 +114,24 @@ pub fn ensure_browser_workspace_dir() -> Result<PathBuf, PathsError> {
     Ok(dir)
 }
 
+/// system-human session 目录：<config_dir>/human
+pub fn human_session_dir() -> Result<PathBuf, PathsError> {
+    Ok(config_dir()?.join("human"))
+}
+
+/// 确保 system-human session 目录存在，权限 0700
+pub fn ensure_human_session_dir() -> Result<PathBuf, PathsError> {
+    let dir = human_session_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    {
+        use std::fs::Permissions;
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, Permissions::from_mode(0o700))?;
+    }
+    Ok(dir)
+}
+
 /// 全局用户 memory 目录：<config_dir>/memory
 pub fn global_memory_dir() -> Result<PathBuf, PathsError> {
     Ok(config_dir()?.join("memory"))

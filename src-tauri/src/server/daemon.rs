@@ -102,9 +102,16 @@ pub async fn start(dot_agtalk: PathBuf) -> Result<(), DaemonError> {
         error!("创建全局 memory 目录失败: {}", e);
     }
 
-    // 确保 human mailbox 存在
-    if let Err(e) = mailbox::ensure_human(&storage, &config.human) {
-        error!("创建 human mailbox 失败: {}", e);
+    // 确保 human mailbox 存在，并为本机 human 客户端颁发 session（token 存文件，不落 agent 记忆）
+    match mailbox::ensure_human(&storage, &config.human) {
+        Ok(human_address) => {
+            if let Err(e) =
+                crate::identity::human_session::ensure(&human_address, &config.human.name)
+            {
+                error!("创建 human session 失败: {}", e);
+            }
+        }
+        Err(e) => error!("创建 human mailbox 失败: {}", e),
     }
 
     write_pid_file()?;
