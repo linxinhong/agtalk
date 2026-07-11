@@ -126,7 +126,7 @@ chmod +x ~/.local/bin/agtalk-notify-zellij
 
 | 字段 | 说明 |
 |---|---|
-| `version` | 固定 `1` |
+| `version` | 必填，当前固定 `1`；插件收到其他版本应报错退出（拒绝未知协议） |
 | `type` | 固定 `"notify"` |
 | `endpoint` | discover 返回的 endpoint 对象 |
 | `from_name` | 发送方展示名 |
@@ -143,11 +143,11 @@ chmod +x ~/.local/bin/agtalk-notify-zellij
 参考实现直接透传 `text`：
 
 ```text
-[agtalk:msg-123] | exec: agtalk --as coder msg read
+[agtalk:c3384a71] | exec: agtalk --as coder msg read
 ```
 
-- 前缀 `[agtalk:<message_id>]` 方便 agent 直接识别是哪条消息。
-- `exec:` 后接可直接执行的取信命令。
+- 前缀 `[agtalk:<短 id>]` 为 `message_id` 的前 8 位，方便 agent 直接识别是哪条消息（完整 UUID 见 `agtalk msg read --json`）。
+- `exec:` 后接可直接执行的取信命令，`--as <agent>` 指定本地身份。
 - 插件默认不自己组装文本，只读取 `text` 注入终端；如需自定义格式，由 daemon 端调整。
 
 ### 4.4 send --dry-run
@@ -193,6 +193,8 @@ cp plugins/agtalk-notify-zellij ~/.config/agtalk2/plugins/
 chmod +x ~/.config/agtalk2/plugins/agtalk-notify-zellij
 agtalk id join coder --notify plugin:zellij
 ```
+
+> 备注：`id join` 时 core 会传入 `AGTALK_NOTIFY_NAME=<agent>`；该环境变量非空时，zellij 参考插件会把当前 pane 重命名为 agent 名，方便在多 pane 中识别身份。这是有意副作用，仅在显式 `id join --notify plugin:zellij` 时发生；`send` 阶段不会改名。
 
 ### 6.2 tmux 安装
 
