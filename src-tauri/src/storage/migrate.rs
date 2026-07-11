@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 
-pub const CURRENT_VERSION: u32 = 8;
+pub const CURRENT_VERSION: u32 = 9;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS _migrations (
@@ -100,6 +100,40 @@ const MIGRATE_V8: &str = r#"
 ALTER TABLE mailboxes ADD COLUMN workspace_root TEXT NOT NULL DEFAULT '';
 "#;
 
+const MIGRATE_V9: &str = r#"
+CREATE TABLE IF NOT EXISTS human_deliveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id TEXT NOT NULL REFERENCES messages(id),
+    surface TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    external_ref TEXT DEFAULT NULL,
+    error TEXT DEFAULT NULL,
+    created_at REAL NOT NULL DEFAULT (unixepoch('subsec')),
+    updated_at REAL NOT NULL DEFAULT (unixepoch('subsec')),
+    UNIQUE(message_id, surface)
+);
+CREATE INDEX IF NOT EXISTS idx_human_deliveries_surface_status ON human_deliveries(surface, status);
+
+CREATE TABLE IF NOT EXISTS human_action_receipts (
+    surface TEXT NOT NULL,
+    external_event_id TEXT NOT NULL,
+    message_id TEXT DEFAULT NULL,
+    action TEXT NOT NULL,
+    created_at REAL NOT NULL DEFAULT (unixepoch('subsec')),
+    PRIMARY KEY (surface, external_event_id)
+);
+
+CREATE TABLE IF NOT EXISTS approval_resolutions (
+    request_message_id TEXT PRIMARY KEY REFERENCES messages(id),
+    resolved_by TEXT NOT NULL,
+    resolution TEXT NOT NULL,
+    selected_choice TEXT DEFAULT NULL,
+    response_message_id TEXT NOT NULL REFERENCES messages(id),
+    created_at REAL NOT NULL DEFAULT (unixepoch('subsec'))
+);
+"#;
+
 pub fn run(conn: &mut Connection) -> Result<(), super::StorageError> {
     let tx = conn.transaction()?;
 
@@ -140,6 +174,9 @@ pub fn run(conn: &mut Connection) -> Result<(), super::StorageError> {
     }
     if version < 8 {
         tx.execute_batch(MIGRATE_V8)?;
+    }
+    if version < 9 {
+        tx.execute_batch(MIGRATE_V9)?;
     }
 
     tx.execute(
@@ -259,7 +296,7 @@ mod tests {
 
         run(&mut conn).unwrap();
 
-        assert_eq!(max_migration(&conn), 8);
+        assert_eq!(max_migration(&conn), CURRENT_VERSION);
         assert!(
             mailbox_columns(&conn).iter().any(|c| c == "workspace_root"),
             "迁移后 mailboxes 表应新增 workspace_root 列"
@@ -274,5 +311,97 @@ mod tests {
             )
             .unwrap();
         assert_eq!(root, "", "旧 mailbox 行的 workspace_root 应为空串");
+    }
+
+    fn table_exists(conn: &Connection, name: &str) -> bool {
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [name],
+                |row| row.get(0),
+            )
+            .unwrap();
+        count > 0
+    }
+
+    #[test]
+    fn v8_to_v9_creates_human_tables_with_unique_constraints() {
+        let mut conn = Connection::open_in_memory().unwrap();
+
+        // 构造 v8 时代的数据库：SCHEMA_V1 + MIGRATE_V2..V8，但不包含 MIGRATE_V9。
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(MIGRATE_V2).unwrap();
+        conn.execute_batch(MIGRATE_V3).unwrap();
+        conn.execute_batch(MIGRATE_V4).unwrap();
+        conn.execute_batch(MIGRATE_V5).unwrap();
+        conn.execute_batch(MIGRATE_V6).unwrap();
+        conn.execute_batch(MIGRATE_V7).unwrap();
+        conn.execute_batch(MIGRATE_V8).unwrap();
+        conn.execute("INSERT OR REPLACE INTO _migrations(version) VALUES (8)", [])
+            .unwrap();
+
+        conn.execute(
+            "INSERT INTO mailboxes (address, name) VALUES ('h1', 'human')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages (id, to_address, from_address, body, event_id) \
+             VALUES ('m1', 'h1', 'h1', 'hello', 1)",
+            [],
+        )
+        .unwrap();
+
+        assert!(!table_exists(&conn, "human_deliveries"));
+        assert!(!table_exists(&conn, "human_action_receipts"));
+        assert!(!table_exists(&conn, "approval_resolutions"));
+        assert_eq!(max_migration(&conn), 8);
+
+        run(&mut conn).unwrap();
+
+        assert_eq!(max_migration(&conn), CURRENT_VERSION);
+        assert!(table_exists(&conn, "human_deliveries"));
+        assert!(table_exists(&conn, "human_action_receipts"));
+        assert!(table_exists(&conn, "approval_resolutions"));
+
+        // human_deliveries: message_id + surface 唯一
+        conn.execute(
+            "INSERT INTO human_deliveries (message_id, surface) VALUES ('m1', 'popup')",
+            [],
+        )
+        .unwrap();
+        let dup = conn.execute(
+            "INSERT INTO human_deliveries (message_id, surface) VALUES ('m1', 'popup')",
+            [],
+        );
+        assert!(dup.is_err(), "message_id + surface 应唯一");
+
+        // human_action_receipts: surface + external_event_id 主键去重
+        conn.execute(
+            "INSERT INTO human_action_receipts (surface, external_event_id, action) \
+             VALUES ('feishu', 'evt-1', 'reply')",
+            [],
+        )
+        .unwrap();
+        let dup_receipt = conn.execute(
+            "INSERT INTO human_action_receipts (surface, external_event_id, action) \
+             VALUES ('feishu', 'evt-1', 'reply')",
+            [],
+        );
+        assert!(dup_receipt.is_err(), "surface + external_event_id 应唯一");
+
+        // approval_resolutions: request_message_id 主键（跨端首个有效审批胜出）
+        conn.execute(
+            "INSERT INTO approval_resolutions (request_message_id, resolved_by, resolution, response_message_id) \
+             VALUES ('m1', 'popup', 'text', 'm1')",
+            [],
+        )
+        .unwrap();
+        let dup_resolution = conn.execute(
+            "INSERT INTO approval_resolutions (request_message_id, resolved_by, resolution, response_message_id) \
+             VALUES ('m1', 'feishu', 'text', 'm1')",
+            [],
+        );
+        assert!(dup_resolution.is_err(), "request_message_id 应唯一");
     }
 }
