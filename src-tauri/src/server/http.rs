@@ -1,7 +1,7 @@
 //! HTTP API v1：canonical `/api/v1/*` 路由。
 
 use crate::proto::ServerMsg;
-use crate::server::handlers::{config, daemon, id, mem, msg, status_for, tool};
+use crate::server::handlers::{config, daemon, human, id, mem, msg, status_for, tool};
 use crate::server::state::AppState;
 use crate::transport::sse::events_stream;
 use axum::extract::{Path, Query, State};
@@ -56,6 +56,13 @@ pub fn routes(state: AppState) -> Router {
         .route("/api/v1/daemon/status", get(daemon::daemon_status_handler))
         // browser
         .route("/api/v1/browser/join", post(browser_join_handler))
+        // human（仅 X-AgTalk-Human-Token 可访问）
+        .route("/api/v1/human/inbox", get(human_inbox_handler))
+        .route("/api/v1/human/read", post(human_read_handler))
+        .route("/api/v1/human/reply", post(human_reply_handler))
+        .route("/api/v1/human/done", post(human_done_handler))
+        .route("/api/v1/human/agents", get(human_agents_handler))
+        .route("/api/v1/human/send", post(human_send_handler))
         // events
         .route("/api/v1/events", get(events_handler))
         .with_state(state)
@@ -507,12 +514,138 @@ async fn browser_join_handler(
     ))
 }
 
+// ---- human ----
+
+#[derive(serde::Deserialize)]
+struct HumanInboxQuery {
+    #[serde(default)]
+    all: bool,
+}
+
+async fn human_inbox_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HumanInboxQuery>,
+) -> (StatusCode, Json<ServerMsg>) {
+    json_response(human::handle_inbox(&state, &headers, q.all))
+}
+
+#[derive(serde::Deserialize)]
+struct HumanReadBody {
+    #[serde(default)]
+    message_id: Option<String>,
+}
+
+async fn human_read_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<HumanReadBody>,
+) -> (StatusCode, Json<ServerMsg>) {
+    json_response(human::handle_read(&state, &headers, body.message_id))
+}
+
+#[derive(serde::Deserialize)]
+struct HumanReplyBody {
+    message_id: String,
+    body: String,
+    #[serde(default)]
+    choice: Option<String>,
+    #[serde(default = "default_human_surface")]
+    surface: String,
+    #[serde(default)]
+    external_event_id: Option<String>,
+}
+
+fn default_human_surface() -> String {
+    "api".to_string()
+}
+
+async fn human_reply_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<HumanReplyBody>,
+) -> (StatusCode, Json<ServerMsg>) {
+    json_response(human::handle_reply(
+        &state,
+        &headers,
+        body.message_id,
+        body.body,
+        body.choice,
+        body.surface,
+        body.external_event_id,
+    ))
+}
+
+#[derive(serde::Deserialize)]
+struct HumanDoneBody {
+    message_id: String,
+}
+
+async fn human_done_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<HumanDoneBody>,
+) -> (StatusCode, Json<ServerMsg>) {
+    json_response(human::handle_done(&state, &headers, body.message_id))
+}
+
+async fn human_agents_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> (StatusCode, Json<ServerMsg>) {
+    json_response(human::handle_agents(&state, &headers))
+}
+
+#[derive(serde::Deserialize)]
+struct HumanSendBody {
+    to: String,
+    body: String,
+    #[serde(default)]
+    subject: Option<String>,
+}
+
+async fn human_send_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<HumanSendBody>,
+) -> (StatusCode, Json<ServerMsg>) {
+    json_response(human::handle_send(
+        &state,
+        &headers,
+        body.to,
+        body.body,
+        body.subject,
+    ))
+}
+
 // ---- events ----
 
 async fn events_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<axum::response::sse::Event, Infallible>>>, StatusCode> {
+    let last_event_id: Option<i64> = headers
+        .get("Last-Event-ID")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok());
+
+    // human 客户端分支：X-AgTalk-Human-Token 订阅 human mailbox 的统一 SSE（无需 X-AgTalk-Address）
+    if let Some(human_token) = headers
+        .get("X-AgTalk-Human-Token")
+        .and_then(|v| v.to_str().ok())
+    {
+        let session = crate::identity::human_session::validate(human_token)
+            .map_err(|_| StatusCode::UNAUTHORIZED)?;
+        let human_addr = crate::human::human_address(&state.storage)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if session.address != human_addr {
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+        let rx = state.registry.subscribe(&human_addr);
+        let stream = events_stream(state.storage.clone(), human_addr, last_event_id, rx);
+        return Ok(Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()));
+    }
+
     let address = headers
         .get("X-AgTalk-Address")
         .and_then(|v| v.to_str().ok())
@@ -524,10 +657,6 @@ async fn events_handler(
         .and_then(|v| v.parse().ok());
     let start_time = headers
         .get("X-AgTalk-Start-Time")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse().ok());
-    let last_event_id: Option<i64> = headers
-        .get("Last-Event-ID")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse().ok());
     let browser_token = headers
@@ -1272,6 +1401,74 @@ mod tests {
                 assert!(markdown.is_empty());
             }
             other => panic!("expected MemPack, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn v1_events_human_token_branch() {
+        let (state, _tmp, _cfg_tmp, _guard) = browser_test_state();
+        let cfg = AgConfig::default();
+        let human_addr = mailbox::ensure_human(&state.storage, &cfg.human).unwrap();
+        let session = crate::identity::human_session::ensure(&human_addr, &cfg.human.name).unwrap();
+
+        // 正确 token → 200（SSE 响应头立即返回）
+        let app = routes(state.clone());
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/v1/events")
+            .header("X-AgTalk-Human-Token", session.token.clone())
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // 错误 token → 401
+        let app = routes(state.clone());
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/v1/events")
+            .header("X-AgTalk-Human-Token", "wrong-token")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn v1_human_api_requires_token_and_serves() {
+        let (state, _tmp, _cfg_tmp, _guard) = browser_test_state();
+        let cfg = AgConfig::default();
+        let human_addr = mailbox::ensure_human(&state.storage, &cfg.human).unwrap();
+        let session = crate::identity::human_session::ensure(&human_addr, &cfg.human.name).unwrap();
+
+        // 无 token → 401
+        let app = routes(state.clone());
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/v1/human/agents")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        // 正确 token → 200 LookupResult（空列表）
+        let app = routes(state.clone());
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/v1/human/agents")
+            .header("X-AgTalk-Human-Token", session.token.clone())
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: ServerMsg = serde_json::from_slice(&bytes).unwrap();
+        match resp {
+            ServerMsg::LookupResult { mailboxes } => assert!(mailboxes.is_empty()),
+            other => panic!("expected LookupResult, got {:?}", other),
         }
     }
 }

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 pub mod config;
 pub mod daemon;
+pub mod human;
 pub mod id;
 pub mod mem;
 pub mod msg;

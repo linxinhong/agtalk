@@ -457,7 +457,7 @@ pub fn handle_wait(
 /// daemon 自身 workspace（`state.dot_agtalk`）下确实存在该 agent session 的情形，以兼容迁移
 /// 前的存量单 workspace agent。都不可达时返回 `None`（远端 / human / 未在本机注册），
 /// 调用方据此跳过该侧写入，不影响消息投递。
-fn participant_root(state: &AppState, address: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn participant_root(state: &AppState, address: &str) -> Option<std::path::PathBuf> {
     let mb = match mailbox_db::get_by_address(&state.storage, address) {
         Ok(Some(mb)) => mb,
         _ => return None,
@@ -733,7 +733,7 @@ fn fanout_if_human(state: &AppState, to_address: &str, msg: &crate::routing::Mes
     }
 }
 
-fn routing_error_code(e: &crate::routing::RoutingError) -> &'static str {
+pub(crate) fn routing_error_code(e: &crate::routing::RoutingError) -> &'static str {
     use crate::routing::RoutingError;
     match e {
         RoutingError::MessageNotFound(_) => "message_not_found",

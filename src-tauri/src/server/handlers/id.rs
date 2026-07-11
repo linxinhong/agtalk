@@ -185,7 +185,9 @@ pub fn handle_lookup(state: &AppState, name: Option<String>) -> ServerMsg {
     }
 }
 
-fn build_lookup_mailbox(mb: &crate::identity::mailbox::Mailbox) -> crate::proto::LookupMailbox {
+pub(crate) fn build_lookup_mailbox(
+    mb: &crate::identity::mailbox::Mailbox,
+) -> crate::proto::LookupMailbox {
     let channel = mb.notify_channel.clone();
     let notify = notify_summary(&channel);
     let ready = !channel.eq_ignore_ascii_case("none") && !channel.is_empty();
