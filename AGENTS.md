@@ -20,6 +20,7 @@ agtalk 是**本地 Agent 对话总线**。daemon 是唯一真相来源，CLI / G
 2. **name 不唯一，纯展示**。name 永远不进路由查询。消歧在调用方，用 lookup 返回的 address+intro。
 3. **身份载体 = 文件系统**（`.agtalk/<name>/session.json` + `agents.json`）。**禁止**让 agent 持有/记忆高熵 token 作为认证锚（compact 会丢）。认证链：PID → agents.json → name → session.json → UUID。
    - **浏览器扩展域例外**：扩展无法访问本地 `.agtalk/` 文件系统，因此由 daemon 通过 `POST /api/v1/browser/join` 颁发高熵 token，扩展仅存于 `chrome.storage.local`；daemon 在 `browser_sessions` 表校验该 token。该例外**仅限浏览器域**，不得扩展到 CLI/GUI/agent-agent 域。
+   - **Human surface 例外**：popup/GUI 等本机 human 客户端不是 agent 进程，无法走 PID + 文件系统认证链；daemon 在 `<config_dir>/human/session.json`（权限 0600）维护 human address + 高熵 token，客户端凭 `X-AgTalk-Human-Token` 调用仅 human 可用的 `/api/v1/human/*` 并订阅统一 SSE。该例外**仅限本机 human 客户端**（popup/GUI），token 绝不暴露给 agent，agent 没有任何命令可读取它。
 4. **SSE 是唯一推送机制**。**禁止**引入长轮询/短轮询/双机制并存。
 5. **消息推送前必须先持久化**（at-least-once）。event_id 单调，支持 Last-Event-ID 重放。
 6. **三域统一**：human/browser 不是特例，都是不同生命周期的 mailbox。

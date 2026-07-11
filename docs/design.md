@@ -91,7 +91,9 @@ agent 进程发请求时：
 >
 > **Android BLE 例外**：Android APK 同样无法读取本地 `.agtalk/` 文件系统，因此配对后采用 daemon 颁发的 mobile device token 认证（见 §2.7）。该例外仅限 Android BLE transport。
 >
-> 除浏览器扩展和 Android BLE 外，其它 CLI/GUI/agent-agent 域仍必须走 PID + 文件系统。
+> **Human surface 例外**：popup/GUI 等本机 human 客户端不是 agent 进程，没有 PID + 文件系统认证锚，因此 daemon 在配置目录维护 system-human session（`<config_dir>/human/session.json`，权限 0600，含 human address + 高熵 token），客户端凭 `X-AgTalk-Human-Token` 调用仅 human 可用的 API 并订阅统一 SSE（见 §3.6）。该例外仅限本机 human 客户端（popup/GUI），token 绝不暴露给 agent。
+>
+> 除浏览器扩展、Android BLE、本机 human 客户端外，其它 CLI/GUI/agent-agent 域仍必须走 PID + 文件系统。
 
 ### 2.4 PID 复用防护
 
@@ -460,6 +462,51 @@ claude 标签  (tabId=87)        ↔  agent-B 的 UUID
 - 这样 agent 知道要提示用户去配绑定。
 
 **一个 AI 标签绑多个 agent？** 不允许。绑定严格 1:1，因为一个标签的回复只能路由回一个 agent，多了就歧义。如果用户想让两个 agent 都和同一个 chatgpt 对话，应开两个 chatgpt 标签分别绑定。
+
+### 3.6 Human Messaging：一个 human mailbox，多个 surface
+
+**核心模型**：human 是唯一的持久 system mailbox（`system_mailboxes role='human'`，daemon 启动时 `ensure_human` 创建/复用）。桌面 popup、GUI、Feishu、Android 等是**同一个 human mailbox 的多个 surface（展示/交互端）**，共享同一消息库、同一 message ID、同一历史——**禁止**任何 surface 创建独立 mailbox、独立消息库或独立 ID。agent 发给 human 后所有启用 surface 都收到；human 通过任一 surface 回复/完成后，agent 走既有 SSE + notify 被打扰，链路不变。
+
+**认证（system-human session，§2.3 第三个受限例外）**：
+
+- daemon 启动时在 `ensure_human` 之后确保 `<config_dir>/human/session.json` 存在（目录 0700、文件 0600），内容 `{version, address, name, token}`：address = human mailbox 地址，token = 高熵 UUID。
+- human 客户端（popup/GUI）请求携带 `X-AgTalk-Human-Token: <token>`；`GET /api/v1/events` 同样接受该 token 订阅 human 地址，复用统一 SSE（Last-Event-ID 重放不变）。
+- token 仅本机 human 客户端使用，**绝不暴露给 agent**（agent 无命令可读；不进入 lookup/intro/日志）。丢失或泄露：删除 session.json 重启 daemon 重新颁发。
+
+**human-only API**（popup/GUI 的唯一入口，禁止 surface 直写 SQLite）：
+
+```
+GET  /api/v1/human/inbox?all=      → InboxResult（human 收件箱）
+POST /api/v1/human/read            → MsgDetail（标记 read）
+POST /api/v1/human/reply           → Ok{id} / Error{already_resolved|select_only_requires_choice|...}
+POST /api/v1/human/done            → Ok{id}
+GET  /api/v1/human/agents          → LookupResult（活跃 agent 列表，供主动发信选择）
+POST /api/v1/human/send            → Ok{id}（to 必须是活跃 agent 的 UUID，复用 routing::send）
+```
+
+**fanout（先持久化，后投递）**：agent→human 消息（send/reply/ask 落入 human 地址）在消息落库 + SSE 唤醒之后，按启用的 surface 列表（`config.human.surfaces`，默认 `["popup"]`）写 `human_deliveries`（`message_id+surface` 唯一，字段含 status/attempts/external_ref/error）。投递状态机 `pending → delivered | failed`，失败 attempts+1 记 error，可重试；所有消息**先持久化再投递**，surface 故障不影响消息本身。
+
+**幂等去重**：`human_action_receipts`（`surface+external_event_id` 主键）——Feishu 事件回调、Android command_id 等外部事件首次执行后落 receipt，重复事件直接拒绝，保证跨端重放不产生两条回复。
+
+**审批仲裁（跨端首个有效胜出）**：
+
+- 普通文本消息：允许多次 reply（每条都是正常回复消息，原消息首条 reply 后 pending→read）。
+- `approval_request` 消息：首个**有效**回复原子胜出——同一事务内写回复消息 + `approval_resolutions`（`request_message_id` 主键）+ 原消息置 done；主键冲突即返回 `already_resolved`，保证并发多 surface 只有一条 response。
+- 有效 = `select_only` 时必须带 choice（否则 `select_only_requires_choice`）；带 choice 时 choice 必须在 metadata.choices 内（否则 `invalid_choice`）；`select_only=false` 时允许纯文本回复作为胜出。
+- human 只能回复发给 human 地址的消息（归属校验）。
+
+**主动发信**：human→agent 只能从 `GET /api/v1/human/agents` 返回的活跃 agent 中选择；UI 展示 name/intro/status（notify_ready），发送必须用 **UUID** 并复用 `routing::send`，使 agent 现有 SSE/notify/history 链路完全不变。
+
+**`msg ask` 等待语义**：CLI 默认通过现有 SSE wait 等待 **300 秒**（`--timeout` 覆盖）；`--no-wait` 立即返回 message_id；超时以稳定 `timeout` 错误码非零退出，**不取消** pending 消息（human 稍后回复仍进 inbox）。
+
+**阶段路线图**：
+
+1. **第一阶段（本节实现）**：human 领域模块 + 三张表迁移 + fanout + 审批仲裁 + 主动发信 + ask 等待 + system-human session + human-only API。
+2. **第二阶段**：desktop popup —— 对每条 human delivery 拉起 `agtalk __popup <message-id>`（420×320，展示正文/选项、Reply/Done/Later，关闭不改变状态，操作均经 human API；ChildMonitor 监控子进程，关闭且无回复 = dismissed）。
+3. **第三阶段**：Feishu 与 Android surface。Feishu 是**内置 human transport，不是 notify plugin**（v1 仅一个允许的 open_id，长连接收私聊/卡片回调，卡片选项保存 UUID，事件回调经 receipts 去重）；Android 的 Inbox/Reply/Done/Compose 作为 human surface 复用 BLE 已配对设备 token + command_id 去重，**不得创建 Android human mailbox**。无现成实现时只定义并测试 agtalk 侧协议/接口，不伪造完成。
+4. 配置统一经 `agtalk config gui`（可持久化 + CLI fallback），密钥 0600、doctor/log 全部脱敏。notify plugin 仍只推"有消息"信号、禁止注入正文；Feishu/Android human transport 可向实际 human 展示正文。
+
+详见 [`docs/human-surfaces.md`](human-surfaces.md)。
 
 ---
 
