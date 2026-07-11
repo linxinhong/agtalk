@@ -4,6 +4,7 @@
 //! （popup / GUI / 浏览器扩展 / 飞书 / Android）都经 daemon 投递与回执，
 //! 不允许直写 SQLite。
 
+pub mod approval;
 pub mod delivery;
 
 use crate::config::HumanConfig;
