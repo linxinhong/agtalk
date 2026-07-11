@@ -89,7 +89,7 @@ pub fn ask(
     recommended: Option<String>,
     single: bool,
     select_only: bool,
-    wait: bool,
+    no_wait: bool,
     timeout: Option<u64>,
     notify: Option<bool>,
     json: bool,
@@ -107,12 +107,20 @@ pub fn ask(
                 single,
                 select_only,
             },
-            "wait": wait,
-            "timeout": timeout,
             "notify": notify,
         }),
     )?;
     print_server_msg(json, &resp);
+    if no_wait {
+        return Ok(());
+    }
+    // 默认 SSE 等待人类回复：超时默认 300 秒，超时不取消 pending（消息仍在 human inbox）
+    let message_id = match &resp {
+        ServerMsg::AskResult { message_id } => message_id.clone(),
+        _ => return Ok(()),
+    };
+    let waited = wait_result(ctx, Some(message_id), timeout.or(Some(300)), None)?;
+    crate::cli::output::print_server_msg(json, &waited);
     Ok(())
 }
 

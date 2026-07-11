@@ -177,10 +177,10 @@ pub(crate) enum MsgCmd {
         /// 仅返回选择结果，不附加说明
         #[arg(long)]
         select_only: bool,
-        /// 发送后阻塞等待回复
+        /// 发送后不等待回复（默认阻塞等待人类回复，超时 300 秒，可用 --timeout 覆盖）
         #[arg(long)]
-        wait: bool,
-        /// 等待超时秒数
+        no_wait: bool,
+        /// 等待回复的超时秒数（默认 300）
         #[arg(short, long)]
         timeout: Option<u64>,
         /// 是否触发 notify 打扰层（默认 true）
@@ -686,7 +686,7 @@ fn run(cli: Cli, json: bool) -> Result<(), CliError> {
                     recommended,
                     single,
                     select_only,
-                    wait,
+                    no_wait,
                     timeout,
                     notify,
                 } => {
@@ -699,7 +699,7 @@ fn run(cli: Cli, json: bool) -> Result<(), CliError> {
                         recommended,
                         single,
                         select_only,
-                        wait,
+                        no_wait,
                         timeout,
                         notify,
                         json,
@@ -790,6 +790,47 @@ mod tests {
             IdCmd::Join { notify, .. } => assert_eq!(notify, Some("none".to_string())),
             _ => panic!("expected Join"),
         }
+    }
+
+    #[test]
+    fn parse_msg_ask_waits_by_default_and_no_wait_flag() {
+        let cli = Cli::try_parse_from(["agtalk", "msg", "ask", "deploy?"]).unwrap();
+        match cli.command {
+            Some(Commands::Msg {
+                cmd: MsgCmd::Ask {
+                    no_wait, timeout, ..
+                },
+            }) => {
+                assert!(!no_wait, "默认应等待回复");
+                assert_eq!(timeout, None);
+            }
+            _ => panic!("expected Msg ask"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "agtalk",
+            "msg",
+            "ask",
+            "deploy?",
+            "--no-wait",
+            "--timeout",
+            "60",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Msg {
+                cmd: MsgCmd::Ask {
+                    no_wait, timeout, ..
+                },
+            }) => {
+                assert!(no_wait);
+                assert_eq!(timeout, Some(60));
+            }
+            _ => panic!("expected Msg ask"),
+        }
+
+        // 旧 --wait 参数已删除
+        assert!(Cli::try_parse_from(["agtalk", "msg", "ask", "q", "--wait"]).is_err());
     }
 
     #[test]
