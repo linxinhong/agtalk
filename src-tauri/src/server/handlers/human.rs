@@ -56,7 +56,6 @@ fn human_error_msg(e: &HumanError) -> ServerMsg {
         HumanError::AlreadyResolved { .. } => "already_resolved",
         HumanError::SelectOnlyRequiresChoice => "select_only_requires_choice",
         HumanError::InvalidChoice(_) => "invalid_choice",
-        HumanError::DuplicateEvent { .. } => "duplicate_event",
         HumanError::AgentNotFound(_) => "agent_not_found",
         _ => "human_failed",
     };
@@ -171,25 +170,77 @@ pub fn handle_reply(
         },
     ) {
         Ok(out) => {
-            after_human_reply(state, &out.reply);
+            // 重复事件回放：消息未重复创建，也不再触发 SSE/notify
+            if !out.deduplicated {
+                after_human_reply(state, &out.reply);
+            }
             ServerMsg::Ok { id: out.reply.id }
         }
         Err(e) => human_error_msg(&e),
     }
 }
 
-pub fn handle_done(state: &AppState, headers: &HeaderMap, message_id: String) -> ServerMsg {
+pub fn handle_done(
+    state: &AppState,
+    headers: &HeaderMap,
+    message_id: String,
+    surface: Option<String>,
+    external_event_id: Option<String>,
+) -> ServerMsg {
     let session = match authenticate_human(state, headers) {
         Ok(s) => s,
         Err(e) => return e,
     };
+    // 跨端幂等：重复事件直接回放原结果
+    let gate = match (&surface, &external_event_id) {
+        (Some(surface), Some(eid)) => {
+            match human::receipt_gate(&state.storage, surface, eid, "done") {
+                Ok(g) => Some(g),
+                Err(e) => return human_error_msg(&e),
+            }
+        }
+        _ => None,
+    };
+    if let Some(human::ReceiptGate::Duplicate(id)) = &gate {
+        return ServerMsg::Ok { id: id.clone() };
+    }
+
     let resolved = match resolve_human_id(state, &session.address, &message_id) {
         Ok(r) => r,
-        Err(e) => return e,
+        Err(e) => {
+            abort_gate(state, &gate, &surface, &external_event_id);
+            return e;
+        }
     };
     match inbox::mark_done(&state.storage, &resolved, &session.address) {
-        Ok(_) => ServerMsg::Ok { id: resolved },
-        Err(e) => err("done_failed", e),
+        Ok(_) => {
+            if let (Some(human::ReceiptGate::Fresh), Some(surface), Some(eid)) =
+                (&gate, &surface, &external_event_id)
+            {
+                if let Err(e) = human::receipt_complete(&state.storage, surface, eid, &resolved) {
+                    tracing::warn!("receipt complete failed: {}", e);
+                }
+            }
+            ServerMsg::Ok { id: resolved }
+        }
+        Err(e) => {
+            abort_gate(state, &gate, &surface, &external_event_id);
+            err("done_failed", e)
+        }
+    }
+}
+
+/// 动作失败时删除 receipt 占位，允许外部重试。
+fn abort_gate(
+    state: &AppState,
+    gate: &Option<human::ReceiptGate>,
+    surface: &Option<String>,
+    eid: &Option<String>,
+) {
+    if let (Some(human::ReceiptGate::Fresh), Some(surface), Some(eid)) = (gate, surface, eid) {
+        if let Err(e) = human::receipt_abort(&state.storage, surface, eid) {
+            tracing::warn!("receipt abort failed: {}", e);
+        }
     }
 }
 
@@ -213,26 +264,52 @@ pub fn handle_agents(state: &AppState, headers: &HeaderMap) -> ServerMsg {
 }
 
 /// human 主动发信：目标必须是活跃 mailbox，复用 routing::send（UUID 路由）。
+/// 提供 surface+external_event_id 时按 receipt 幂等：重复事件回放原消息 id，不重复发信。
 pub fn handle_send(
     state: &AppState,
     headers: &HeaderMap,
     to: String,
     body: String,
     subject: Option<String>,
+    surface: Option<String>,
+    external_event_id: Option<String>,
 ) -> ServerMsg {
     let session = match authenticate_human(state, headers) {
         Ok(s) => s,
         Err(e) => return e,
     };
+    if to == session.address {
+        return ServerMsg::Error {
+            code: "agent_not_found".into(),
+            message: "目标必须是活跃 agent，不能向 human 自身发信".into(),
+        };
+    }
+    let gate = match (&surface, &external_event_id) {
+        (Some(surface), Some(eid)) => {
+            match human::receipt_gate(&state.storage, surface, eid, "send") {
+                Ok(g) => Some(g),
+                Err(e) => return human_error_msg(&e),
+            }
+        }
+        _ => None,
+    };
+    if let Some(human::ReceiptGate::Duplicate(id)) = &gate {
+        return ServerMsg::Ok { id: id.clone() };
+    }
+
     let target = match mailbox_db::get_by_address(&state.storage, &to) {
         Ok(Some(mb)) if mb.left_at.is_none() => mb,
         Ok(_) => {
+            abort_gate(state, &gate, &surface, &external_event_id);
             return ServerMsg::Error {
                 code: "agent_not_found".into(),
                 message: format!("目标 agent 不存在或已离开: {}", to),
-            }
+            };
         }
-        Err(e) => return err("send_failed", e),
+        Err(e) => {
+            abort_gate(state, &gate, &surface, &external_event_id);
+            return err("send_failed", e);
+        }
     };
     let req = SendRequest {
         to: &to,
@@ -248,10 +325,20 @@ pub fn handle_send(
     };
     match send::send(&state.storage, req) {
         Ok(msg) => {
+            if let (Some(human::ReceiptGate::Fresh), Some(surface), Some(eid)) =
+                (&gate, &surface, &external_event_id)
+            {
+                if let Err(e) = human::receipt_complete(&state.storage, surface, eid, &msg.id) {
+                    tracing::warn!("receipt complete failed: {}", e);
+                }
+            }
             after_human_reply(state, &msg);
             ServerMsg::Ok { id: msg.id }
         }
-        Err(e) => err("send_failed", e),
+        Err(e) => {
+            abort_gate(state, &gate, &surface, &external_event_id);
+            err("send_failed", e)
+        }
     }
 }
 
@@ -367,6 +454,8 @@ mod tests {
             agent_addr.clone(),
             "hello nora".into(),
             Some("greet".into()),
+            None,
+            None,
         ) {
             ServerMsg::Ok { id } => {
                 let inbox = inbox::inbox(&fx.state.storage, &agent_addr, false).unwrap();
@@ -386,10 +475,38 @@ mod tests {
         mark_left(&fx.state.storage, &left_addr).unwrap();
 
         for to in [left_addr, "no-such-agent".to_string()] {
-            match handle_send(&fx.state, &headers_with(&fx.token), to, "hi".into(), None) {
+            match handle_send(
+                &fx.state,
+                &headers_with(&fx.token),
+                to,
+                "hi".into(),
+                None,
+                None,
+                None,
+            ) {
                 ServerMsg::Error { code, .. } => assert_eq!(code, "agent_not_found"),
                 other => panic!("expected agent_not_found, got {:?}", other),
             }
+        }
+    }
+
+    #[test]
+    fn human_send_rejects_human_itself() {
+        let fx = setup();
+        match handle_send(
+            &fx.state,
+            &headers_with(&fx.token),
+            fx.human_addr.clone(),
+            "talk to myself".into(),
+            None,
+            None,
+            None,
+        ) {
+            ServerMsg::Error { code, message } => {
+                assert_eq!(code, "agent_not_found");
+                assert!(message.contains("human 自身"));
+            }
+            other => panic!("expected agent_not_found, got {:?}", other),
         }
     }
 
@@ -473,7 +590,13 @@ mod tests {
         let agent_addr = create(&fx.state.storage, "sender", "", "").unwrap();
         let msg_id = send_to_human(&fx, &agent_addr, "text", "{}");
 
-        match handle_done(&fx.state, &headers_with(&fx.token), msg_id[..8].to_string()) {
+        match handle_done(
+            &fx.state,
+            &headers_with(&fx.token),
+            msg_id[..8].to_string(),
+            None,
+            None,
+        ) {
             ServerMsg::Ok { id } => assert_eq!(id, msg_id),
             other => panic!("expected Ok, got {:?}", other),
         }
@@ -495,5 +618,102 @@ mod tests {
             ServerMsg::Error { code, .. } => assert_eq!(code, "inbox_empty"),
             other => panic!("expected inbox_empty, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn human_send_duplicate_event_replays_original_message_id() {
+        let fx = setup();
+        let agent_addr = create(&fx.state.storage, "nora", "", "").unwrap();
+
+        let first = handle_send(
+            &fx.state,
+            &headers_with(&fx.token),
+            agent_addr.clone(),
+            "hello".into(),
+            None,
+            Some("feishu".into()),
+            Some("evt-send-1".into()),
+        );
+        let first_id = match first {
+            ServerMsg::Ok { id } => id,
+            other => panic!("expected Ok, got {:?}", other),
+        };
+
+        // 重复事件：回放原 message id，不重复发信
+        let second = handle_send(
+            &fx.state,
+            &headers_with(&fx.token),
+            agent_addr.clone(),
+            "hello again".into(),
+            None,
+            Some("feishu".into()),
+            Some("evt-send-1".into()),
+        );
+        match second {
+            ServerMsg::Ok { id } => assert_eq!(id, first_id),
+            other => panic!("expected Ok, got {:?}", other),
+        }
+        let inbox = inbox::inbox(&fx.state.storage, &agent_addr, false).unwrap();
+        assert_eq!(inbox.len(), 1, "重复事件不应产生第二条消息");
+    }
+
+    #[test]
+    fn human_done_duplicate_event_replays_original_result() {
+        let fx = setup();
+        let agent_addr = create(&fx.state.storage, "sender", "", "").unwrap();
+        let msg_id = send_to_human(&fx, &agent_addr, "text", "{}");
+
+        let first = handle_done(
+            &fx.state,
+            &headers_with(&fx.token),
+            msg_id[..8].to_string(),
+            Some("android".into()),
+            Some("cmd-done-1".into()),
+        );
+        match first {
+            ServerMsg::Ok { id } => assert_eq!(id, msg_id),
+            other => panic!("expected Ok, got {:?}", other),
+        }
+
+        // 重复事件：回放原结果
+        let second = handle_done(
+            &fx.state,
+            &headers_with(&fx.token),
+            msg_id[..8].to_string(),
+            Some("android".into()),
+            Some("cmd-done-1".into()),
+        );
+        match second {
+            ServerMsg::Ok { id } => assert_eq!(id, msg_id),
+            other => panic!("expected Ok, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn human_done_aborted_event_allows_retry() {
+        let fx = setup();
+        let agent_addr = create(&fx.state.storage, "sender", "", "").unwrap();
+        let msg_id = send_to_human(&fx, &agent_addr, "text", "{}");
+
+        // 模拟上次动作中途崩溃：占位 receipt 无结果
+        {
+            let conn = fx.state.storage.conn();
+            crate::human::delivery::record_receipt(&conn, "android", "cmd-crash", None, "done")
+                .unwrap();
+        }
+
+        // 同一事件可重新执行并成功
+        match handle_done(
+            &fx.state,
+            &headers_with(&fx.token),
+            msg_id[..8].to_string(),
+            Some("android".into()),
+            Some("cmd-crash".into()),
+        ) {
+            ServerMsg::Ok { id } => assert_eq!(id, msg_id),
+            other => panic!("expected Ok after crash recovery, got {:?}", other),
+        }
+        let msg = lookup::detail(&fx.state.storage, &msg_id).unwrap().unwrap();
+        assert_eq!(msg.status, "done");
     }
 }

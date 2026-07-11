@@ -78,13 +78,16 @@ pending → delivered（surface 确认收到）/ failed（可重试）
   error 并 attempts+1，failed 行可被重试捞取。
 - delivery 失败不影响消息投递：消息始终在 DB，human inbox/SSE 可读（at-least-once）。
 
-## 6. 跨端事件去重
+## 6. 跨端事件幂等
 
 外部 surface（飞书消息回执、Android command）回写动作时带
-`{surface, external_event_id}`：
+`{surface, external_event_id}`。reply / done / send 三个动作统一幂等：
 
-- 同一 `(surface, external_event_id)` 只处理一次，重复返回 `duplicate_event`。
-- 去重与业务写入在同一事务内，保证原子。
+- 同一 `(surface, external_event_id)` 只执行一次；重复事件**回放首次的成功结果**
+  （`Ok{id}`，send 返回原 message id），不重复创建消息、不重复触发 SSE/notify。
+- 动作成功后 receipt 写回结果 id；动作中途崩溃（占位 receipt 无结果 id）时，
+  下次同事件自动恢复并允许重新执行。
+- reply 的去重与业务写入在同一事务内，保证原子。
 
 ## 7. 错误码
 
@@ -97,8 +100,7 @@ pending → delivered（surface 确认收到）/ failed（可重试）
 | `already_resolved` | 审批已被其他 surface 处理 |
 | `select_only_requires_choice` | select_only 审批不允许自由文本 |
 | `invalid_choice` | choice 不在审批选项中 |
-| `duplicate_event` | 重复的跨端事件 |
-| `agent_not_found` | send 目标不存在或已离开 |
+| `agent_not_found` | send 目标不存在、已离开或为 human 自身 |
 
 ## 8. surface 实现 checklist
 

@@ -94,22 +94,22 @@ pub fn ask(
     notify: Option<bool>,
     json: bool,
 ) -> Result<(), CliError> {
-    let resp = post(
-        &ctx,
-        "/api/v1/msg/ask",
-        serde_json::json!({
-            "message": message,
-            "questions": questions,
-            "options": AskOptions {
-                questions,
-                options,
-                recommended,
-                single,
-                select_only,
-            },
-            "notify": notify,
-        }),
-    )?;
+    let mut body = serde_json::json!({
+        "message": message,
+        "questions": questions,
+        "options": AskOptions {
+            questions,
+            options,
+            recommended,
+            single,
+            select_only,
+        },
+    });
+    // notify 未指定时省略字段（服务端默认 true），避免显式 null 触发 422
+    if let Some(n) = notify {
+        body["notify"] = serde_json::Value::Bool(n);
+    }
+    let resp = post(&ctx, "/api/v1/msg/ask", body)?;
     print_server_msg(json, &resp);
     if no_wait {
         return Ok(());

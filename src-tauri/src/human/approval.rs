@@ -30,6 +30,8 @@ pub struct HumanReplyOutcome {
     pub original_status_change: Option<StatusChange>,
     /// 是否产生了 approval_resolutions 记录（即原消息是 approval_request）。
     pub resolved: bool,
+    /// 是否为重复外部事件：true 时 reply 是首次执行的结果回放，未重复创建消息。
+    pub deduplicated: bool,
 }
 
 /// human 回复入口：所有校验与写入在单个事务内完成。
@@ -40,13 +42,47 @@ pub fn reply(
     let mut conn = storage.conn();
     let tx = conn.transaction()?;
 
-    // 1. 跨端事件去重
+    // 1. 跨端事件去重：重复事件回放首次执行的结果，不重复创建回复
     if let Some(eid) = req.external_event_id {
-        if !delivery::record_receipt(&tx, req.surface, eid, Some(req.message_id), "reply")? {
-            return Err(HumanError::DuplicateEvent {
-                surface: req.surface.to_string(),
-                external_event_id: eid.to_string(),
-            });
+        if !delivery::record_receipt(&tx, req.surface, eid, None, "reply")? {
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT message_id FROM human_action_receipts \
+                     WHERE surface = ?1 AND external_event_id = ?2",
+                    params![req.surface, eid],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .flatten();
+            match existing {
+                Some(reply_id) => {
+                    let reply_msg = query_message(&tx, &reply_id)?
+                        .ok_or_else(|| HumanError::MessageNotFound(reply_id.clone()))?;
+                    let resolved = tx
+                        .query_row(
+                            "SELECT 1 FROM approval_resolutions WHERE response_message_id = ?1",
+                            [&reply_id],
+                            |_| Ok(true),
+                        )
+                        .optional()?
+                        .unwrap_or(false);
+                    return Ok(HumanReplyOutcome {
+                        reply: reply_msg,
+                        original_status_change: None,
+                        resolved,
+                        deduplicated: true,
+                    });
+                }
+                // 上次动作未完成（占位 NULL）：删除占位，本次正常执行
+                None => {
+                    tx.execute(
+                        "DELETE FROM human_action_receipts \
+                         WHERE surface = ?1 AND external_event_id = ?2",
+                        params![req.surface, eid],
+                    )?;
+                    delivery::record_receipt(&tx, req.surface, eid, None, "reply")?;
+                }
+            }
         }
     }
 
@@ -159,6 +195,16 @@ pub fn reply(
         None
     };
 
+    // 7. 写回 receipt 结果 id：重复事件可回放本次回复
+    if let Some(eid) = req.external_event_id {
+        tx.execute(
+            "INSERT INTO human_action_receipts (surface, external_event_id, message_id, action) \
+             VALUES (?1, ?2, ?3, 'reply') \
+             ON CONFLICT(surface, external_event_id) DO UPDATE SET message_id = ?3",
+            params![req.surface, eid, reply_id],
+        )?;
+    }
+
     tx.commit()?;
 
     let reply_msg = Message {
@@ -180,6 +226,7 @@ pub fn reply(
         reply: reply_msg,
         original_status_change: status_change,
         resolved: is_approval,
+        deduplicated: false,
     })
 }
 
@@ -405,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_external_event_rejected() {
+    fn duplicate_external_event_replays_original_reply() {
         let fx = setup();
         let msg = send_msg(&fx, "text", "{}");
 
@@ -413,22 +460,45 @@ mod tests {
             external_event_id: Some("evt-1"),
             ..req(&msg, "第一条", None)
         };
-        reply(&fx.storage, r1).unwrap();
+        let first = reply(&fx.storage, r1).unwrap();
+        assert!(!first.deduplicated);
 
+        // 重复事件：回放首次结果，不重复创建回复
         let r2 = HumanReplyRequest {
             external_event_id: Some("evt-1"),
             ..req(&msg, "重复", None)
         };
-        match reply(&fx.storage, r2) {
-            Err(HumanError::DuplicateEvent {
-                surface,
-                external_event_id,
-            }) => {
-                assert_eq!(surface, "popup");
-                assert_eq!(external_event_id, "evt-1");
-            }
-            other => panic!("expected DuplicateEvent, got {:?}", other.is_ok()),
+        let second = reply(&fx.storage, r2).unwrap();
+        assert!(second.deduplicated);
+        assert_eq!(second.reply.id, first.reply.id);
+
+        // agent inbox 里只有一条回复
+        let inbox = crate::routing::inbox::inbox(&fx.storage, &fx.agent_addr, false).unwrap();
+        let replies: Vec<_> = inbox
+            .iter()
+            .filter(|m| m.reply_to_id.as_deref() == Some(msg.id.as_str()))
+            .collect();
+        assert_eq!(replies.len(), 1);
+    }
+
+    #[test]
+    fn aborted_receipt_allows_retry() {
+        let fx = setup();
+        let msg = send_msg(&fx, "text", "{}");
+
+        // 模拟上次动作中途失败：占位 NULL 的 receipt
+        {
+            let conn = fx.storage.conn();
+            delivery::record_receipt(&conn, "popup", "evt-crash", None, "reply").unwrap();
         }
+
+        // 重复事件但无结果：允许重新执行
+        let r = HumanReplyRequest {
+            external_event_id: Some("evt-crash"),
+            ..req(&msg, "重试", None)
+        };
+        let out = reply(&fx.storage, r).unwrap();
+        assert!(!out.deduplicated);
     }
 
     #[test]

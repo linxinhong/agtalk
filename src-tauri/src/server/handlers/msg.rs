@@ -729,7 +729,14 @@ fn fanout_if_human(state: &AppState, to_address: &str, msg: &crate::routing::Mes
             tracing::info!(message_id = %msg.id, surfaces = n, "human fanout recorded")
         }
         Ok(_) => {}
-        Err(e) => tracing::warn!("human fanout failed: {}", e),
+        Err(e) => {
+            tracing::warn!("human fanout failed: {}, running reconcile", e);
+            // 消息已落库：reconcile 可按 to=human 全量补齐缺行，保证 delivery 可恢复
+            match crate::human::reconcile(&state.storage, &state.config.human) {
+                Ok(n) => tracing::info!(recovered = n, "human reconcile done"),
+                Err(e2) => tracing::error!("human reconcile failed: {}", e2),
+            }
+        }
     }
 }
 

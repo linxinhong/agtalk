@@ -110,6 +110,12 @@ pub async fn start(dot_agtalk: PathBuf) -> Result<(), DaemonError> {
             {
                 error!("创建 human session 失败: {}", e);
             }
+            // delivery 可恢复性：补齐历史 fanout 失败/缺行的 delivery 记录
+            match crate::human::reconcile(&storage, &config.human) {
+                Ok(n) if n > 0 => info!("human delivery reconcile 补齐 {} 行", n),
+                Ok(_) => {}
+                Err(e) => error!("human delivery reconcile 失败: {}", e),
+            }
         }
         Err(e) => error!("创建 human mailbox 失败: {}", e),
     }

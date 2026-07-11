@@ -14,10 +14,6 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use tokio_stream::Stream;
 
-fn default_notify_true() -> bool {
-    true
-}
-
 pub fn routes(state: AppState) -> Router {
     Router::new()
         // id
@@ -253,8 +249,8 @@ struct MsgAskBody {
     wait: bool,
     #[serde(default)]
     timeout: Option<u64>,
-    #[serde(default = "default_notify_true")]
-    notify: bool,
+    #[serde(default)]
+    notify: Option<bool>,
 }
 
 async fn msg_ask_handler(
@@ -270,7 +266,7 @@ async fn msg_ask_handler(
         body.options,
         body.wait,
         body.timeout,
-        body.notify,
+        body.notify.unwrap_or(true),
     ))
 }
 
@@ -579,6 +575,10 @@ async fn human_reply_handler(
 #[derive(serde::Deserialize)]
 struct HumanDoneBody {
     message_id: String,
+    #[serde(default)]
+    surface: Option<String>,
+    #[serde(default)]
+    external_event_id: Option<String>,
 }
 
 async fn human_done_handler(
@@ -586,7 +586,13 @@ async fn human_done_handler(
     headers: HeaderMap,
     Json(body): Json<HumanDoneBody>,
 ) -> (StatusCode, Json<ServerMsg>) {
-    json_response(human::handle_done(&state, &headers, body.message_id))
+    json_response(human::handle_done(
+        &state,
+        &headers,
+        body.message_id,
+        body.surface,
+        body.external_event_id,
+    ))
 }
 
 async fn human_agents_handler(
@@ -602,6 +608,10 @@ struct HumanSendBody {
     body: String,
     #[serde(default)]
     subject: Option<String>,
+    #[serde(default)]
+    surface: Option<String>,
+    #[serde(default)]
+    external_event_id: Option<String>,
 }
 
 async fn human_send_handler(
@@ -615,6 +625,8 @@ async fn human_send_handler(
         body.to,
         body.body,
         body.subject,
+        body.surface,
+        body.external_event_id,
     ))
 }
 
@@ -1401,6 +1413,43 @@ mod tests {
                 assert!(markdown.is_empty());
             }
             other => panic!("expected MemPack, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn v1_msg_ask_notify_omitted_null_and_false_all_ok() {
+        let (state, nora, _quinn, _tmp) = test_state();
+
+        for (label, extra) in [
+            ("omitted", serde_json::json!({})),
+            ("explicit null", serde_json::json!({ "notify": null })),
+            ("false", serde_json::json!({ "notify": false })),
+            ("true", serde_json::json!({ "notify": true })),
+        ] {
+            let mut body = serde_json::json!({ "message": format!("deploy? {label}") });
+            body.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+
+            let app = routes(state.clone());
+            let request = Request::builder()
+                .method("POST")
+                .uri("/api/v1/msg/ask")
+                .header("Content-Type", "application/json")
+                .header("X-AgTalk-Address", nora.clone())
+                .body(Body::from(body.to_string()))
+                .unwrap();
+            let response = app.oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "case: {label}");
+
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let resp: ServerMsg = serde_json::from_slice(&bytes).unwrap();
+            match resp {
+                ServerMsg::AskResult { message_id } => assert!(!message_id.is_empty()),
+                other => panic!("case {label}: expected AskResult, got {:?}", other),
+            }
         }
     }
 

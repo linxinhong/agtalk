@@ -812,9 +812,10 @@ POST /api/v1/human/send
 
 认证：仅接受 `X-AgTalk-Human-Token`（daemon 启动时在 `<config_dir>/human/session.json` 颁发，0600），agent / browser 凭据一律拒绝。token 绝不暴露给 agent。详见 `docs/human-surfaces.md`。
 
-- `POST /api/v1/human/reply`：请求体 `{message_id, body, choice?, surface?, external_event_id?}`。approval_request 首个有效回复原子胜出，后续返回 `already_resolved`；`select_only` 无 choice 返回 `select_only_requires_choice`；`external_event_id` 提供时按 `(surface, external_event_id)` 去重，重复返回 `duplicate_event`。
+- `POST /api/v1/human/reply`：请求体 `{message_id, body, choice?, surface?, external_event_id?}`。approval_request 首个有效回复原子胜出，后续返回 `already_resolved`；`select_only` 无 choice 返回 `select_only_requires_choice`。
+- `reply` / `done` / `send` 均接受可选 `{surface, external_event_id}` 做跨端幂等：重复事件回放首次成功结果（`Ok{id}`，send 返回原 message id），不重复创建消息；中途崩溃的占位事件自动恢复。
 - `GET /api/v1/human/agents`：返回在线 agent 列表（活跃 mailbox，排除 human 自身），人类主动发信只能从该列表选择。
-- `POST /api/v1/human/send`：请求体 `{to, body, subject?}`，`to` 必须是活跃 mailbox UUID，复用 routing::send，触发目标 agent 的 SSE/notify。
+- `POST /api/v1/human/send`：请求体 `{to, body, subject?, surface?, external_event_id?}`，`to` 必须是活跃 agent 的 UUID（拒绝 human 自身），复用 routing::send，触发目标 agent 的 SSE/notify。
 
 ### 11.6 旧 REST 路径映射
 
@@ -934,7 +935,6 @@ not_supported
 already_resolved
 select_only_requires_choice
 invalid_choice
-duplicate_event
 agent_not_found
 ```
 
