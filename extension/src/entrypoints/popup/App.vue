@@ -10,9 +10,8 @@ const baseUrl = ref('');
 const defaultBaseUrl = ref('');
 const editingBaseUrl = ref('');
 
-const name = ref('browser-agent');
+const name = ref('');
 const intro = ref('browser');
-const workspace = ref('web');
 
 const to = ref('');
 const body = ref('');
@@ -22,6 +21,10 @@ const lookupName = ref('');
 onMounted(async () => {
   await refreshState();
 });
+
+function short(id: string): string {
+  return id ? id.slice(0, 8) : '';
+}
 
 async function refreshState() {
   const resp = await browser.runtime.sendMessage({ action: 'GET_STATE' });
@@ -58,12 +61,15 @@ async function doJoin() {
     action: 'JOIN',
     name: name.value,
     intro: intro.value,
-    workspace: workspace.value,
   });
   if (resp.ok) {
     const result = resp.session as JoinResult;
     joined.value = true;
-    session.value = { address: result.address, token: result.token };
+    session.value = {
+      address: result.address,
+      token: result.token,
+      name: result.name,
+    };
     messages.value = [];
   } else {
     alert(resp.error || 'join failed');
@@ -116,17 +122,18 @@ function useCandidate(addr: string) {
 
     <div v-if="!joined" class="join-form">
       <label>name</label>
-      <input v-model="name" />
+      <input v-model="name" placeholder="留空自动生成 browser-<short>" />
       <label>intro</label>
       <input v-model="intro" />
-      <label>workspace</label>
-      <input v-model="workspace" />
       <button @click="doJoin">Join</button>
     </div>
 
     <div v-else class="main">
       <div class="session">
-        <p><strong>{{ session?.address }}</strong></p>
+        <p>
+          <strong>{{ session?.name || 'browser' }}</strong>
+          <span class="addr">{{ short(session?.address || '') }}</span>
+        </p>
         <button @click="doLeave">Leave</button>
       </div>
 
@@ -135,7 +142,9 @@ function useCandidate(addr: string) {
         <button @click="doLookup">Lookup</button>
         <ul>
           <li v-for="c in candidates" :key="c.address" @click="useCandidate(c.address)">
-            {{ c.name }} ({{ c.workspace }}) — {{ c.address }}
+            <strong>{{ c.name }}</strong>
+            <span class="notify" :class="{ off: !c.notify_ready }">notify={{ c.notify }}</span>
+            <span class="addr">{{ short(c.address) }}</span>
           </li>
         </ul>
       </div>
@@ -224,5 +233,20 @@ button {
   padding: 4px 0;
   border-bottom: 1px solid #eee;
   cursor: pointer;
+}
+.addr {
+  margin-left: 6px;
+  color: #666;
+  font-size: 11px;
+  font-weight: normal;
+}
+.notify {
+  margin-left: 6px;
+  color: #0a0;
+  font-size: 11px;
+  font-weight: normal;
+}
+.notify.off {
+  color: #999;
 }
 </style>

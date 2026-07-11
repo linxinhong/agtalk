@@ -29,16 +29,18 @@ export async function resetBaseUrl(): Promise<void> {
   await browser.storage.local.remove(STORAGE_KEY_BASE_URL);
 }
 
-export async function join(
-  name: string,
-  intro: string,
-  workspace: string,
-): Promise<JoinResult> {
+export async function join(name: string, intro: string): Promise<JoinResult> {
   const base = await getBaseUrl();
+  // name/intro 可选：name 留空时由 daemon 生成 `browser-<short>`；只把非空字段放进 body。
+  const body: Record<string, string> = {};
+  const trimmedName = name.trim();
+  const trimmedIntro = intro.trim();
+  if (trimmedName) body.name = trimmedName;
+  if (trimmedIntro) body.intro = trimmedIntro;
   const resp = await fetch(`${base}/api/v1/browser/join`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, intro, workspace }),
+    body: JSON.stringify(body),
   });
   const data = await resp.json();
   if (data.type !== 'browser_join_result') {

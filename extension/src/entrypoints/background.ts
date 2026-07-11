@@ -14,9 +14,13 @@ export default defineBackground(() => {
   let unsubscribe: (() => void) | null = null;
 
   async function loadSession(): Promise<StoredSession | null> {
-    const stored = await browser.storage.local.get(['address', 'token']);
+    const stored = await browser.storage.local.get(['address', 'token', 'name']);
     if (stored.address && stored.token) {
-      return { address: String(stored.address), token: String(stored.token) };
+      return {
+        address: String(stored.address),
+        token: String(stored.token),
+        name: stored.name ? String(stored.name) : undefined,
+      };
     }
     return null;
   }
@@ -26,9 +30,10 @@ export default defineBackground(() => {
       await browser.storage.local.set({
         address: session.address,
         token: session.token,
+        name: session.name ?? '',
       });
     } else {
-      await browser.storage.local.remove(['address', 'token']);
+      await browser.storage.local.remove(['address', 'token', 'name']);
     }
   }
 
@@ -96,13 +101,16 @@ export default defineBackground(() => {
     }
 
     if (action === 'JOIN') {
-      const { name, intro, workspace } = request as {
+      const { name, intro } = request as {
         name: string;
         intro: string;
-        workspace: string;
       };
-      const result = await join(name, intro, workspace);
-      await saveSession({ address: result.address, token: result.token });
+      const result = await join(name, intro);
+      await saveSession({
+        address: result.address,
+        token: result.token,
+        name: result.name,
+      });
       await browser.storage.local.set({ messages: [] });
       await updateBadge(0);
       await startSSE();

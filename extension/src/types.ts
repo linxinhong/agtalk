@@ -2,8 +2,11 @@ export interface Mailbox {
   address: string;
   name: string;
   intro: string;
-  workspace: string;
   created_at: number;
+  left_at?: number;
+  notify_channel: string;
+  notify: string;
+  notify_ready: boolean;
 }
 
 export interface Message {
@@ -30,4 +33,5 @@ export interface JoinResult {
 export interface StoredSession {
   address: string;
   token: string;
+  name?: string;
 }
