@@ -31,3 +31,13 @@ export const popupDone = () => invoke<void>('popup_done')
 
 /** Later / 操作完成后关窗；直接关窗不改变消息状态（dismissed）。 */
 export const closePopup = () => getCurrentWindow().close()
+
+export interface GuiConfigView {
+  config: Record<string, unknown>
+  path: string
+}
+
+export const guiLoadConfig = () => invoke<GuiConfigView>('gui_load_config')
+
+export const guiSetConfig = (key: string, value: string) =>
+  invoke<void>('gui_set_config', { key, value })

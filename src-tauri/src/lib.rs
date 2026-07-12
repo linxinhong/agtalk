@@ -13,8 +13,23 @@ pub mod storage;
 pub mod tool;
 pub mod transport;
 
+/// Tauri context 只能由 generate_context!() 展开一次（嵌入 Info.plist 符号唯一），
+/// gui / popup 入口共用；argv 分派保证单进程只会走一个入口。
+fn app_context() -> tauri::Context {
+    tauri::generate_context!()
+}
+
 pub fn run_gui() {
-    // TODO: initialize Tauri GUI app
+    // GUI 主窗口（配置界面）：窗口由 tauri.conf.json 的 "main" 配置创建，
+    // 配置读写经 Tauri 命令桥 → daemon HTTP API（薄客户端）。
+    let app = tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![
+            commands::gui_load_config,
+            commands::gui_set_config
+        ])
+        .build(app_context())
+        .expect("failed to build gui app");
+    app.run(|_, _| {});
 }
 
 /// 桌面审批弹窗：`agtalk __popup <message-id>` 由 daemon 的 PopupTransport 拉起。
@@ -50,7 +65,7 @@ pub fn run_popup(message_id: Option<String>) {
             .build()?;
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(app_context())
         .expect("failed to build popup app");
     app.run(|_, _| {});
 }

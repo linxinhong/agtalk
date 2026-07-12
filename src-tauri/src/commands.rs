@@ -5,6 +5,7 @@
 
 use crate::human::client::HumanClient;
 use crate::human::popup::POPUP_SURFACE;
+use crate::proto::ServerMsg;
 use crate::routing::Message;
 use serde::Serialize;
 
@@ -73,6 +74,97 @@ pub fn popup_done(state: tauri::State<'_, PopupState>) -> Result<(), String> {
     done_message(&state.message_id)
 }
 
+// ---- GUI 主窗口（配置界面）----
+// 薄客户端：配置读写经 daemon HTTP API，与 CLI config show/set 同源；
+// config 端点本机免认证（127.0.0.1 单用户威胁模型）。
+
+/// GUI 配置视图：完整配置 JSON + 配置文件路径（前端展示用）。
+#[derive(Debug, Serialize)]
+pub struct GuiConfigView {
+    pub config: serde_json::Value,
+    pub path: String,
+}
+
+fn gui_base_url() -> Result<String, String> {
+    let cfg = crate::config::AgConfig::load().map_err(|e| e.to_string())?;
+    Ok(format!("http://127.0.0.1:{}", cfg.http_port))
+}
+
+/// 加载配置视图（GUI 主窗口入口）。
+pub(crate) fn load_config_view() -> Result<GuiConfigView, String> {
+    let base = gui_base_url()?;
+    load_config_view_from(&base)
+}
+
+/// 保存单个点分配置项（GUI 主窗口入口）。
+pub(crate) fn set_config_value(key: &str, value: &str) -> Result<(), String> {
+    let base = gui_base_url()?;
+    set_config_value_to(&base, key, value)
+}
+
+fn load_config_view_from(base: &str) -> Result<GuiConfigView, String> {
+    let config = match gui_request(reqwest::Method::GET, base, "/api/v1/config", None)? {
+        ServerMsg::ConfigShowResult { config } => config,
+        ServerMsg::Error { code, message } => return Err(format!("{}: {}", code, message)),
+        other => return Err(format!("unexpected_response: {:?}", other)),
+    };
+    let path = match gui_request(reqwest::Method::GET, base, "/api/v1/config/path", None)? {
+        ServerMsg::ConfigPath { path } => path,
+        ServerMsg::Error { code, message } => return Err(format!("{}: {}", code, message)),
+        other => return Err(format!("unexpected_response: {:?}", other)),
+    };
+    Ok(GuiConfigView { config, path })
+}
+
+fn set_config_value_to(base: &str, key: &str, value: &str) -> Result<(), String> {
+    let endpoint = format!("/api/v1/config/{}", key);
+    let body = serde_json::json!({ "value": value });
+    match gui_request(reqwest::Method::PATCH, base, &endpoint, Some(body))? {
+        ServerMsg::Pong => Ok(()),
+        ServerMsg::Error { code, message } => Err(format!("{}: {}", code, message)),
+        other => Err(format!("unexpected_response: {:?}", other)),
+    }
+}
+
+fn gui_request(
+    method: reqwest::Method,
+    base: &str,
+    endpoint: &str,
+    body: Option<serde_json::Value>,
+) -> Result<ServerMsg, String> {
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .build()
+        .map_err(|e| e.to_string())?;
+    let url = format!("{}{}", base, endpoint);
+    let mut builder = client.request(method, &url);
+    if let Some(b) = body {
+        builder = builder.json(&b);
+    }
+    let resp = builder
+        .send()
+        .map_err(|e| format!("daemon_unreachable: {}（请先 agtalk daemon start）", e))?;
+    let status = resp.status();
+    let text = resp.text().map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        if let Ok(ServerMsg::Error { code, message }) = serde_json::from_str(&text) {
+            return Err(format!("{}: {}", code, message));
+        }
+        return Err(format!("http_error: HTTP {}: {}", status, text));
+    }
+    serde_json::from_str(&text).map_err(|e| format!("parse_error: {}", e))
+}
+
+#[tauri::command]
+pub fn gui_load_config() -> Result<GuiConfigView, String> {
+    load_config_view()
+}
+
+#[tauri::command]
+pub fn gui_set_config(key: String, value: String) -> Result<(), String> {
+    set_config_value(&key, &value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,5 +202,109 @@ mod tests {
         assert!(reply_err.contains("session"), "reply: {}", reply_err);
         let done_err = done_message("any-id").unwrap_err();
         assert!(done_err.contains("session"), "done: {}", done_err);
+    }
+
+    /// 最小 mock daemon：按序返回预置响应，请求行经 channel 回报给测试断言。
+    fn mock_daemon(
+        responses: Vec<String>,
+    ) -> (
+        String,
+        std::sync::mpsc::Receiver<String>,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            for body in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request_line = String::new();
+                reader.read_line(&mut request_line).unwrap();
+                tx.send(request_line.trim_end().to_string()).unwrap();
+                let mut content_length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    let trimmed = line.trim_end();
+                    if let Some(v) = trimmed
+                        .to_ascii_lowercase()
+                        .strip_prefix("content-length: ")
+                    {
+                        content_length = v.trim().parse().unwrap();
+                    }
+                    if trimmed.is_empty() {
+                        break;
+                    }
+                }
+                if content_length > 0 {
+                    let mut buf = vec![0u8; content_length];
+                    reader.read_exact(&mut buf).unwrap();
+                }
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(resp.as_bytes()).unwrap();
+            }
+        });
+        (format!("http://127.0.0.1:{}", port), rx, handle)
+    }
+
+    #[test]
+    fn gui_load_config_view_from_mock_daemon() {
+        let show = serde_json::json!({
+            "type": "config_show_result",
+            "config": { "http_port": 19527, "notify": { "default": "auto" } }
+        })
+        .to_string();
+        let path = serde_json::json!({
+            "type": "config_path",
+            "path": "/tmp/agtalk-test/config.json"
+        })
+        .to_string();
+        let (base, rx, handle) = mock_daemon(vec![show, path]);
+        let view = load_config_view_from(&base).unwrap();
+        assert_eq!(view.config["http_port"], 19527);
+        assert_eq!(view.path, "/tmp/agtalk-test/config.json");
+        assert!(rx.recv().unwrap().starts_with("GET /api/v1/config "));
+        assert!(rx.recv().unwrap().starts_with("GET /api/v1/config/path "));
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn gui_set_config_value_to_mock_daemon() {
+        let pong = serde_json::json!({ "type": "pong" }).to_string();
+        let (base, rx, handle) = mock_daemon(vec![pong]);
+        set_config_value_to(&base, "notify.default", "none").unwrap();
+        assert_eq!(
+            rx.recv().unwrap(),
+            "PATCH /api/v1/config/notify.default HTTP/1.1"
+        );
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn gui_set_config_error_response_propagates_code() {
+        let err = serde_json::json!({
+            "type": "error",
+            "code": "config_error",
+            "message": "配置项不存在: no.such.key"
+        })
+        .to_string();
+        let (base, _rx, handle) = mock_daemon(vec![err]);
+        let msg = set_config_value_to(&base, "no.such.key", "x").unwrap_err();
+        assert!(msg.contains("config_error"), "{}", msg);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn gui_request_daemon_unreachable_has_stable_error() {
+        // 端口 1 必然拒绝连接
+        let err = load_config_view_from("http://127.0.0.1:1").unwrap_err();
+        assert!(err.contains("daemon_unreachable"), "{}", err);
     }
 }

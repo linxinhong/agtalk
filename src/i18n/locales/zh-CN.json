@@ -13,5 +13,13 @@
     "replyPlaceholder": "输入回复…",
     "recommended": "推荐",
     "resolved": "该审批已被其他端处理"
+  },
+  "config": {
+    "title": "配置",
+    "reload": "重新加载",
+    "save": "保存",
+    "saved": "已保存",
+    "loading": "加载中…",
+    "daemonHint": "请确认 daemon 已启动：agtalk daemon start"
   }
 }

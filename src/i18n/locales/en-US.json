@@ -13,5 +13,13 @@
     "replyPlaceholder": "Type a reply…",
     "recommended": "Recommended",
     "resolved": "This approval was handled on another surface"
+  },
+  "config": {
+    "title": "Settings",
+    "reload": "Reload",
+    "save": "Save",
+    "saved": "Saved",
+    "loading": "Loading…",
+    "daemonHint": "Make sure the daemon is running: agtalk daemon start"
   }
 }
