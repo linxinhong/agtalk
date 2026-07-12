@@ -35,13 +35,20 @@ pub fn handle_reply(
         },
     ) {
         Ok(out) => {
-            // 重复事件回放：消息未重复创建，也不再触发 SSE/notify
+            // 重复事件回放：消息未重复创建，也不再触发 SSE/notify 与抢答收尾
             if !out.deduplicated {
                 after_human_reply(state, &out.reply);
-            }
-            // 仲裁收尾：审批被本端处理时，回写飞书卡片为终态（feishu 胜出时由 Router 直接回终态）
-            if out.resolved && surface != crate::feishu::router::SURFACE {
-                state.feishu.settle(&state.storage, &resolved, &surface);
+                // 抢答收尾：他端 surface 的展示同步收敛
+                // - 本端非 popup：关闭该消息的桌面弹窗（feishu/GUI/API 胜出）
+                if surface != crate::human::popup::POPUP_SURFACE {
+                    state.popup.settle(&resolved);
+                }
+                // - 本端非 feishu：回写飞书卡片为终态（approval 回显选项，文本回显回复）
+                if surface != crate::feishu::router::SURFACE {
+                    state
+                        .feishu
+                        .settle(&state.storage, &resolved, &surface, Some(&out.reply));
+                }
             }
             ServerMsg::Ok { id: out.reply.id }
         }

@@ -146,6 +146,7 @@ pub async fn start(dot_agtalk: PathBuf) -> Result<(), DaemonError> {
             state.feishu_link.clone(),
             state.registry.clone(),
             state.notify_limiter.clone(),
+            state.popup.clone(),
             state.dot_agtalk.clone(),
         ));
         tokio::spawn(router.run());

@@ -8,6 +8,7 @@
 use super::ws::{FeishuWs, WsEvent};
 use super::{card, client::FeishuClient};
 use crate::config::FeishuConfig;
+use crate::human::popup::PopupTransport;
 use crate::notify::NotifyLimiter;
 use crate::routing::Message;
 use crate::server::handlers::msg as msg_handlers;
@@ -43,6 +44,7 @@ pub struct FeishuRouter {
     link: LinkStatus,
     registry: SubscriberRegistry,
     notify_limiter: Arc<NotifyLimiter>,
+    popup: Arc<PopupTransport>,
     dot_agtalk: PathBuf,
 }
 
@@ -53,6 +55,7 @@ impl FeishuRouter {
         link: LinkStatus,
         registry: SubscriberRegistry,
         notify_limiter: Arc<NotifyLimiter>,
+        popup: Arc<PopupTransport>,
         dot_agtalk: PathBuf,
     ) -> Self {
         let client = FeishuClient::new(&cfg.base_url, &cfg.app_id, &cfg.app_secret);
@@ -63,6 +66,7 @@ impl FeishuRouter {
             link,
             registry,
             notify_limiter,
+            popup,
             dot_agtalk,
         }
     }
@@ -105,6 +109,10 @@ impl FeishuRouter {
                                 // 新消息落库后唤醒接收方（与 popup/GUI 回复同一套机制）
                                 if let Some(msg) = &out.created {
                                     self.wake_recipient(msg);
+                                }
+                                // 抢答收尾：本端处理了 human 原消息，关闭对应的桌面弹窗
+                                if let Some(original_id) = &out.settled {
+                                    self.popup.settle(original_id);
                                 }
                                 match out.decision {
                                     CardDecision::Ack => ws.respond_ack(&frame).await,

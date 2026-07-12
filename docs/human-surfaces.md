@@ -130,8 +130,13 @@ agtalk config set human.surfaces '["popup","feishu"]'
   - 群聊、非文本、空文本安全忽略；不做群聊路由，不做自由文字归属猜测。
 - **幂等**：飞书 event_id 作为 external_event_id 走第 6 节同事务幂等；
   重复事件回放终态卡片（视觉收敛），不重复创建消息、不重复触发 SSE/notify。
-- **仲裁收尾**：审批被其他 surface（popup/GUI）处理时，daemon 回写飞书卡片为终态
-  「已由 {surface} 处理」；飞书自己胜出时由 Router 直接回终态。
+- **仲裁/抢答收尾**：human 消息被任一 surface 处理后，其他 surface 的展示同步收敛——
+  - 飞书卡片：daemon 回写终态。approval 回显胜出选项「已由 {surface} 处理」；
+    文本回复回显原消息 + 回复正文「已由 {surface} 回复」（保留对话上下文）。
+    飞书自己胜出时由 Router 在回调回包里直接换终态卡。
+  - 桌面 popup：daemon 直接关闭该消息的弹窗进程（PopupTransport 按 message id 持有子进程句柄）。
+  - 幂等回放（重复 event_id）不重复收尾。
+  - 注意：飞书投递若曾回退为纯文本（非卡片），patch 终态会失败并记 WARN，属 best-effort。
 - **可观测**：`agtalk tool doctor` 输出 feishu 段（enabled/凭据存在性脱敏/open_id 绑定/
   surfaces 包含 feishu）；长连接状态见 daemon 日志。
 

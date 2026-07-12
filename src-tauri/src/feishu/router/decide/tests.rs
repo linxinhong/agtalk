@@ -86,6 +86,8 @@ fn card_action_wins_arbitration_and_returns_terminal_card() {
     let reply = out.created.expect("新回复应暴露给调用方");
     assert_eq!(reply.to_address, msg.from_address);
     assert_eq!(reply.reply_to_id.as_deref(), Some(msg.id.as_str()));
+    // 抢答收尾：本端胜出，暴露原消息 id 供关闭 popup 弹窗
+    assert_eq!(out.settled.as_deref(), Some(msg.id.as_str()));
     assert_eq!(count_replies(&storage, &msg.id), 1);
 }
 
@@ -103,6 +105,7 @@ fn duplicate_event_id_replays_terminal_card_without_second_reply() {
         "重推应回放终态卡片"
     );
     assert!(second.created.is_none(), "幂等回放不得再次唤醒接收方");
+    assert!(second.settled.is_none(), "幂等回放不得重复抢答收尾");
     assert_eq!(
         count_replies(&storage, &msg.id),
         1,
@@ -140,6 +143,7 @@ fn losing_surface_gets_resolved_card() {
         CardDecision::Ack => panic!("expected terminal card"),
     }
     assert!(out.created.is_none(), "仲裁落败不产生新回复");
+    assert!(out.settled.is_none(), "仲裁落败不做抢答收尾");
     // 落败方的回复消息已被回滚，只有 popup 的一条
     assert_eq!(count_replies(&storage, &msg.id), 1);
 }
@@ -421,6 +425,17 @@ fn reply_submit_creates_reply_with_reply_to_id() {
                 "{:?}",
                 texts
             );
+            // 终态卡必须保留原消息上下文（回复的是哪条消息）
+            assert!(
+                texts.iter().any(|t| t.contains(&msg.body)),
+                "终态卡应包含原消息正文: {:?}",
+                texts
+            );
+            assert!(
+                texts.iter().any(|t| t.contains("收到，辛苦")),
+                "终态卡应包含回复正文: {:?}",
+                texts
+            );
         }
         CardDecision::Ack => panic!("expected terminal card"),
     }
@@ -428,9 +443,12 @@ fn reply_submit_creates_reply_with_reply_to_id() {
     assert_eq!(reply.reply_to_id.as_deref(), Some(msg.id.as_str()));
     assert_eq!(reply.to_address, msg.from_address);
     assert_eq!(reply.body, "收到，辛苦");
-    // 重复 event_id：不重复创建
+    // 抢答收尾：本端处理了原消息，暴露给调用方关闭 popup 弹窗
+    assert_eq!(out.settled.as_deref(), Some(msg.id.as_str()));
+    // 重复 event_id：不重复创建、不重复收尾
     let dup = decide_card_action(&storage, "ou_user", &data, Some("evt-r2"));
     assert!(dup.created.is_none());
+    assert!(dup.settled.is_none());
     assert_eq!(count_replies(&storage, &msg.id), 1);
 }
 

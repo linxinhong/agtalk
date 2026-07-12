@@ -29,12 +29,16 @@ pub struct CardActionOutcome {
     /// 新创建的消息（幂等回放、仲裁落败、忽略场景为 None）；
     /// 调用方据此唤醒接收方 SSE + notify。
     pub created: Option<Message>,
+    /// 被本端处理的 human 原消息 id（approval 胜出 / 文本首次回复，非幂等回放）；
+    /// 调用方据此做抢答收尾（关闭 popup 弹窗）。
+    pub settled: Option<String>,
 }
 
 fn ack() -> CardActionOutcome {
     CardActionOutcome {
         decision: CardDecision::Ack,
         created: None,
+        settled: None,
     }
 }
 
@@ -42,6 +46,7 @@ fn terminal(card: Value) -> CardActionOutcome {
     CardActionOutcome {
         decision: CardDecision::TerminalCard(card),
         created: None,
+        settled: None,
     }
 }
 
@@ -113,11 +118,16 @@ fn decide_approval(
                 &format!("已收到你的选择：{}", choice),
                 Some(&choice),
             )),
-            // 幂等回放未创建新消息，不重复唤醒接收方
+            // 幂等回放未创建新消息，不重复唤醒接收方、不重复抢答收尾
             created: if out.deduplicated {
                 None
             } else {
                 Some(out.reply)
+            },
+            settled: if out.deduplicated {
+                None
+            } else {
+                Some(msg_id.to_string())
             },
         },
         Err(HumanError::AlreadyResolved { resolved_by, .. }) => terminal(card::terminal_card(
@@ -206,6 +216,7 @@ fn decide_compose_submit(
                 &format!("已发送给 {}", mb.name),
             )),
             created: if deduplicated { None } else { Some(msg) },
+            settled: None,
         },
         Err(e) => {
             warn!("feishu compose 发送失败: {}", e);
@@ -253,8 +264,9 @@ fn decide_reply_submit(
     };
     match approval::reply(storage, req) {
         Ok(out) => CardActionOutcome {
-            decision: CardDecision::TerminalCard(card::status_card(
-                &title,
+            // 终态卡保留原消息上下文：人类能看到「回复的是哪条消息」
+            decision: CardDecision::TerminalCard(card::reply_terminal_card(
+                &original,
                 &body,
                 &format!("已回复 {}", original.from_name),
             )),
@@ -262,6 +274,11 @@ fn decide_reply_submit(
                 None
             } else {
                 Some(out.reply)
+            },
+            settled: if out.deduplicated {
+                None
+            } else {
+                Some(msg_id.to_string())
             },
         },
         Err(e) => {

@@ -256,6 +256,30 @@ pub fn status_card(title: &str, body: &str, status_line: &str) -> Value {
     skeleton(elements)
 }
 
+/// 回复终态卡：保留原消息上下文 + 回复正文 + 状态行。
+/// 用于回复提交后原地替换表单卡，以及他端抢答后回写飞书卡片——
+/// 让人类在终态卡片上仍能看到「回复的是哪条消息」。
+pub fn reply_terminal_card(original: &Message, reply_body: &str, status_line: &str) -> Value {
+    let mut elements = styled_header(&format!("回复 {}", original.from_name));
+    elements.push(json!({ "tag": "markdown", "content": original.body }));
+    elements.push(json!({ "tag": "hr" }));
+    elements.push(json!({
+        "tag": "div",
+        "text": {
+            "tag": "plain_text",
+            "content": "你的回复",
+            "text_size": "notation",
+            "text_color": "grey",
+        },
+    }));
+    elements.push(json!({ "tag": "markdown", "content": reply_body }));
+    elements.push(json!({
+        "tag": "markdown",
+        "content": format!("**{}**", status_line),
+    }));
+    skeleton(elements)
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
