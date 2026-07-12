@@ -32,25 +32,50 @@ fn skeleton(elements: Vec<Value>) -> Value {
     })
 }
 
-/// 审批卡片：正文 + choices 按钮行（首个按钮 primary）。
+/// 样式化头部行：蓝色小字 + maybe_filled 图标 + hr（对齐 AskHuman 生产样式，
+/// 不用原生大 banner——标题字体固定且渲染成整条色带）。
+fn styled_header(title: &str) -> Vec<Value> {
+    vec![
+        json!({
+            "tag": "div",
+            "text": {
+                "tag": "plain_text",
+                "content": title,
+                "text_size": "notation",
+                "text_align": "left",
+                "text_color": "blue",
+            },
+            "icon": { "tag": "standard_icon", "token": "maybe_filled", "color": "blue" },
+            "margin": "0px 0px 0px 0px",
+        }),
+        json!({ "tag": "hr", "margin": "0px 0px 0px 0px" }),
+    ]
+}
+
+/// 审批卡片：样式化头部（来源 agent）+ 正文 + choices 按钮行。
 /// Card JSON 2.0：按钮直接作为元素（column_set 横向排列），
 /// 回调数据放 behaviors callback value——V2 已不支持 V1 的 action 容器与按钮顶层 value。
+/// recommended 选项的按钮 primary 高亮；无 recommended 时首个按钮 primary。
 pub fn approval_card(msg: &Message, choices: &[String]) -> Value {
-    let mut elements = vec![
-        json!({ "tag": "markdown", "content": msg.body }),
-        json!({ "tag": "hr" }),
-    ];
+    let recommended = approval_recommended(msg);
+    let mut elements = styled_header(&format!("来自 {} 的审批", msg.from_name));
+    elements.push(json!({ "tag": "markdown", "content": msg.body }));
+    elements.push(json!({ "tag": "hr" }));
     let columns: Vec<Value> = choices
         .iter()
         .enumerate()
         .map(|(i, c)| {
+            let primary = match &recommended {
+                Some(r) => r == c,
+                None => i == 0,
+            };
             json!({
                 "tag": "column",
                 "width": "auto",
                 "elements": [json!({
                     "tag": "button",
                     "text": { "tag": "plain_text", "content": c },
-                    "type": if i == 0 { "primary" } else { "default" },
+                    "type": if primary { "primary" } else { "default" },
                     "behaviors": [
                         { "type": "callback", "value": encode_action_value(&msg.id, i) }
                     ],
@@ -66,21 +91,48 @@ pub fn approval_card(msg: &Message, choices: &[String]) -> Value {
     skeleton(elements)
 }
 
-/// 文本卡片：普通 human 消息展示。
+/// 文本卡片：样式化头部（来源 agent）+ markdown 正文。
 pub fn text_card(from_name: &str, body: &str) -> Value {
-    skeleton(vec![json!({
-        "tag": "markdown",
-        "content": format!("**{}**：\n{}", from_name, body),
-    })])
+    let mut elements = styled_header(&format!("来自 {} 的消息", from_name));
+    elements.push(json!({ "tag": "markdown", "content": body }));
+    skeleton(elements)
 }
 
-/// 终态卡片：仲裁收尾回写（「已收到你的选择」/「已由 X 处理」）。
-pub fn terminal_card(original_body: &str, status_line: &str) -> Value {
-    skeleton(vec![
-        json!({ "tag": "markdown", "content": original_body }),
-        json!({ "tag": "hr" }),
-        json!({ "tag": "markdown", "content": format!("**{}**", status_line) }),
-    ])
+/// 终态卡片：样式化头部 + 正文 + 选项回显（选中项 ✅）+ 状态行。
+pub fn terminal_card(msg: &Message, status_line: &str, selected: Option<&str>) -> Value {
+    let mut elements = styled_header(&format!("来自 {} 的审批", msg.from_name));
+    elements.push(json!({ "tag": "markdown", "content": msg.body }));
+    elements.push(json!({ "tag": "hr" }));
+    let choices = approval_choices(msg);
+    if !choices.is_empty() {
+        let lines: Vec<String> = choices
+            .iter()
+            .map(|c| {
+                if Some(c.as_str()) == selected {
+                    format!("✅ {}", c)
+                } else {
+                    format!("⬜ {}", c)
+                }
+            })
+            .collect();
+        elements.push(json!({ "tag": "markdown", "content": lines.join("\n") }));
+    }
+    elements.push(json!({
+        "tag": "markdown",
+        "content": format!("**{}**", status_line),
+    }));
+    skeleton(elements)
+}
+
+/// 从审批消息 metadata 取 recommended 选项原文。
+pub fn approval_recommended(msg: &Message) -> Option<String> {
+    serde_json::from_str::<Value>(&msg.metadata)
+        .ok()
+        .and_then(|m| {
+            m.get("recommended")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
 }
 
 /// 卡片回调的同步「更新卡片」回包体：`{card:{type:"raw",data:<新卡片>}}`。
@@ -146,7 +198,11 @@ mod tests {
         let msg = approval_msg();
         let card = approval_card(&msg, &approval_choices(&msg));
         assert_eq!(card["schema"], "2.0");
-        let columns = card["body"]["elements"][2]["columns"].as_array().unwrap();
+        // 布局：头部行 + hr + 正文 + hr + column_set
+        let header = &card["body"]["elements"][0];
+        assert_eq!(header["tag"], "div");
+        assert_eq!(header["text"]["content"], "来自 nora 的审批");
+        let columns = card["body"]["elements"][4]["columns"].as_array().unwrap();
         assert_eq!(columns.len(), 2);
         let btn0 = &columns[0]["elements"][0];
         assert_eq!(btn0["tag"], "button");
@@ -163,6 +219,18 @@ mod tests {
     }
 
     #[test]
+    fn recommended_choice_button_is_primary() {
+        let mut msg = approval_msg();
+        msg.metadata =
+            json!({ "choices": ["批准", "拒绝"], "select_only": true, "recommended": "拒绝" })
+                .to_string();
+        let card = approval_card(&msg, &approval_choices(&msg));
+        let columns = card["body"]["elements"][4]["columns"].as_array().unwrap();
+        assert_eq!(columns[0]["elements"][0]["type"], "default");
+        assert_eq!(columns[1]["elements"][0]["type"], "primary");
+    }
+
+    #[test]
     fn decode_accepts_string_encoded_value() {
         let v = serde_json::json!("{\"agtalk_msg\":\"uuid-1\",\"choice_index\":2}");
         assert_eq!(decode_action_value(&v), Some(("uuid-1".to_string(), 2)));
@@ -170,7 +238,8 @@ mod tests {
 
     #[test]
     fn callback_update_card_wraps_raw_card() {
-        let card = terminal_card("部署到生产？", "已收到你的选择：批准");
+        let msg = approval_msg();
+        let card = terminal_card(&msg, "已收到你的选择：批准", Some("批准"));
         let body = callback_update_card(card.clone());
         assert_eq!(body["card"]["type"], "raw");
         assert_eq!(body["card"]["data"], card);
@@ -183,13 +252,22 @@ mod tests {
     }
 
     #[test]
-    fn terminal_card_contains_status_line() {
-        let card = terminal_card("部署到生产？", "已由 popup 处理");
-        let elements = card["body"]["elements"].as_array().unwrap();
-        assert_eq!(elements.len(), 3);
-        assert!(elements[2]["content"]
-            .as_str()
+    fn terminal_card_contains_status_line_and_choice_echo() {
+        let msg = approval_msg();
+        let card = terminal_card(&msg, "已由 popup 处理", Some("批准"));
+        let contents: Vec<&str> = card["body"]["elements"]
+            .as_array()
             .unwrap()
-            .contains("已由 popup 处理"));
+            .iter()
+            .filter_map(|e| e.get("content").and_then(|c| c.as_str()))
+            .collect();
+        assert!(
+            contents.iter().any(|c| c.contains("已由 popup 处理")),
+            "{:?}",
+            contents
+        );
+        let echo = contents.iter().find(|c| c.contains("批准")).unwrap();
+        assert!(echo.contains("✅ 批准"), "{}", echo);
+        assert!(echo.contains("⬜ 拒绝"), "{}", echo);
     }
 }

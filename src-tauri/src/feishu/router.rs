@@ -250,8 +250,9 @@ pub fn decide_card_action(
     match approval::reply(storage, req) {
         Ok(out) => CardActionOutcome {
             decision: CardDecision::TerminalCard(card::terminal_card(
-                &msg.body,
+                &msg,
                 &format!("已收到你的选择：{}", choice),
+                Some(&choice),
             )),
             // 幂等回放未创建新消息，不重复唤醒接收方
             reply: if out.deduplicated {
@@ -262,8 +263,9 @@ pub fn decide_card_action(
         },
         Err(HumanError::AlreadyResolved { resolved_by, .. }) => CardActionOutcome {
             decision: CardDecision::TerminalCard(card::terminal_card(
-                &msg.body,
+                &msg,
                 &format!("已由 {} 处理", resolved_by),
+                None,
             )),
             reply: None,
         },
@@ -350,6 +352,21 @@ mod tests {
         .unwrap() as usize
     }
 
+    /// 收集卡片所有 markdown/div 文本内容（布局演进时断言不绑死元素索引）。
+    fn card_texts(card: &Value) -> Vec<String> {
+        card["body"]["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|e| {
+                e.get("content")
+                    .and_then(|c| c.as_str())
+                    .or_else(|| e.pointer("/text/content").and_then(|c| c.as_str()))
+                    .map(|s| s.to_string())
+            })
+            .collect()
+    }
+
     #[test]
     fn card_action_wins_arbitration_and_returns_terminal_card() {
         let (storage, human_addr) = setup();
@@ -358,8 +375,12 @@ mod tests {
         let out = decide_card_action(&storage, "ou_user", &data, Some("evt-1"));
         match out.decision {
             CardDecision::TerminalCard(card) => {
-                let text = card["body"]["elements"][2]["content"].as_str().unwrap();
-                assert!(text.contains("已收到你的选择：批准"), "{}", text);
+                let texts = card_texts(&card);
+                assert!(
+                    texts.iter().any(|t| t.contains("已收到你的选择：批准")),
+                    "{:?}",
+                    texts
+                );
             }
             CardDecision::Ack => panic!("expected terminal card"),
         }
@@ -411,8 +432,12 @@ mod tests {
         let out = decide_card_action(&storage, "ou_user", &data, Some("evt-2"));
         match out.decision {
             CardDecision::TerminalCard(card) => {
-                let text = card["body"]["elements"][2]["content"].as_str().unwrap();
-                assert!(text.contains("已由 popup 处理"), "{}", text);
+                let texts = card_texts(&card);
+                assert!(
+                    texts.iter().any(|t| t.contains("已由 popup 处理")),
+                    "{:?}",
+                    texts
+                );
             }
             CardDecision::Ack => panic!("expected terminal card"),
         }

@@ -10,6 +10,7 @@ use crate::config::FeishuConfig;
 use crate::human::delivery;
 use crate::routing::Message;
 use crate::storage::Storage;
+use rusqlite::OptionalExtension;
 use tracing::warn;
 
 /// 飞书出站投递器：daemon 启用，测试默认 disabled（不发真实请求）。
@@ -121,7 +122,23 @@ pub fn plan_settle(
         .iter()
         .find(|d| d.surface == SURFACE && d.status == "delivered")?;
     let open_message_id = d.external_ref.clone()?;
-    let card = card::terminal_card(&original.body, &format!("已由 {} 处理", resolved_by));
+    // 回显胜出选项（resolution 由胜出 surface 写入；查不到则只显示处理方）
+    let selected: Option<String> = {
+        let conn = storage.conn();
+        conn.query_row(
+            "SELECT selected_choice FROM approval_resolutions WHERE request_message_id = ?1",
+            [message_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+    };
+    let card = card::terminal_card(
+        &original,
+        &format!("已由 {} 处理", resolved_by),
+        selected.as_deref(),
+    );
     Some((open_message_id, card))
 }
 
@@ -233,8 +250,17 @@ mod tests {
         delivery::mark_delivered(&storage, &msg.id, SURFACE, Some("om_settle_1")).unwrap();
         let (open_message_id, card) = plan_settle(&storage, &msg.id, "popup").unwrap();
         assert_eq!(open_message_id, "om_settle_1");
-        let text = card["body"]["elements"][2]["content"].as_str().unwrap();
-        assert!(text.contains("已由 popup 处理"), "{}", text);
+        let texts: Vec<&str> = card["body"]["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|e| e.get("content").and_then(|c| c.as_str()))
+            .collect();
+        assert!(
+            texts.iter().any(|t| t.contains("已由 popup 处理")),
+            "{:?}",
+            texts
+        );
     }
 
     #[test]
