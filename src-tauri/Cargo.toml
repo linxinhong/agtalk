@@ -48,7 +48,9 @@ sysinfo = "0.30"
 tokio-stream = { version = "0.1", features = ["sync"] }
 async-stream = "0.3"
 nix = { version = "0.29", features = ["signal"] }
-reqwest = { version = "0.12", features = ["blocking", "json", "stream"] }
+# gzip/brotli/deflate：飞书 OpenAPI 按 Accept-Encoding 压缩响应（实测会选 br），
+# 缺解码特性时 .json() 报 error decoding response body
+reqwest = { version = "0.12", features = ["blocking", "json", "stream", "gzip", "brotli", "deflate"] }
 # 飞书长连接：protobuf 帧（pbbp2）over WebSocket。仅用 prost 运行时 derive，
 # 不引入 prost-build / protoc / lark-oapi SDK（帧结构极小，自持更可控）。
 tokio-tungstenite = { version = "0.26", default-features = false, features = [
