@@ -275,7 +275,7 @@ async function submitCancel() {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  padding: 8px 12px 8px 14px;
+  padding: 6px 12px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -353,10 +353,10 @@ async function submitCancel() {
   flex: 1 1 auto;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 12px 14px 8px;
+  padding: 10px 12px 6px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .plain-body {
@@ -384,7 +384,7 @@ async function submitCancel() {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 9px 12px;
+  padding: 7px 10px;
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--card-bg);
@@ -483,9 +483,9 @@ async function submitCancel() {
   font-size: 13px;
   line-height: 1.5;
   width: 100%;
-  min-height: 44px;
+  min-height: 40px;
   resize: none;
-  padding: 8px 10px;
+  padding: 6px 10px;
   border-radius: var(--radius-md);
   border: 1px solid var(--control-border);
   background: var(--control-bg);
@@ -509,7 +509,7 @@ async function submitCancel() {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 14px;
+  padding: 8px 12px;
   border-top: 1px solid var(--border);
 }
 

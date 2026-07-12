@@ -225,7 +225,7 @@ Tauri 2 是 agtalk 的桌面外壳。**GUI 是薄客户端**，所有逻辑走 d
 ### 审批弹窗（__popup）
 
 - 审批弹窗是独立 Tauri 窗口进程（daemon 的 PopupTransport spawn `agtalk __popup <msg-id>`）。
-- 弹窗窗口 420×320 不可调（参考 agtalk-office）。
+- 弹窗窗口 480×400 不可调（早期参考 agtalk-office 的 420×320，为给正文/选项更多空间已调大）。
 - 弹窗提交 choice 后自动关窗（用 `core:window:allow-close`）。
 - daemon 通过 ChildMonitor 监控弹窗子进程，关闭且无回复 = dismissed。
 
