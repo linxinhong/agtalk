@@ -170,7 +170,17 @@ impl AgConfig {
             return Ok(Self::default());
         }
         let content = std::fs::read_to_string(&path)?;
-        Ok(serde_json::from_str(&content)?)
+        let mut cfg: Self = serde_json::from_str(&content)?;
+        cfg.normalize();
+        Ok(cfg)
+    }
+
+    /// 加载后归一化：空字符串的 feishu.base_url 回落默认值
+    /// （历史配置或手工清空写入的 "" 不是合法端点）。
+    fn normalize(&mut self) {
+        if self.feishu.base_url.trim().is_empty() {
+            self.feishu.base_url = default_feishu_base_url();
+        }
     }
 
     /// 保存到 ~/.config/agtalk2/config.json，文件权限 0600。
@@ -334,6 +344,20 @@ mod tests {
         // 非法 JSON 回退为字符串，写入 surfaces 会因类型不匹配报错
         let mut cfg = AgConfig::load().unwrap();
         assert!(cfg.set("human.surfaces", "[not json").is_err());
+    }
+
+    #[test]
+    fn empty_feishu_base_url_normalized_to_default() {
+        let tmp = TempDir::new().unwrap();
+        let _guard = EnvGuard::set(tmp.path());
+
+        let mut cfg = AgConfig::load().unwrap();
+        cfg.set("feishu.base_url", "").unwrap();
+        assert_eq!(cfg.feishu.base_url, "");
+
+        // 重新加载后空串回落默认值
+        let reloaded = AgConfig::load().unwrap();
+        assert_eq!(reloaded.feishu.base_url, default_feishu_base_url());
     }
 
     #[test]
