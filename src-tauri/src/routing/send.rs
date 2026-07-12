@@ -12,12 +12,25 @@ pub fn send(storage: &Storage, req: SendRequest<'_>) -> Result<Message, RoutingE
         return Err(RoutingError::MailboxNotFound(req.to.to_string()));
     }
 
-    let metadata = merge_more_coming(req.metadata, req.more_coming)?;
-    let subject = normalize_subject(req.subject);
-
     let id = Uuid::new_v4().to_string();
     let mut conn = storage.conn();
     let tx = conn.transaction()?;
+    let msg = insert_message(&tx, &id, &req)?;
+    tx.commit()?;
+    Ok(msg)
+}
+
+/// 在调用方事务内插入消息：分配 event_id（按接收方地址）并写入 messages。
+///
+/// 供需要把消息插入与其它写入原子化的调用方复用（如 human 跨端事件幂等：
+/// receipt 与消息插入必须在同一事务提交，消除占位 receipt 的崩溃窗口）。
+pub(crate) fn insert_message(
+    tx: &rusqlite::Transaction<'_>,
+    id: &str,
+    req: &SendRequest<'_>,
+) -> Result<Message, RoutingError> {
+    let metadata = merge_more_coming(req.metadata, req.more_coming)?;
+    let subject = normalize_subject(req.subject);
 
     let event_id: i64 = tx
         .query_row(
@@ -47,10 +60,8 @@ pub fn send(storage: &Storage, req: SendRequest<'_>) -> Result<Message, RoutingE
         ],
     )?;
 
-    tx.commit()?;
-
     Ok(Message {
-        id,
+        id: id.to_string(),
         to_address: req.to.to_string(),
         to_name: req.to_name.to_string(),
         from_address: req.from.to_string(),

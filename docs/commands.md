@@ -936,6 +936,7 @@ already_resolved
 select_only_requires_choice
 invalid_choice
 agent_not_found
+receipt_inconclusive
 ```
 
 `--json` 错误格式：

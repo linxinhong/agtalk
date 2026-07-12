@@ -484,9 +484,9 @@ GET  /api/v1/human/agents          → LookupResult（活跃 agent 列表，供�
 POST /api/v1/human/send            → Ok{id}（to 必须是活跃 agent 的 UUID，复用 routing::send）
 ```
 
-**fanout（先持久化，后投递）**：agent→human 消息（send/reply/ask 落入 human 地址）在消息落库 + SSE 唤醒之后，按启用的 surface 列表（`config.human.surfaces`，默认 `["popup"]`）写 `human_deliveries`（`message_id+surface` 唯一，字段含 status/attempts/external_ref/error）。投递状态机 `pending → delivered | failed`，失败 attempts+1 记 error，可重试；所有消息**先持久化再投递**，surface 故障不影响消息本身。**可恢复性**：fanout 在消息提交后执行，失败时立即补偿 reconcile；daemon 启动时也稳定执行 reconcile——按 `to_address = human` 全量扫描，为当前启用 surface `INSERT OR IGNORE` 补齐缺行，保证 delivery 不会因单次 fanout 失败永久丢失。
+**fanout（先持久化，后投递）**：agent→human 消息（send/reply/ask 落入 human 地址）在消息落库 + SSE 唤醒之后，按启用的 surface 列表（`config.human.surfaces`，默认 `["popup"]`）写 `human_deliveries`（`message_id+surface` 唯一，字段含 status/attempts/external_ref/error）。投递状态机 `pending → delivered | failed`，失败 attempts+1 记 error，可重试；所有消息**先持久化再投递**，surface 故障不影响消息本身。**可恢复性**：fanout 在消息提交后执行，失败时立即补偿 reconcile；daemon 启动时也稳定执行 reconcile——按 `to_address = human` 扫描，为当前启用 surface `INSERT OR IGNORE` 补齐缺行，保证 delivery 不会因单次 fanout 失败永久丢失。reconcile 只覆盖仍需处理的消息（`status IN ('pending','delivered')`）：read/done 属历史消息，migration 或 daemon 重启后不得被重新投递打扰 human。
 
-**幂等去重**：`human_action_receipts`（`surface+external_event_id` 主键）——Feishu 事件回调、Android command_id 等外部事件首次执行后落 receipt。reply / done / send 三个动作统一幂等接口：重复事件**回放首次的成功结果**（reply/done 返回原消息 id，send 返回原 message id），不重复创建消息、不重复触发 SSE/notify；动作成功后 receipt 写回结果 id，中途崩溃的占位 receipt（无结果 id）下次同事件自动恢复并允许重试；reply 的去重与业务写入在同一事务内。
+**幂等去重**：`human_action_receipts`（`surface+external_event_id` 主键）——Feishu 事件回调、Android command_id 等外部事件首次执行后落 receipt。reply / done / send 三个动作统一幂等接口：重复事件**回放首次的成功结果**（reply/done 返回原消息 id，send 返回原 message id），不重复创建消息、不重复触发 SSE/notify。**同事务原子**：动作预生成结果消息 id，receipt 携带该 id 与业务写入（回复/状态推进/消息插入）在同一事务提交——receipt 存在 ⟺ 结果消息存在，不存在"占位 receipt"崩溃窗口；事务内失败整体回滚，receipt 无残留，外部可修正后重试同一事件。历史占位数据（receipt 无结果 id）返回 `receipt_inconclusive`，不盲目重放/重试。
 
 **审批仲裁（跨端首个有效胜出）**：
 

@@ -85,9 +85,11 @@ pending → delivered（surface 确认收到）/ failed（可重试）
 
 - 同一 `(surface, external_event_id)` 只执行一次；重复事件**回放首次的成功结果**
   （`Ok{id}`，send 返回原 message id），不重复创建消息、不重复触发 SSE/notify。
-- 动作成功后 receipt 写回结果 id；动作中途崩溃（占位 receipt 无结果 id）时，
-  下次同事件自动恢复并允许重新执行。
-- reply 的去重与业务写入在同一事务内，保证原子。
+- **同事务原子**：动作预生成结果消息 id，receipt 携带该 id 与业务写入在同一事务提交——
+  receipt 存在 ⟺ 结果消息存在，不存在"占位 receipt"崩溃窗口；事务内任何失败整体回滚，
+  receipt 无残留，外部可修正后重试同一事件。
+- 历史占位数据（receipt 无结果 id，无法确定原动作是否已落库）返回
+  `receipt_inconclusive`，不盲目重放/重试。
 
 ## 7. 错误码
 
@@ -101,6 +103,7 @@ pending → delivered（surface 确认收到）/ failed（可重试）
 | `select_only_requires_choice` | select_only 审批不允许自由文本 |
 | `invalid_choice` | choice 不在审批选项中 |
 | `agent_not_found` | send 目标不存在、已离开或为 human 自身 |
+| `receipt_inconclusive` | 历史占位 receipt 无结果 id，无法确定原动作是否已落库（需人工清理该 receipt 后重试） |
 
 ## 8. surface 实现 checklist
 

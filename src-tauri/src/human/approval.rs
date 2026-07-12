@@ -35,6 +35,9 @@ pub struct HumanReplyOutcome {
 }
 
 /// human 回复入口：所有校验与写入在单个事务内完成。
+///
+/// 跨端事件幂等：预生成 reply_id 直接写入 receipt（receipt 存在 ⟺ 回复消息存在，
+/// 同事务提交），重复事件回放首次结果；不存在 NULL 占位窗口。
 pub fn reply(
     storage: &Storage,
     req: HumanReplyRequest<'_>,
@@ -42,10 +45,11 @@ pub fn reply(
     let mut conn = storage.conn();
     let tx = conn.transaction()?;
 
-    // 1. 跨端事件去重：重复事件回放首次执行的结果，不重复创建回复
+    // 1. 跨端事件去重：预生成回复 id 写入 receipt；重复事件回放首次执行的结果
+    let reply_id = Uuid::new_v4().to_string();
     if let Some(eid) = req.external_event_id {
-        if !delivery::record_receipt(&tx, req.surface, eid, None, "reply")? {
-            let existing: Option<String> = tx
+        if !delivery::record_receipt(&tx, req.surface, eid, Some(&reply_id), "reply")? {
+            let original_reply_id: Option<String> = tx
                 .query_row(
                     "SELECT message_id FROM human_action_receipts \
                      WHERE surface = ?1 AND external_event_id = ?2",
@@ -54,35 +58,29 @@ pub fn reply(
                 )
                 .optional()?
                 .flatten();
-            match existing {
-                Some(reply_id) => {
-                    let reply_msg = query_message(&tx, &reply_id)?
-                        .ok_or_else(|| HumanError::MessageNotFound(reply_id.clone()))?;
-                    let resolved = tx
-                        .query_row(
-                            "SELECT 1 FROM approval_resolutions WHERE response_message_id = ?1",
-                            [&reply_id],
-                            |_| Ok(true),
-                        )
-                        .optional()?
-                        .unwrap_or(false);
-                    return Ok(HumanReplyOutcome {
-                        reply: reply_msg,
-                        original_status_change: None,
-                        resolved,
-                        deduplicated: true,
-                    });
-                }
-                // 上次动作未完成（占位 NULL）：删除占位，本次正常执行
-                None => {
-                    tx.execute(
-                        "DELETE FROM human_action_receipts \
-                         WHERE surface = ?1 AND external_event_id = ?2",
-                        params![req.surface, eid],
-                    )?;
-                    delivery::record_receipt(&tx, req.surface, eid, None, "reply")?;
-                }
-            }
+            // receipt 必带结果 id（同事务写入）；NULL 属历史占位数据，无法确定
+            // 原动作是否落库，明确报错而不是盲目重放/重试
+            let original_reply_id =
+                original_reply_id.ok_or_else(|| HumanError::ReceiptInconclusive {
+                    surface: req.surface.to_string(),
+                    event: eid.to_string(),
+                })?;
+            let reply_msg = query_message(&tx, &original_reply_id)?
+                .ok_or_else(|| HumanError::MessageNotFound(original_reply_id.clone()))?;
+            let resolved = tx
+                .query_row(
+                    "SELECT 1 FROM approval_resolutions WHERE response_message_id = ?1",
+                    [&original_reply_id],
+                    |_| Ok(true),
+                )
+                .optional()?
+                .unwrap_or(false);
+            return Ok(HumanReplyOutcome {
+                reply: reply_msg,
+                original_status_change: None,
+                resolved,
+                deduplicated: true,
+            });
         }
     }
 
@@ -124,7 +122,6 @@ pub fn reply(
     }
 
     // 4. 插入回复消息（to = 原消息发送方，event_id 按接收方地址分配）
-    let reply_id = Uuid::new_v4().to_string();
     let event_id: i64 = tx
         .query_row(
             "UPDATE event_sequences SET last_event_id = last_event_id + 1 \
@@ -195,16 +192,7 @@ pub fn reply(
         None
     };
 
-    // 7. 写回 receipt 结果 id：重复事件可回放本次回复
-    if let Some(eid) = req.external_event_id {
-        tx.execute(
-            "INSERT INTO human_action_receipts (surface, external_event_id, message_id, action) \
-             VALUES (?1, ?2, ?3, 'reply') \
-             ON CONFLICT(surface, external_event_id) DO UPDATE SET message_id = ?3",
-            params![req.surface, eid, reply_id],
-        )?;
-    }
-
+    // 7. receipt 已在第 1 步携带 reply_id 写入，同事务提交，无需事后补写
     tx.commit()?;
 
     let reply_msg = Message {
@@ -482,22 +470,61 @@ mod tests {
     }
 
     #[test]
-    fn aborted_receipt_allows_retry() {
+    fn inconclusive_receipt_returns_explicit_error() {
         let fx = setup();
         let msg = send_msg(&fx, "text", "{}");
 
-        // 模拟上次动作中途失败：占位 NULL 的 receipt
+        // 历史占位数据：receipt 无结果 id，无法确定原动作是否已落库
         {
             let conn = fx.storage.conn();
             delivery::record_receipt(&conn, "popup", "evt-crash", None, "reply").unwrap();
         }
 
-        // 重复事件但无结果：允许重新执行
         let r = HumanReplyRequest {
             external_event_id: Some("evt-crash"),
             ..req(&msg, "重试", None)
         };
-        let out = reply(&fx.storage, r).unwrap();
+        match reply(&fx.storage, r) {
+            Err(HumanError::ReceiptInconclusive { surface, event }) => {
+                assert_eq!(surface, "popup");
+                assert_eq!(event, "evt-crash");
+            }
+            other => panic!("expected ReceiptInconclusive, got {:?}", other.is_ok()),
+        }
+    }
+
+    #[test]
+    fn failed_reply_rolls_back_receipt_and_allows_retry() {
+        let fx = setup();
+        let msg = send_msg(&fx, "text", "{}");
+
+        // 第一次执行在事务内失败（原消息不存在）：receipt 随事务回滚
+        let bad = HumanReplyRequest {
+            message_id: "no-such-msg",
+            external_event_id: Some("evt-retry"),
+            ..req(&msg, "失败", None)
+        };
+        assert!(matches!(
+            reply(&fx.storage, bad),
+            Err(HumanError::MessageNotFound(_))
+        ));
+        let count: i64 = fx
+            .storage
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM human_action_receipts WHERE external_event_id = 'evt-retry'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+
+        // 同一事件修正后重试成功
+        let good = HumanReplyRequest {
+            external_event_id: Some("evt-retry"),
+            ..req(&msg, "重试", None)
+        };
+        let out = reply(&fx.storage, good).unwrap();
         assert!(!out.deduplicated);
     }
 
