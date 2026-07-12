@@ -20,6 +20,12 @@
     "save": "Save",
     "saved": "Saved",
     "loading": "Loading…",
-    "daemonHint": "Make sure the daemon is running: agtalk daemon start"
+    "daemonHint": "Make sure the daemon is running: agtalk daemon start",
+    "groups": {
+      "general": "General",
+      "human": "Human Inbox",
+      "message": "Messages",
+      "notify": "Notify"
+    }
   }
 }

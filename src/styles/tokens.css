@@ -1,0 +1,51 @@
+/* macOS 风设计 token：颜色 / 字体 / 间距 / 圆角，深浅色两套（参考 AskHuman src/styles/tokens.css） */
+:root {
+  --font-sans: -apple-system, "SF Pro Text", system-ui, "Segoe UI",
+    "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  --accent: #0a84ff;
+  --accent-orange: #ff9500;
+  --accent-green: #34c759;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+}
+
+/* 浅色 */
+:root {
+  --bg: #ffffff;
+  --bg-elevated: rgba(0, 0, 0, 0.03);
+  --card-bg: rgba(0, 0, 0, 0.035);
+  --border: rgba(0, 0, 0, 0.14);
+  --text-primary: #1d1d1f;
+  --text-secondary: rgba(0, 0, 0, 0.55);
+  --text-tertiary: rgba(0, 0, 0, 0.38);
+  --control-bg: #ffffff;
+  --control-border: rgba(0, 0, 0, 0.2);
+  --danger: #d43b3b;
+}
+
+/* 深色 */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e1e1e;
+    --bg-elevated: rgba(255, 255, 255, 0.06);
+    --card-bg: rgba(255, 255, 255, 0.06);
+    --border: rgba(255, 255, 255, 0.16);
+    --text-primary: #e8e8ea;
+    --text-secondary: rgba(255, 255, 255, 0.62);
+    --text-tertiary: rgba(255, 255, 255, 0.4);
+    --control-bg: rgba(255, 255, 255, 0.08);
+    --control-border: rgba(255, 255, 255, 0.22);
+    --accent-orange: #ff9f0a;
+    --accent-green: #30d158;
+    --danger: #ff6b6b;
+  }
+}

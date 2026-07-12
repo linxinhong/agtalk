@@ -1,0 +1,50 @@
+/* 控件样式：按钮 / 输入框（参考 AskHuman src/styles/controls.css，只取 GUI 用到的子集） */
+.btn {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  padding: 7px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: default;
+  transition: background 0.12s ease, border-color 0.12s ease;
+  user-select: none;
+}
+.btn:hover {
+  background: var(--bg-elevated);
+}
+.btn:active {
+  transform: translateY(0.5px);
+}
+.btn:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+.btn-primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: #fff;
+}
+.btn-primary:hover {
+  background: color-mix(in srgb, var(--accent) 88%, black);
+}
+
+.input {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  transition: border-color 0.12s ease;
+}
+.input:focus {
+  border-color: var(--accent);
+}
+.input:disabled {
+  opacity: 0.5;
+}
