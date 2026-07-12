@@ -98,6 +98,13 @@ impl FeishuRouter {
                             }
                             WsEvent::Message { data, .. } => {
                                 if let Some(open_id) = decide_message(&self.cfg.open_id, &data) {
+                                    // 绑定发现：未配置 open_id 时日志输出发送者，便于首次配置
+                                    if self.cfg.open_id.is_empty() {
+                                        info!(
+                                            "feishu 收到消息来自 open_id: {}（未绑定，可用 agtalk config set feishu.open_id {} 绑定）",
+                                            open_id, open_id
+                                        );
+                                    }
                                     if let Err(e) =
                                         self.client.send_text(&open_id, FREE_TEXT_HINT).await
                                     {
