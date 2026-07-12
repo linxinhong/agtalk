@@ -1,22 +1,18 @@
-//! daemon 全局 FeishuRouter：单条长连接，入站事件 → receipt 幂等 → approval 仲裁。
+//! daemon 全局 FeishuRouter：单条长连接，入站事件 → 决策（decide）→ 回包/投递。
 //!
-//! - 卡片回调：value 精确路由（UUID + choice index，不做归属猜测），飞书 event_id
-//!   经 `human_action_receipts` 幂等；3 秒窗口内回包换终态卡片。
-//! - 自由文字：v1 不做归属猜测，回复提示文本，不落库不路由。
+//! - 卡片回调：动作分派（approval / compose_submit / reply_open / reply_submit），
+//!   飞书 event_id 经 `human_action_receipts` 幂等；3 秒窗口内回包换终态卡片。
+//! - p2p 文本：回复 compose 草稿卡（预填正文 + agent 下拉）；群聊/非文本/空文本忽略。
 //! - v1 单用户：仅 `config.feishu.open_id` 绑定用户的点击/消息被处理。
 
 use super::ws::{FeishuWs, WsEvent};
 use super::{card, client::FeishuClient};
 use crate::config::FeishuConfig;
-use crate::human::approval::{self, HumanReplyRequest};
-use crate::human::HumanError;
 use crate::notify::NotifyLimiter;
 use crate::routing::Message;
 use crate::server::handlers::msg as msg_handlers;
 use crate::storage::Storage;
 use crate::transport::wake::{SseEvent, SubscriberRegistry};
-use rusqlite::OptionalExtension;
-use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -24,7 +20,6 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 pub const SURFACE: &str = "feishu";
-const FREE_TEXT_HINT: &str = "[agtalk] 请通过卡片按钮回复审批；自由文字暂不路由（v1）。";
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
 /// 长连接状态句柄（doctor 可读；daemon 与 Router 共享）。
@@ -107,9 +102,9 @@ impl FeishuRouter {
                                     &data,
                                     event_id.as_deref(),
                                 );
-                                // 新回复落库后唤醒接收方（与 popup/GUI 回复同一套机制）
-                                if let Some(reply) = &out.reply {
-                                    self.wake_recipient(reply);
+                                // 新消息落库后唤醒接收方（与 popup/GUI 回复同一套机制）
+                                if let Some(msg) = &out.created {
+                                    self.wake_recipient(msg);
                                 }
                                 match out.decision {
                                     CardDecision::Ack => ws.respond_ack(&frame).await,
@@ -121,19 +116,21 @@ impl FeishuRouter {
                                 }
                             }
                             WsEvent::Message { data, .. } => {
-                                if let Some(open_id) = decide_message(&self.cfg.open_id, &data) {
-                                    // 绑定发现：未配置 open_id 时日志输出发送者，便于首次配置
-                                    if self.cfg.open_id.is_empty() {
+                                // 绑定发现：未配置 open_id 时日志输出发送者，便于首次配置
+                                if self.cfg.open_id.is_empty() {
+                                    if let Some(oid) = data
+                                        .pointer("/sender/sender_id/open_id")
+                                        .and_then(|v| v.as_str())
+                                    {
                                         info!(
                                             "feishu 收到消息来自 open_id: {}（未绑定，可用 agtalk config set feishu.open_id {} 绑定）",
-                                            open_id, open_id
+                                            oid, oid
                                         );
                                     }
-                                    if let Err(e) =
-                                        self.client.send_text(&open_id, FREE_TEXT_HINT).await
-                                    {
-                                        warn!("feishu 自由文字提示发送失败: {}", e);
-                                    }
+                                } else if let InboundMessage::Compose { open_id, text } =
+                                    decide_message(&self.cfg.open_id, &data)
+                                {
+                                    self.send_compose_card(&open_id, &text).await;
                                 }
                             }
                         }
@@ -142,6 +139,29 @@ impl FeishuRouter {
                     warn!("feishu 长连接断开，准备重连");
                 }
             }
+        }
+    }
+
+    /// p2p 文本入站：回复 compose 草稿卡（预填正文 + agent 下拉）。
+    /// 无可投递 agent 时回说明文本，不生成空选择卡片。
+    async fn send_compose_card(&self, open_id: &str, draft: &str) {
+        let agents = active_compose_agents(&self.storage);
+        if agents.is_empty() {
+            if let Err(e) = self
+                .client
+                .send_text(
+                    open_id,
+                    "[agtalk] 当前没有可投递的 agent，请先用 agtalk id join 注册。",
+                )
+                .await
+            {
+                warn!("feishu 空 agent 提示发送失败: {}", e);
+            }
+            return;
+        }
+        let card = card::compose_card(draft, &agents);
+        if let Err(e) = self.client.send_card(open_id, &card).await {
+            warn!("feishu compose 卡片发送失败: {}", e);
         }
     }
 
@@ -183,314 +203,8 @@ impl FeishuRouter {
     }
 }
 
-/// 卡片回调的处理决策（IO 无关，可测）。
-pub enum CardDecision {
-    /// 空 ACK：value 无法解析、消息不存在、非绑定用户等。
-    Ack,
-    /// 回包换卡：终态卡片 JSON。
-    TerminalCard(Value),
-}
-
-/// 卡片回调处理结果：回包决策 + 新创建的回复消息。
-pub struct CardActionOutcome {
-    pub decision: CardDecision,
-    /// 新创建的回复消息（幂等回放、仲裁落败、忽略场景为 None）；
-    /// 调用方据此唤醒接收方 SSE + notify。
-    pub reply: Option<Message>,
-}
-
-fn ack() -> CardActionOutcome {
-    CardActionOutcome {
-        decision: CardDecision::Ack,
-        reply: None,
-    }
-}
-
-/// 卡片回调决策：解析 value → receipt 幂等 reply → 终态卡片。
-/// 幂等回放也返回终态卡片（飞书重推时视觉收敛）。
-pub fn decide_card_action(
-    storage: &Storage,
-    bound_open_id: &str,
-    data: &Value,
-    event_id: Option<&str>,
-) -> CardActionOutcome {
-    // operator 校验：v1 单用户，仅绑定 open_id 的点击生效
-    let operator = data
-        .pointer("/operator/open_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    if !bound_open_id.is_empty() && operator != bound_open_id {
-        warn!("feishu 卡片回调来自未绑定 open_id: {}", operator);
-        return ack();
-    }
-    let value = data
-        .pointer("/action/value")
-        .cloned()
-        .unwrap_or(Value::Null);
-    let Some((msg_id, idx)) = card::decode_action_value(&value) else {
-        warn!("feishu 卡片回调 value 无法解析");
-        return ack();
-    };
-    let msg = match query_message(storage, &msg_id) {
-        Ok(Some(m)) => m,
-        _ => return ack(),
-    };
-    let choices = card::approval_choices(&msg);
-    let Some(choice) = choices.get(idx).cloned() else {
-        return ack();
-    };
-    let body = format!("选择：{}", choice);
-    let req = HumanReplyRequest {
-        message_id: &msg_id,
-        body: &body,
-        choice: Some(&choice),
-        surface: SURFACE,
-        external_event_id: event_id,
-    };
-    match approval::reply(storage, req) {
-        Ok(out) => CardActionOutcome {
-            decision: CardDecision::TerminalCard(card::terminal_card(
-                &msg,
-                &format!("已收到你的选择：{}", choice),
-                Some(&choice),
-            )),
-            // 幂等回放未创建新消息，不重复唤醒接收方
-            reply: if out.deduplicated {
-                None
-            } else {
-                Some(out.reply)
-            },
-        },
-        Err(HumanError::AlreadyResolved { resolved_by, .. }) => CardActionOutcome {
-            decision: CardDecision::TerminalCard(card::terminal_card(
-                &msg,
-                &format!("已由 {} 处理", resolved_by),
-                None,
-            )),
-            reply: None,
-        },
-        Err(e) => {
-            warn!("feishu 卡片回调 reply 失败: {}", e);
-            ack()
-        }
-    }
-}
-
-/// 自由文字事件：返回需要发送提示的 open_id（非绑定用户返回 None）。
-pub fn decide_message(bound_open_id: &str, data: &Value) -> Option<String> {
-    let open_id = data
-        .pointer("/sender/sender_id/open_id")
-        .and_then(|v| v.as_str())?;
-    if !bound_open_id.is_empty() && open_id != bound_open_id {
-        return None;
-    }
-    Some(open_id.to_string())
-}
-
-fn query_message(storage: &Storage, id: &str) -> Result<Option<Message>, HumanError> {
-    let conn = storage.conn();
-    let msg = conn
-        .query_row(
-            "SELECT id, to_address, to_name, from_address, from_name, body, content_type, \
-             reply_to_id, subject, metadata, event_id, status, created_at \
-             FROM messages WHERE id = ?1",
-            [id],
-            Message::from_row,
-        )
-        .optional()?;
-    Ok(msg)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::HumanConfig;
-    use crate::identity::mailbox::{create, ensure_human};
-    use crate::routing::{send::send, SendRequest};
-    use serde_json::json;
-
-    fn setup() -> (Storage, String) {
-        let storage = Storage::open_in_memory().unwrap();
-        let human_addr = ensure_human(&storage, &HumanConfig::default()).unwrap();
-        (storage, human_addr)
-    }
-
-    fn send_approval(storage: &Storage, human_addr: &str) -> Message {
-        let agent = create(storage, "agent", "", "").unwrap();
-        send(
-            storage,
-            SendRequest {
-                to: human_addr,
-                to_name: "human",
-                from: &agent,
-                from_name: "agent",
-                body: "部署到生产？",
-                content_type: "approval_request",
-                reply_to_id: None,
-                subject: None,
-                metadata: &json!({ "choices": ["批准", "拒绝"], "select_only": true }).to_string(),
-                more_coming: false,
-            },
-        )
-        .unwrap()
-    }
-
-    fn card_event(msg_id: &str, choice_index: usize, operator: &str) -> Value {
-        json!({
-            "operator": { "open_id": operator },
-            "action": { "value": card::encode_action_value(msg_id, choice_index) },
-        })
-    }
-
-    fn count_replies(storage: &Storage, original_id: &str) -> usize {
-        let conn = storage.conn();
-        conn.query_row(
-            "SELECT COUNT(*) FROM messages WHERE reply_to_id = ?1",
-            [original_id],
-            |r| r.get::<_, i64>(0),
-        )
-        .unwrap() as usize
-    }
-
-    /// 收集卡片所有 markdown/div 文本内容（布局演进时断言不绑死元素索引）。
-    fn card_texts(card: &Value) -> Vec<String> {
-        card["body"]["elements"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|e| {
-                e.get("content")
-                    .and_then(|c| c.as_str())
-                    .or_else(|| e.pointer("/text/content").and_then(|c| c.as_str()))
-                    .map(|s| s.to_string())
-            })
-            .collect()
-    }
-
-    #[test]
-    fn card_action_wins_arbitration_and_returns_terminal_card() {
-        let (storage, human_addr) = setup();
-        let msg = send_approval(&storage, &human_addr);
-        let data = card_event(&msg.id, 0, "ou_user");
-        let out = decide_card_action(&storage, "ou_user", &data, Some("evt-1"));
-        match out.decision {
-            CardDecision::TerminalCard(card) => {
-                let texts = card_texts(&card);
-                assert!(
-                    texts.iter().any(|t| t.contains("已收到你的选择：批准")),
-                    "{:?}",
-                    texts
-                );
-            }
-            CardDecision::Ack => panic!("expected terminal card"),
-        }
-        // 新回复必须暴露给调用方，用于唤醒接收方 SSE + notify
-        let reply = out.reply.expect("新回复应暴露给调用方");
-        assert_eq!(reply.to_address, msg.from_address);
-        assert_eq!(reply.reply_to_id.as_deref(), Some(msg.id.as_str()));
-        assert_eq!(count_replies(&storage, &msg.id), 1);
-    }
-
-    #[test]
-    fn duplicate_event_id_replays_terminal_card_without_second_reply() {
-        let (storage, human_addr) = setup();
-        let msg = send_approval(&storage, &human_addr);
-        let data = card_event(&msg.id, 1, "ou_user");
-        let first = decide_card_action(&storage, "ou_user", &data, Some("evt-1"));
-        assert!(matches!(first.decision, CardDecision::TerminalCard(_)));
-        assert!(first.reply.is_some(), "首次执行应产生新回复");
-        let second = decide_card_action(&storage, "ou_user", &data, Some("evt-1"));
-        assert!(
-            matches!(second.decision, CardDecision::TerminalCard(_)),
-            "重推应回放终态卡片"
-        );
-        assert!(second.reply.is_none(), "幂等回放不得再次唤醒接收方");
-        assert_eq!(
-            count_replies(&storage, &msg.id),
-            1,
-            "重复事件不得产生第二条回复"
-        );
-    }
-
-    #[test]
-    fn losing_surface_gets_resolved_card() {
-        let (storage, human_addr) = setup();
-        let msg = send_approval(&storage, &human_addr);
-        // popup 先胜出
-        approval::reply(
-            &storage,
-            HumanReplyRequest {
-                message_id: &msg.id,
-                body: "go",
-                choice: Some("批准"),
-                surface: "popup",
-                external_event_id: None,
-            },
-        )
-        .unwrap();
-        let data = card_event(&msg.id, 0, "ou_user");
-        let out = decide_card_action(&storage, "ou_user", &data, Some("evt-2"));
-        match out.decision {
-            CardDecision::TerminalCard(card) => {
-                let texts = card_texts(&card);
-                assert!(
-                    texts.iter().any(|t| t.contains("已由 popup 处理")),
-                    "{:?}",
-                    texts
-                );
-            }
-            CardDecision::Ack => panic!("expected terminal card"),
-        }
-        assert!(out.reply.is_none(), "仲裁落败不产生新回复");
-        // 落败方的回复消息已被回滚，只有 popup 的一条
-        assert_eq!(count_replies(&storage, &msg.id), 1);
-    }
-
-    #[test]
-    fn unbound_operator_is_acked_without_reply() {
-        let (storage, human_addr) = setup();
-        let msg = send_approval(&storage, &human_addr);
-        let data = card_event(&msg.id, 0, "ou_stranger");
-        let out = decide_card_action(&storage, "ou_user", &data, Some("evt-3"));
-        assert!(matches!(out.decision, CardDecision::Ack));
-        assert!(out.reply.is_none());
-        assert_eq!(count_replies(&storage, &msg.id), 0);
-    }
-
-    #[test]
-    fn undecodable_value_is_acked() {
-        let (storage, _human_addr) = setup();
-        let data = json!({
-            "operator": { "open_id": "ou_user" },
-            "action": { "value": { "garbage": true } },
-        });
-        let out = decide_card_action(&storage, "ou_user", &data, Some("evt-4"));
-        assert!(matches!(out.decision, CardDecision::Ack));
-        assert!(out.reply.is_none());
-    }
-
-    #[test]
-    fn unknown_message_is_acked() {
-        let (storage, _human_addr) = setup();
-        let data = card_event("no-such-uuid", 0, "ou_user");
-        let out = decide_card_action(&storage, "ou_user", &data, Some("evt-5"));
-        assert!(matches!(out.decision, CardDecision::Ack));
-        assert!(out.reply.is_none());
-    }
-
-    #[test]
-    fn decide_message_bound_vs_unbound() {
-        let data = json!({ "sender": { "sender_id": { "open_id": "ou_user" } } });
-        assert_eq!(
-            decide_message("ou_user", &data),
-            Some("ou_user".to_string())
-        );
-        assert_eq!(decide_message("ou_other", &data), None);
-    }
-
-    #[test]
-    fn link_status_defaults_disconnected() {
-        let link = LinkStatus::default();
-        assert!(!link.is_connected());
-    }
-}
+mod decide;
+use decide::active_compose_agents;
+pub use decide::{
+    decide_card_action, decide_message, CardActionOutcome, CardDecision, InboundMessage,
+};

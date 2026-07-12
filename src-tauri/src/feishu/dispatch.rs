@@ -77,7 +77,7 @@ pub async fn deliver_message(
     let card = if msg.content_type == "approval_request" {
         card::approval_card(msg, &card::approval_choices(msg))
     } else {
-        card::text_card(&msg.from_name, &msg.body)
+        card::text_card(msg)
     };
     let delivered_ref = match client.send_card(open_id, &card).await {
         Ok(id) => Some(id),

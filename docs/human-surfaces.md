@@ -116,12 +116,20 @@ agtalk config set human.surfaces '["popup","feishu"]'
   （approval_request 渲染 choices 按钮，普通消息为文本卡片）；卡片发送失败回退纯文本
   `[agtalk] {from}: {body}`；再失败经 `deliver_via` 标 failed（attempts+1，可重试）。
   成功标 delivered，external_ref = open_message_id。
-- **入站**：FeishuRouter 经飞书长连接（websocket）接收卡片回调与消息事件。
-  卡片按钮 value 携带 `{agtalk_msg, choice_index}` 精确路由到审批回复；
+- **入站**：FeishuRouter 经飞书长连接（websocket）接收卡片回调与消息事件；
   只有 `feishu.open_id` 绑定用户的点击/消息生效，其他人操作直接忽略（v1 单用户）。
-  自由文字消息不做归属猜测，回复提示文本引导用户在卡片上操作。
+  卡片回调按动作分派：
+  - `approval`：按钮 value 携带 `{agtalk_msg, choice_index}` 精确路由审批回复（仲裁语义不变）。
+  - `compose_submit`：从 `action.form_value` 读取正文与目标 agent；**服务端必须再次验证**
+    目标 UUID 是活跃 agent（不信任卡片 payload），然后复用 human→agent 发信与 receipt 幂等路径。
+  - `reply_open` / `reply_submit`：普通文本卡片的「回复」入口——卡片原地切换为回复表单
+    （目标锁定原发送 agent），提交后复用 human reply 路径，保留 reply_to_id、SSE、notify、history。
+  - 绑定用户的 **p2p 文本消息**回复「选择 Agent 并发送」草稿卡：正文预填为该文本，
+    agent 下拉展示 name + intro（option value 只放 address UUID，完整 UUID 不进可见文案）；
+    无可投递 agent 时回说明文本，不生成空选择卡片。
+  - 群聊、非文本、空文本安全忽略；不做群聊路由，不做自由文字归属猜测。
 - **幂等**：飞书 event_id 作为 external_event_id 走第 6 节同事务幂等；
-  重复事件回放终态卡片（视觉收敛），不重复创建消息。
+  重复事件回放终态卡片（视觉收敛），不重复创建消息、不重复触发 SSE/notify。
 - **仲裁收尾**：审批被其他 surface（popup/GUI）处理时，daemon 回写飞书卡片为终态
   「已由 {surface} 处理」；飞书自己胜出时由 Router 直接回终态。
 - **可观测**：`agtalk tool doctor` 输出 feishu 段（enabled/凭据存在性脱敏/open_id 绑定/
