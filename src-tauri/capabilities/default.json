@@ -2,5 +2,5 @@
   "identifier": "default",
   "description": "Default capabilities for agtalk",
   "windows": ["main", "popup"],
-  "permissions": ["core:default", "core:window:allow-close"]
+  "permissions": ["core:default", "core:window:allow-close", "shell:allow-open"]
 }

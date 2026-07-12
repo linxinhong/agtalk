@@ -12,7 +12,7 @@
 //! 端点无需任何凭证；Lark 国际租户在 poll 返回 tenant_brand=lark 后由调用方切换域名。
 
 use base64::Engine;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::io::Write;
 
@@ -24,7 +24,7 @@ pub const LARK_ACCOUNTS_BASE_URL: &str = "https://accounts.larksuite.com";
 const ENDPOINT: &str = "/oauth/v1/app/registration";
 
 /// begin 结果：授权链接 + 轮询参数。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SetupBegin {
     pub url: String,
     pub device_code: String,
@@ -33,7 +33,8 @@ pub struct SetupBegin {
 }
 
 /// poll 结果：前端按此驱动轮询节奏。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
 pub enum SetupPoll {
     Pending,
     SlowDown {

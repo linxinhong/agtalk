@@ -165,6 +165,42 @@ pub fn gui_set_config(key: String, value: String) -> Result<(), String> {
     set_config_value(&key, &value)
 }
 
+// ---- 飞书一键创建应用（设备授权流）----
+// 薄桥：业务在 feishu::setup；命令只负责参数转发与 tokio 阻塞等待。
+
+fn block_on_setup<F: std::future::Future>(fut: F) -> F::Output {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio current_thread runtime");
+    rt.block_on(fut)
+}
+
+pub(crate) fn feishu_setup_begin_from(
+    base: &str,
+) -> Result<crate::feishu::setup::SetupBegin, String> {
+    block_on_setup(crate::feishu::setup::begin(base))
+}
+
+pub(crate) fn feishu_setup_poll_from(
+    base: &str,
+    device_code: &str,
+) -> Result<crate::feishu::setup::SetupPoll, String> {
+    block_on_setup(crate::feishu::setup::poll(base, device_code))
+}
+
+#[tauri::command]
+pub fn gui_feishu_setup_begin() -> Result<crate::feishu::setup::SetupBegin, String> {
+    feishu_setup_begin_from(crate::feishu::setup::ACCOUNTS_BASE_URL)
+}
+
+#[tauri::command]
+pub fn gui_feishu_setup_poll(
+    device_code: String,
+) -> Result<crate::feishu::setup::SetupPoll, String> {
+    feishu_setup_poll_from(crate::feishu::setup::ACCOUNTS_BASE_URL, &device_code)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,5 +306,47 @@ mod tests {
         // 端口 1 必然拒绝连接
         let err = load_config_view_from("http://127.0.0.1:1").unwrap_err();
         assert!(err.contains("daemon_unreachable"), "{}", err);
+    }
+
+    #[test]
+    fn gui_feishu_setup_begin_and_poll_full_flow() {
+        let begin_res = serde_json::json!({
+            "device_code": "dc-1",
+            "verification_uri_complete": "https://open.feishu.cn/page/launcher?user_code=ABCD-EFGH",
+            "interval": 5,
+            "expires_in": 600
+        })
+        .to_string();
+        let pending = serde_json::json!({ "error": "authorization_pending" }).to_string();
+        let success = serde_json::json!({
+            "client_id": "cli_xxx",
+            "client_secret": "sec_yyy",
+            "user_info": { "open_id": "ou_zzz", "tenant_brand": "feishu" }
+        })
+        .to_string();
+        let (base, rx, handle) = mock_daemon(vec![begin_res, pending, success]);
+
+        let begin = feishu_setup_begin_from(&base).unwrap();
+        assert_eq!(begin.device_code, "dc-1");
+        assert!(begin.url.contains("user_code=ABCD-EFGH"));
+        assert!(begin.url.contains("createOnly=true"));
+
+        let poll1 = feishu_setup_poll_from(&base, &begin.device_code).unwrap();
+        assert_eq!(poll1, crate::feishu::setup::SetupPoll::Pending);
+        let poll2 = feishu_setup_poll_from(&base, &begin.device_code).unwrap();
+        match poll2 {
+            crate::feishu::setup::SetupPoll::Success {
+                app_id, open_id, ..
+            } => {
+                assert_eq!(app_id, "cli_xxx");
+                assert_eq!(open_id, "ou_zzz");
+            }
+            other => panic!("expected Success, got {:?}", other),
+        }
+
+        assert!(rx.recv().unwrap().contains("action=begin"));
+        assert!(rx.recv().unwrap().contains("action=poll"));
+        assert!(rx.recv().unwrap().contains("action=poll"));
+        handle.join().unwrap();
     }
 }
