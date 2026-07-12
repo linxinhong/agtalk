@@ -806,6 +806,7 @@ GET  /api/v1/human/inbox?all=true|false
 POST /api/v1/human/read
 POST /api/v1/human/reply
 POST /api/v1/human/done
+POST /api/v1/human/delivery/ack
 GET  /api/v1/human/agents
 POST /api/v1/human/send
 ```
@@ -814,8 +815,11 @@ POST /api/v1/human/send
 
 - `POST /api/v1/human/reply`：请求体 `{message_id, body, choice?, surface?, external_event_id?}`。approval_request 首个有效回复原子胜出，后续返回 `already_resolved`；`select_only` 无 choice 返回 `select_only_requires_choice`。
 - `reply` / `done` / `send` 均接受可选 `{surface, external_event_id}` 做跨端幂等：重复事件回放首次成功结果（`Ok{id}`，send 返回原 message id），不重复创建消息；中途崩溃的占位事件自动恢复。
+- `POST /api/v1/human/delivery/ack`：请求体 `{message_id, surface}`，surface 确认已展示该消息（delivery 回执，标 delivered）；行不存在返回 `delivery_not_found`。
 - `GET /api/v1/human/agents`：返回在线 agent 列表（活跃 mailbox，排除 human 自身），人类主动发信只能从该列表选择。
 - `POST /api/v1/human/send`：请求体 `{to, body, subject?, surface?, external_event_id?}`，`to` 必须是活跃 agent 的 UUID（拒绝 human 自身），复用 routing::send，触发目标 agent 的 SSE/notify。
+
+桌面弹窗：daemon 对每条 human delivery 拉起 `agtalk __popup <message-id>`（420×320 不可调窗口；Reply/Done 经 human API 提交后自动关窗；直接关窗 = Later = dismissed，不改状态）。弹窗进程经 `<config_dir>/human/session.json` 取 token 调 human API，token 不下发到前端。
 
 ### 11.6 旧 REST 路径映射
 
@@ -937,6 +941,8 @@ select_only_requires_choice
 invalid_choice
 agent_not_found
 receipt_inconclusive
+delivery_not_found
+invalid_surface
 ```
 
 `--json` 错误格式：

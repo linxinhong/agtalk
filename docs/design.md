@@ -502,7 +502,7 @@ POST /api/v1/human/send            → Ok{id}（to 必须是活跃 agent 的 UUI
 **阶段路线图**：
 
 1. **第一阶段（本节实现）**：human 领域模块 + 三张表迁移 + fanout + 审批仲裁 + 主动发信 + ask 等待 + system-human session + human-only API。
-2. **第二阶段**：desktop popup —— 对每条 human delivery 拉起 `agtalk __popup <message-id>`（420×320，展示正文/选项、Reply/Done/Later，关闭不改变状态，操作均经 human API；ChildMonitor 监控子进程，关闭且无回复 = dismissed）。
+2. **第二阶段（已实现）**：desktop popup —— 对每条 human delivery 拉起 `agtalk __popup <message-id>`（420×320 不可调，展示正文/选项、Reply/Done/Later，操作均经 human API，提交后自动关窗；直接关窗 = Later = dismissed，不改变消息状态）。PopupTransport 在 fanout 成功后拉起弹窗：in-flight 去重防同一消息重复弹窗；ChildMonitor 监控子进程退出释放名额；spawn 失败标 delivery failed（可重试）；弹窗展示成功后经 `POST /api/v1/human/delivery/ack` 回执 delivered。v1 只在 fanout 时拉起，daemon 启动/backlog 不补弹。
 3. **第三阶段**：Feishu 与 Android surface。Feishu 是**内置 human transport，不是 notify plugin**（v1 仅一个允许的 open_id，长连接收私聊/卡片回调，卡片选项保存 UUID，事件回调经 receipts 去重）；Android 的 Inbox/Reply/Done/Compose 作为 human surface 复用 BLE 已配对设备 token + command_id 去重，**不得创建 Android human mailbox**。无现成实现时只定义并测试 agtalk 侧协议/接口，不伪造完成。
 4. 配置统一经 `agtalk config gui`（可持久化 + CLI fallback），密钥 0600、doctor/log 全部脱敏。notify plugin 仍只推"有消息"信号、禁止注入正文；Feishu/Android human transport 可向实际 human 展示正文。
 

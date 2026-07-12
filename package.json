@@ -11,6 +11,7 @@
     "typecheck:extension": "cd extension && pnpm run typecheck"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2",
     "vue": "^3.4.0",
     "vue-i18n": "^11.4.0"
   },

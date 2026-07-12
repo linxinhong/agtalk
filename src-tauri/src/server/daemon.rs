@@ -11,6 +11,7 @@ use crate::storage::Storage;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use sysinfo::{Pid, System};
 use tokio::signal;
 use tracing::{error, info};
@@ -122,7 +123,9 @@ pub async fn start(dot_agtalk: PathBuf) -> Result<(), DaemonError> {
 
     write_pid_file()?;
 
-    let state = AppState::new(storage, config.clone(), dot_agtalk);
+    let mut state = AppState::new(storage, config.clone(), dot_agtalk);
+    // daemon 环境启用桌面弹窗投递（测试保持 disabled，不拉起真实子进程）
+    state.popup = Arc::new(crate::human::popup::PopupTransport::enabled());
     let app = routes(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], config.http_port));

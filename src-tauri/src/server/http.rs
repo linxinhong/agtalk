@@ -57,6 +57,10 @@ pub fn routes(state: AppState) -> Router {
         .route("/api/v1/human/read", post(human_read_handler))
         .route("/api/v1/human/reply", post(human_reply_handler))
         .route("/api/v1/human/done", post(human_done_handler))
+        .route(
+            "/api/v1/human/delivery/ack",
+            post(human_delivery_ack_handler),
+        )
         .route("/api/v1/human/agents", get(human_agents_handler))
         .route("/api/v1/human/send", post(human_send_handler))
         // events
@@ -600,6 +604,25 @@ async fn human_agents_handler(
     headers: HeaderMap,
 ) -> (StatusCode, Json<ServerMsg>) {
     json_response(human::handle_agents(&state, &headers))
+}
+
+#[derive(serde::Deserialize)]
+struct HumanDeliveryAckBody {
+    message_id: String,
+    surface: String,
+}
+
+async fn human_delivery_ack_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<HumanDeliveryAckBody>,
+) -> (StatusCode, Json<ServerMsg>) {
+    json_response(human::handle_delivery_ack(
+        &state,
+        &headers,
+        body.message_id,
+        body.surface,
+    ))
 }
 
 #[derive(serde::Deserialize)]

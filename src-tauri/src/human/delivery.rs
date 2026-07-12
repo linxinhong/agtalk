@@ -7,6 +7,7 @@
 use super::HumanError;
 use crate::routing::Message;
 use crate::storage::Storage;
+use rusqlite::OptionalExtension;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delivery {
@@ -82,6 +83,30 @@ pub fn mark_delivered(
         rusqlite::params![message_id, surface, external_ref],
     )?;
     Ok(())
+}
+
+/// surface 确认已展示（delivery 回执）：标 delivered、error 清零。
+/// 幂等：已 delivered 再 ack 仍返回 true。返回 false 表示该 delivery 行不存在。
+pub fn ack(storage: &Storage, message_id: &str, surface: &str) -> Result<bool, HumanError> {
+    let conn = storage.conn();
+    let exists: bool = conn
+        .query_row(
+            "SELECT 1 FROM human_deliveries WHERE message_id = ?1 AND surface = ?2",
+            rusqlite::params![message_id, surface],
+            |_| Ok(true),
+        )
+        .optional()?
+        .unwrap_or(false);
+    if !exists {
+        return Ok(false);
+    }
+    conn.execute(
+        "UPDATE human_deliveries \
+         SET status = 'delivered', error = NULL, updated_at = unixepoch('subsec') \
+         WHERE message_id = ?1 AND surface = ?2",
+        rusqlite::params![message_id, surface],
+    )?;
+    Ok(true)
 }
 
 /// 记录 receipt 去重；返回 true 表示首次见到该事件。
@@ -218,6 +243,22 @@ mod tests {
         assert_eq!(feishu.status, "delivered");
         assert_eq!(feishu.external_ref.as_deref(), Some("om-123"));
         assert_eq!(feishu.error, None);
+    }
+
+    #[test]
+    fn ack_marks_delivered_and_is_idempotent() {
+        let (storage, msg) = setup_with_message();
+        // 不存在的 delivery 行返回 false
+        assert!(!ack(&storage, &msg.id, "wechat").unwrap());
+        assert!(!ack(&storage, "no-such-msg", "popup").unwrap());
+
+        assert!(ack(&storage, &msg.id, "popup").unwrap());
+        let ds = list_for_message(&storage, &msg.id).unwrap();
+        let popup = ds.iter().find(|d| d.surface == "popup").unwrap();
+        assert_eq!(popup.status, "delivered");
+
+        // 幂等：再次 ack 仍 true
+        assert!(ack(&storage, &msg.id, "popup").unwrap());
     }
 
     #[test]

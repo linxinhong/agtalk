@@ -37,6 +37,7 @@ GET  /api/v1/human/inbox?all=true|false     # human 收件箱
 POST /api/v1/human/read                     # {message_id?} 读未读/指定消息并标 read
 POST /api/v1/human/reply                    # {message_id, body, choice?, surface?, external_event_id?}
 POST /api/v1/human/done                     # {message_id} 标记完成
+POST /api/v1/human/delivery/ack             # {message_id, surface} delivery 回执（surface 确认已展示）
 GET  /api/v1/human/agents                   # 在线 agent 列表（活跃 mailbox，排除 human 自身）
 POST /api/v1/human/send                     # {to, body, subject?} 主动发信（to 必须是 agents 列表中的 UUID）
 GET  /api/v1/events                         # SSE 订阅 human mailbox（带 human token + 可选 Last-Event-ID）
@@ -74,6 +75,9 @@ pending → delivered（surface 确认收到）/ failed（可重试）
 ```
 
 - phase-1：daemon 只做**记账**（消息落库 + delivery 行 + SSE 推送），surface 经 SSE 拉取消息。
+- 桌面 popup（已实现）：daemon 的 PopupTransport 在 fanout 成功后拉起 `agtalk __popup <message-id>`
+  （in-flight 去重，spawn 失败标 failed）；弹窗展示成功后经 `POST /api/v1/human/delivery/ack`
+  回执 delivered。v1 只在 fanout 时拉起，daemon 启动/backlog 不补弹。
 - 后续外部通道（飞书等）经 `deliver_via` 投递：成功写 external_ref 标 delivered；失败记
   error 并 attempts+1，failed 行可被重试捞取。
 - delivery 失败不影响消息投递：消息始终在 DB，human inbox/SSE 可读（at-least-once）。
@@ -104,6 +108,8 @@ pending → delivered（surface 确认收到）/ failed（可重试）
 | `invalid_choice` | choice 不在审批选项中 |
 | `agent_not_found` | send 目标不存在、已离开或为 human 自身 |
 | `receipt_inconclusive` | 历史占位 receipt 无结果 id，无法确定原动作是否已落库（需人工清理该 receipt 后重试） |
+| `delivery_not_found` | delivery ack 的 message_id+surface 无对应 delivery 行 |
+| `invalid_surface` | delivery ack 的 surface 为空 |
 
 ## 8. surface 实现 checklist
 

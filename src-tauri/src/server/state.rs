@@ -1,6 +1,7 @@
 //! HTTP server 共享状态。
 
 use crate::config::AgConfig;
+use crate::human::popup::PopupTransport;
 use crate::notify::NotifyLimiter;
 use crate::storage::Storage;
 use crate::transport::wake::SubscriberRegistry;
@@ -14,6 +15,8 @@ pub struct AppState {
     pub registry: SubscriberRegistry,
     pub dot_agtalk: PathBuf,
     pub notify_limiter: Arc<NotifyLimiter>,
+    /// 桌面弹窗投递：daemon 启用，测试默认 disabled（不拉起真实子进程）。
+    pub popup: Arc<PopupTransport>,
 }
 
 impl AppState {
@@ -24,6 +27,7 @@ impl AppState {
             registry: SubscriberRegistry::new(),
             dot_agtalk,
             notify_limiter: Arc::new(NotifyLimiter::default_cooldown()),
+            popup: Arc::new(PopupTransport::disabled()),
         }
     }
 }

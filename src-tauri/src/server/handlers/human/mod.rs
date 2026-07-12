@@ -10,7 +10,7 @@ mod actions;
 mod compose;
 mod inbox;
 
-pub use actions::{handle_done, handle_reply};
+pub use actions::{handle_delivery_ack, handle_done, handle_reply};
 pub use compose::{handle_agents, handle_send};
 pub use inbox::{handle_inbox, handle_read};
 

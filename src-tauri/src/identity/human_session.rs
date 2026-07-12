@@ -63,6 +63,18 @@ pub fn validate(token: &str) -> Result<HumanSession, IdentityError> {
     Ok(session)
 }
 
+/// 读取本机 human session（客户端用）。文件缺失或非法返回 InvalidHumanToken，
+/// 调用方应提示重启 daemon 重新颁发。
+pub fn load() -> Result<HumanSession, IdentityError> {
+    let path = session_path()?;
+    let content = std::fs::read_to_string(&path).map_err(|_| IdentityError::InvalidHumanToken)?;
+    let session: HumanSession = serde_json::from_str(&content)?;
+    if session.token.is_empty() || session.address.is_empty() {
+        return Err(IdentityError::InvalidHumanToken);
+    }
+    Ok(session)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

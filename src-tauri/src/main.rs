@@ -11,7 +11,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("__popup") => {
-            run_popup();
+            run_popup(args.get(2).cloned());
             ExitCode::SUCCESS
         }
         _ => run_cli(),

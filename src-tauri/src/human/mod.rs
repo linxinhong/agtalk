@@ -5,7 +5,9 @@
 //! 不允许直写 SQLite。
 
 pub mod approval;
+pub mod client;
 pub mod delivery;
+pub mod popup;
 
 use crate::config::HumanConfig;
 use crate::routing::{Message, SendRequest, StatusChange};

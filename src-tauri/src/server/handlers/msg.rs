@@ -346,8 +346,15 @@ pub fn handle_ask(
                 });
             }
             record_send_history(state, &session, &state.config.human.name, &msg, "msg.ask");
-            if let Err(e) = crate::human::fanout(&state.storage, &state.config.human, &msg) {
-                tracing::warn!("human fanout failed: {}", e);
+            match crate::human::fanout(&state.storage, &state.config.human, &msg) {
+                Ok(n) if n > 0 => {
+                    // 桌面弹窗投递：审批消息拉起 agtalk __popup
+                    state
+                        .popup
+                        .dispatch(&state.storage, &msg, &state.config.human.surfaces);
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("human fanout failed: {}", e),
             }
             ServerMsg::AskResult { message_id: msg.id }
         }
@@ -726,7 +733,11 @@ fn fanout_if_human(state: &AppState, to_address: &str, msg: &crate::routing::Mes
     }
     match crate::human::fanout(&state.storage, &state.config.human, msg) {
         Ok(n) if n > 0 => {
-            tracing::info!(message_id = %msg.id, surfaces = n, "human fanout recorded")
+            tracing::info!(message_id = %msg.id, surfaces = n, "human fanout recorded");
+            // 桌面弹窗投递：为新消息拉起 agtalk __popup（未启用/无 popup surface 时 no-op）
+            state
+                .popup
+                .dispatch(&state.storage, msg, &state.config.human.surfaces);
         }
         Ok(_) => {}
         Err(e) => {

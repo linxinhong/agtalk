@@ -81,6 +81,32 @@ pub fn handle_done(
     }
 }
 
+/// delivery 回执：surface 确认已展示该消息。delivery 行不存在返回 delivery_not_found。
+pub fn handle_delivery_ack(
+    state: &AppState,
+    headers: &HeaderMap,
+    message_id: String,
+    surface: String,
+) -> ServerMsg {
+    if let Err(e) = authenticate_human(state, headers) {
+        return e;
+    }
+    if surface.trim().is_empty() {
+        return ServerMsg::Error {
+            code: "invalid_surface".into(),
+            message: "surface 不能为空".into(),
+        };
+    }
+    match human::delivery::ack(&state.storage, &message_id, &surface) {
+        Ok(true) => ServerMsg::Ok { id: message_id },
+        Ok(false) => ServerMsg::Error {
+            code: "delivery_not_found".into(),
+            message: format!("delivery 不存在: {} / {}", message_id, surface),
+        },
+        Err(e) => human_error_msg(&e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::identity::mailbox::create;
@@ -144,6 +170,42 @@ mod tests {
         // 回复落到 asker 的 inbox
         let agent_inbox = inbox::inbox(&fx.state.storage, &agent_addr, false).unwrap();
         assert!(agent_inbox.iter().any(|m| m.id == reply_id));
+    }
+
+    #[test]
+    fn human_delivery_ack_marks_delivered() {
+        let fx = setup();
+        let agent_addr = create(&fx.state.storage, "sender", "", "").unwrap();
+        let msg_id = send_to_human(&fx, &agent_addr, "text", "{}");
+        crate::human::fanout(&fx.state.storage, &fx.state.config.human, &{
+            crate::routing::lookup::detail(&fx.state.storage, &msg_id)
+                .unwrap()
+                .unwrap()
+        })
+        .unwrap();
+
+        match super::handle_delivery_ack(
+            &fx.state,
+            &headers_with(&fx.token),
+            msg_id.clone(),
+            "popup".into(),
+        ) {
+            ServerMsg::Ok { id } => assert_eq!(id, msg_id),
+            other => panic!("expected Ok, got {:?}", other),
+        }
+        let ds = crate::human::delivery::list_for_message(&fx.state.storage, &msg_id).unwrap();
+        assert_eq!(ds[0].status, "delivered");
+
+        // 不存在的 delivery → delivery_not_found
+        match super::handle_delivery_ack(
+            &fx.state,
+            &headers_with(&fx.token),
+            msg_id,
+            "wechat".into(),
+        ) {
+            ServerMsg::Error { code, .. } => assert_eq!(code, "delivery_not_found"),
+            other => panic!("expected delivery_not_found, got {:?}", other),
+        }
     }
 
     #[test]
