@@ -39,6 +39,10 @@ pub fn handle_reply(
             if !out.deduplicated {
                 after_human_reply(state, &out.reply);
             }
+            // 仲裁收尾：审批被本端处理时，回写飞书卡片为终态（feishu 胜出时由 Router 直接回终态）
+            if out.resolved && surface != crate::feishu::router::SURFACE {
+                state.feishu.settle(&state.storage, &resolved, &surface);
+            }
             ServerMsg::Ok { id: out.reply.id }
         }
         Err(e) => human_error_msg(&e),

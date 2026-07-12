@@ -129,6 +129,9 @@ pub async fn start(dot_agtalk: PathBuf) -> Result<(), DaemonError> {
 
     // 飞书 surface：enabled 时 spawn 全局 Router（单条长连接，入站 receipt 幂等）
     if config.feishu.enabled {
+        state.feishu = std::sync::Arc::new(crate::feishu::dispatch::FeishuDispatcher::enabled(
+            config.feishu.clone(),
+        ));
         let router = std::sync::Arc::new(crate::feishu::router::FeishuRouter::new(
             state.storage.clone(),
             config.feishu.clone(),

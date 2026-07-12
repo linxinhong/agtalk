@@ -1,6 +1,7 @@
 //! HTTP server 共享状态。
 
 use crate::config::AgConfig;
+use crate::feishu::dispatch::FeishuDispatcher;
 use crate::feishu::router::LinkStatus;
 use crate::human::popup::PopupTransport;
 use crate::notify::NotifyLimiter;
@@ -18,6 +19,8 @@ pub struct AppState {
     pub notify_limiter: Arc<NotifyLimiter>,
     /// 桌面弹窗投递：daemon 启用，测试默认 disabled（不拉起真实子进程）。
     pub popup: Arc<PopupTransport>,
+    /// 飞书出站投递/仲裁收尾：daemon 按配置启用，测试默认 disabled。
+    pub feishu: Arc<FeishuDispatcher>,
     /// 飞书长连接状态（doctor 可读；未启用 feishu 时恒 false）。
     pub feishu_link: LinkStatus,
 }
@@ -31,6 +34,7 @@ impl AppState {
             dot_agtalk,
             notify_limiter: Arc::new(NotifyLimiter::default_cooldown()),
             popup: Arc::new(PopupTransport::disabled()),
+            feishu: Arc::new(FeishuDispatcher::disabled()),
             feishu_link: LinkStatus::default(),
         }
     }

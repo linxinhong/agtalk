@@ -352,6 +352,10 @@ pub fn handle_ask(
                     state
                         .popup
                         .dispatch(&state.storage, &msg, &state.config.human.surfaces);
+                    // 飞书投递：卡片消息（未启用/无 feishu surface 时 no-op）
+                    state
+                        .feishu
+                        .dispatch(&state.storage, &msg, &state.config.human.surfaces);
                 }
                 Ok(_) => {}
                 Err(e) => tracing::warn!("human fanout failed: {}", e),
@@ -737,6 +741,10 @@ fn fanout_if_human(state: &AppState, to_address: &str, msg: &crate::routing::Mes
             // 桌面弹窗投递：为新消息拉起 agtalk __popup（未启用/无 popup surface 时 no-op）
             state
                 .popup
+                .dispatch(&state.storage, msg, &state.config.human.surfaces);
+            // 飞书投递：卡片消息（未启用/无 feishu surface 时 no-op）
+            state
+                .feishu
                 .dispatch(&state.storage, msg, &state.config.human.surfaces);
         }
         Ok(_) => {}

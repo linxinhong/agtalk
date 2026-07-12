@@ -9,6 +9,7 @@
 
 pub mod card;
 pub mod client;
+pub mod dispatch;
 pub mod proto;
 pub mod router;
 pub mod token;
