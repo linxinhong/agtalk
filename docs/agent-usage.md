@@ -111,6 +111,9 @@ agtalk msg wait [sent-msg-id] --timeout 30
 
 ```bash
 agtalk msg ask "<问题>" --option approve --option reject --timeout 60
+
+# agent/脚本中推荐：只发送，不阻塞等待
+agtalk msg ask "<问题>" --option approve --option reject --no-wait
 ```
 
 - 默认经 SSE 等待人类回复，超时 300 秒；`--timeout` 覆盖；`--no-wait` 只发送不等待。

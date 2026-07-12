@@ -173,6 +173,8 @@ impl PluginChannel {
     /// 调用 `<plugin> discover` 获取当前 endpoint。
     /// 如果 `agent_name` 不为空，会通过环境变量 `AGTALK_NOTIFY_NAME` 传给插件，
     /// 让插件有机会把当前 pane/tab 等上下文重命名为 agent 名字。
+    /// discover 与 send 一样受 `timeout_ms` 限制（默认 1000ms，100ms–10s），
+    /// 避免插件 hang 住导致 CLI/daemon 无限阻塞。
     pub fn discover_with_name(
         &self,
         agent_name: Option<&str>,
@@ -180,13 +182,19 @@ impl PluginChannel {
         let plugin_path = self.resolve_binary()?;
         Self::validate_binary(&plugin_path)?;
 
+        let timeout_ms = self
+            .resolve_timeout()
+            .clamp(MIN_PLUGIN_TIMEOUT_MS, MAX_PLUGIN_TIMEOUT_MS);
+        let timeout = Duration::from_millis(timeout_ms);
+
         let mut cmd = Command::new(&plugin_path);
         cmd.arg("discover");
         if let Some(name) = agent_name {
             cmd.env("AGTALK_NOTIFY_NAME", name);
         }
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-        let output = cmd.output().map_err(|e| {
+        let child = cmd.spawn().map_err(|e| {
             NotifyError::Other(format!(
                 "无法执行插件 discover {} ({}): {}",
                 self.name,
@@ -195,30 +203,41 @@ impl PluginChannel {
             ))
         })?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Ok(PluginEndpoint::not_ready(
-                &self.name,
-                format!("discover 失败: {}", stderr),
-            ));
+        match wait_with_timeout(child, timeout, &self.name) {
+            Ok(output) => {
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    return Ok(PluginEndpoint::not_ready(
+                        &self.name,
+                        format!("discover 失败: {}", stderr),
+                    ));
+                }
+
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let endpoint: PluginEndpoint = serde_json::from_str(&stdout).map_err(|e| {
+                    NotifyError::Other(format!(
+                        "插件 {} discover 输出解析失败: {} (raw: {})",
+                        self.name, e, stdout
+                    ))
+                })?;
+
+                if endpoint.channel != self.name {
+                    return Err(NotifyError::Other(format!(
+                        "插件 {} discover 返回的 channel 不匹配: expected={}, got={}",
+                        self.name, self.name, endpoint.channel
+                    )));
+                }
+
+                Ok(endpoint)
+            }
+            Err(NotifyError::CommandFailed(msg)) if msg.contains("超时") => {
+                Ok(PluginEndpoint::not_ready(
+                    &self.name,
+                    format!("discover 超时 ({}ms): 插件未在时限内响应", timeout_ms),
+                ))
+            }
+            Err(e) => Err(e),
         }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let endpoint: PluginEndpoint = serde_json::from_str(&stdout).map_err(|e| {
-            NotifyError::Other(format!(
-                "插件 {} discover 输出解析失败: {} (raw: {})",
-                self.name, e, stdout
-            ))
-        })?;
-
-        if endpoint.channel != self.name {
-            return Err(NotifyError::Other(format!(
-                "插件 {} discover 返回的 channel 不匹配: expected={}, got={}",
-                self.name, self.name, endpoint.channel
-            )));
-        }
-
-        Ok(endpoint)
     }
 
     /// 不带 agent 名字的 `discover`，用于非 join 场景（doctor、auto detect、retry 等）。
@@ -630,6 +649,54 @@ fi
         let endpoint = channel.discover().unwrap();
         assert!(!endpoint.ready);
         assert!(endpoint.message.contains("discover 失败"));
+    }
+
+    #[test]
+    fn discover_times_out_and_returns_not_ready() {
+        let tmp = TempDir::new().unwrap();
+        let _guard = env_guard(&tmp);
+
+        let plugins_dir = tmp.path().join("plugins");
+        std::fs::create_dir_all(&plugins_dir).unwrap();
+        let plugin_path = plugins_dir.join("agtalk-notify-sleep");
+        // discover 永远 sleep，验证 core 在 100ms 超时后返回 not_ready 且不阻塞。
+        std::fs::write(
+            &plugin_path,
+            "#!/bin/sh\nif [ \"$1\" = \"discover\" ]; then sleep 60; fi\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            std::fs::set_permissions(&plugin_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        // 把该插件超时设成 100ms，避免测试慢。
+        let mut plugins = HashMap::new();
+        plugins.insert(
+            "sleep".to_string(),
+            NotifyPluginEntry {
+                path: plugin_path.to_string_lossy().into_owned(),
+                timeout_ms: Some(100),
+            },
+        );
+        setup_config(&tmp, plugins);
+
+        let start = std::time::Instant::now();
+        let channel = PluginChannel::new("sleep").unwrap();
+        let endpoint = channel.discover().unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(!endpoint.ready, "超时后应返回 not_ready");
+        assert!(
+            endpoint.message.contains("超时"),
+            "提示应包含超时: {}",
+            endpoint.message
+        );
+        assert!(
+            elapsed < Duration::from_millis(800),
+            "应在超时附近快速返回，实际耗时 {:?}",
+            elapsed
+        );
     }
 
     #[test]
