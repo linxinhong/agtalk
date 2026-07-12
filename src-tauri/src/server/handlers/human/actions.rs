@@ -12,7 +12,7 @@ pub fn handle_reply(
     headers: &HeaderMap,
     message_id: String,
     body: String,
-    choice: Option<String>,
+    choices: Vec<String>,
     surface: String,
     external_event_id: Option<String>,
 ) -> ServerMsg {
@@ -24,7 +24,7 @@ pub fn handle_reply(
         Ok(r) => r,
         Err(e) => return e,
     };
-    let choices: Vec<&str> = choice.as_deref().into_iter().collect();
+    let choices: Vec<&str> = choices.iter().map(|s| s.as_str()).collect();
     match approval::reply(
         &state.storage,
         approval::HumanReplyRequest {
@@ -120,6 +120,51 @@ pub fn handle_done(
     }
 }
 
+/// 取消：给原发送方回「（已取消）」并终结原消息（取消是一等结果，agent 可感知）。
+pub fn handle_cancel(
+    state: &AppState,
+    headers: &HeaderMap,
+    message_id: String,
+    surface: String,
+    external_event_id: Option<String>,
+) -> ServerMsg {
+    let session = match authenticate_human(state, headers) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let resolved = match resolve_human_id(state, &session.address, &message_id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    match approval::cancel_with_receipt(
+        &state.storage,
+        &resolved,
+        &surface,
+        external_event_id.as_deref(),
+    ) {
+        Ok((reply, deduplicated)) => {
+            // 重复事件回放：消息未重复创建，也不再触发 SSE/notify 与抢答收尾
+            if !deduplicated {
+                after_human_reply(state, &reply);
+                // 抢答收尾（与 reply 同构）：他端 surface 的展示同步收敛
+                if surface != crate::human::popup::POPUP_SURFACE {
+                    state.popup.settle(&resolved);
+                }
+                if surface != crate::feishu::router::SURFACE {
+                    state.feishu.settle(
+                        &state.storage,
+                        &resolved,
+                        &surface,
+                        crate::feishu::dispatch::SettleKind::Cancelled(&reply),
+                    );
+                }
+            }
+            ServerMsg::Ok { id: reply.id }
+        }
+        Err(e) => human_error_msg(&e),
+    }
+}
+
 /// delivery 回执：surface 确认已展示该消息。delivery 行不存在返回 delivery_not_found。
 pub fn handle_delivery_ack(
     state: &AppState,
@@ -166,7 +211,7 @@ mod tests {
             &headers_with(&fx.token),
             msg_id.clone(),
             "free text".into(),
-            None,
+            vec![],
             "popup".into(),
             None,
         ) {
@@ -180,7 +225,7 @@ mod tests {
             &headers_with(&fx.token),
             msg_id[..8].to_string(),
             "ok".into(),
-            Some("yes".into()),
+            vec!["yes".into()],
             "popup".into(),
             None,
         );
@@ -195,7 +240,7 @@ mod tests {
             &headers_with(&fx.token),
             msg_id,
             "no".into(),
-            Some("no".into()),
+            vec!["no".into()],
             "gui".into(),
             None,
         ) {
@@ -209,6 +254,46 @@ mod tests {
         // 回复落到 asker 的 inbox
         let agent_inbox = inbox::inbox(&fx.state.storage, &agent_addr, false).unwrap();
         assert!(agent_inbox.iter().any(|m| m.id == reply_id));
+    }
+
+    #[tokio::test]
+    async fn human_cancel_notifies_sender_and_blocks_approval() {
+        let fx = setup();
+        let agent_addr = create(&fx.state.storage, "asker", "", "").unwrap();
+        let meta = r#"{"choices":["yes","no"],"select_only":true}"#;
+        let msg_id = send_to_human(&fx, &agent_addr, "approval_request", meta);
+
+        // 取消 → 给 asker 回「（已取消）」，原消息置 done
+        match super::handle_cancel(
+            &fx.state,
+            &headers_with(&fx.token),
+            msg_id[..8].to_string(),
+            "popup".into(),
+            None,
+        ) {
+            ServerMsg::Ok { id } => {
+                let cancel = lookup::detail(&fx.state.storage, &id).unwrap().unwrap();
+                assert_eq!(cancel.body, "（已取消）");
+                assert_eq!(cancel.metadata, r#"{"cancelled":true}"#);
+            }
+            other => panic!("expected Ok, got {:?}", other),
+        }
+        let msg = lookup::detail(&fx.state.storage, &msg_id).unwrap().unwrap();
+        assert_eq!(msg.status, "done");
+
+        // 取消后再审批 → already_resolved
+        match super::handle_reply(
+            &fx.state,
+            &headers_with(&fx.token),
+            msg_id,
+            "ok".into(),
+            vec!["yes".into()],
+            "gui".into(),
+            None,
+        ) {
+            ServerMsg::Error { code, .. } => assert_eq!(code, "already_resolved"),
+            other => panic!("expected already_resolved, got {:?}", other),
+        }
     }
 
     #[test]

@@ -20,11 +20,12 @@ pub enum FeishuDispatcher {
 }
 
 /// 抢答收尾的终态种类：approval 回显胜出选项；reply 回显原消息 + 回复正文；
-/// done 只显示已完成（无回复正文可回显）。
+/// done 只显示已完成（无回复正文可回显）；cancelled 回显取消状态。
 pub enum SettleKind<'a> {
     Approval,
     Reply(&'a Message),
     Done,
+    Cancelled(&'a Message),
 }
 
 impl FeishuDispatcher {
@@ -178,6 +179,14 @@ pub fn plan_settle(
             &original.body,
             &format!("已由 {} 完成", resolved_by),
         ),
+        SettleKind::Cancelled(reply) => {
+            // 取消也是一等结果：回显原消息 + 取消通知正文
+            card::reply_terminal_card(
+                &original,
+                &reply.body,
+                &format!("已由 {} 取消", resolved_by),
+            )
+        }
     };
     Some((open_message_id, card))
 }

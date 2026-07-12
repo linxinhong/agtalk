@@ -9,8 +9,10 @@
     "loadFailed": "Failed to load",
     "reply": "Reply",
     "done": "Done",
-    "later": "Later",
+    "cancel": "Cancel",
+    "submit": "Submit",
     "replyPlaceholder": "Type a reply…",
+    "supplementPlaceholder": "Optional note…",
     "recommended": "Recommended",
     "resolved": "This approval was handled on another surface"
   },

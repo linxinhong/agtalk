@@ -9,8 +9,10 @@
     "loadFailed": "加载失败",
     "reply": "回复",
     "done": "完成",
-    "later": "稍后",
+    "cancel": "取消",
+    "submit": "提交",
     "replyPlaceholder": "输入回复…",
+    "supplementPlaceholder": "补充说明（可选）…",
     "recommended": "推荐",
     "resolved": "该审批已被其他端处理"
   },

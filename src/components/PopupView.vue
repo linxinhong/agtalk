@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { closePopup, popupDone, popupLoad, popupReply, type PopupView } from '../lib/ipc'
+import { closePopup, popupCancel, popupDone, popupLoad, popupReply, type PopupView } from '../lib/ipc'
 
 const { t } = useI18n()
 
@@ -10,10 +10,12 @@ const error = ref('')
 const busy = ref(false)
 const resolved = ref(false)
 const replyBody = ref('')
+const selected = ref<string[]>([])
 
 interface ApprovalMeta {
   choices: string[]
   recommended?: string
+  single: boolean
   select_only: boolean
 }
 
@@ -25,10 +27,11 @@ const approval = computed<ApprovalMeta | null>(() => {
     return {
       choices: Array.isArray(meta.choices) ? meta.choices : [],
       recommended: typeof meta.recommended === 'string' ? meta.recommended : undefined,
+      single: Boolean(meta.single),
       select_only: Boolean(meta.select_only),
     }
   } catch {
-    return { choices: [], select_only: false }
+    return { choices: [], single: false, select_only: false }
   }
 })
 
@@ -49,12 +52,35 @@ function handleError(e: unknown) {
   error.value = msg
 }
 
-async function submitReply(choice?: string) {
-  if (busy.value || resolved.value) return
+/** 勾选/取消勾选选项；single 审批表现为单选。 */
+function toggleChoice(c: string) {
+  const a = approval.value
+  if (!a || busy.value || resolved.value) return
+  if (a.single) {
+    selected.value = selected.value.includes(c) ? [] : [c]
+  } else {
+    selected.value = selected.value.includes(c)
+      ? selected.value.filter((x) => x !== c)
+      : [...selected.value, c]
+  }
+}
+
+/** 提交可用性：审批需勾选或（非 select_only 时）有补充文本；文本消息需回复正文。 */
+const canSubmit = computed(() => {
+  if (busy.value || resolved.value) return false
+  if (approval.value) {
+    if (selected.value.length > 0) return true
+    return !approval.value.select_only && replyBody.value.trim() !== ''
+  }
+  return replyBody.value.trim() !== ''
+})
+
+async function submitReply() {
+  if (!canSubmit.value) return
   busy.value = true
   error.value = ''
   try {
-    await popupReply(replyBody.value, choice)
+    await popupReply(replyBody.value, selected.value)
     await closePopup()
   } catch (e) {
     handleError(e)
@@ -69,6 +95,20 @@ async function submitDone() {
   error.value = ''
   try {
     await popupDone()
+    await closePopup()
+  } catch (e) {
+    handleError(e)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function submitCancel() {
+  if (busy.value || resolved.value) return
+  busy.value = true
+  error.value = ''
+  try {
+    await popupCancel()
     await closePopup()
   } catch (e) {
     handleError(e)
@@ -98,10 +138,11 @@ async function submitDone() {
             v-for="c in approval.choices"
             :key="c"
             class="choice"
-            :class="{ recommended: c === approval.recommended }"
+            :class="{ checked: selected.includes(c), recommended: c === approval.recommended }"
             :disabled="busy"
-            @click="submitReply(c)"
+            @click="toggleChoice(c)"
           >
+            <span class="box">{{ selected.includes(c) ? '☑' : '☐' }}</span>
             {{ c }}
             <span v-if="c === approval.recommended" class="tag">{{ t('popup.recommended') }}</span>
           </button>
@@ -111,7 +152,7 @@ async function submitDone() {
           v-if="!approval || !approval.select_only"
           v-model="replyBody"
           class="reply"
-          :placeholder="t('popup.replyPlaceholder')"
+          :placeholder="approval ? t('popup.supplementPlaceholder') : t('popup.replyPlaceholder')"
           :disabled="busy"
           rows="2"
         />
@@ -119,17 +160,12 @@ async function submitDone() {
         <div v-if="error" class="error">{{ error }}</div>
 
         <footer class="actions">
-          <button class="later" :disabled="busy" @click="closePopup">{{ t('popup.later') }}</button>
+          <button class="cancel" :disabled="busy" @click="submitCancel">{{ t('popup.cancel') }}</button>
           <button v-if="!approval" class="done" :disabled="busy" @click="submitDone">
             {{ t('popup.done') }}
           </button>
-          <button
-            v-if="!approval || !approval.select_only"
-            class="reply-btn"
-            :disabled="busy || !replyBody.trim()"
-            @click="submitReply()"
-          >
-            {{ t('popup.reply') }}
+          <button class="reply-btn" :disabled="!canSubmit" @click="submitReply">
+            {{ approval ? t('popup.submit') : t('popup.reply') }}
           </button>
         </footer>
       </template>
@@ -143,6 +179,7 @@ async function submitDone() {
   --text: #1c1c1e;
   --muted: #6e6e73;
   --accent: #0a6cff;
+  --danger: #d43b3b;
   --border: #d8d8dc;
   --choice-bg: #f2f2f5;
   display: flex;
@@ -161,6 +198,7 @@ async function submitDone() {
     --text: #f2f2f5;
     --muted: #9a9aa0;
     --accent: #4a8cff;
+    --danger: #e55b5b;
     --border: #3a3a40;
     --choice-bg: #2c2c30;
   }
@@ -218,8 +256,18 @@ async function submitDone() {
   cursor: pointer;
 }
 
-.choice.recommended {
+.choice.checked {
   border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--choice-bg));
+}
+
+.choice.recommended:not(.checked) {
+  border-color: var(--accent);
+}
+
+.box {
+  margin-right: 4px;
+  color: var(--accent);
 }
 
 .tag {
@@ -242,7 +290,7 @@ async function submitDone() {
 .error {
   margin-bottom: 6px;
   font-size: 12px;
-  color: #d43b3b;
+  color: var(--danger);
 }
 
 .actions {
@@ -265,6 +313,11 @@ async function submitDone() {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
+}
+
+.actions .cancel {
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 .actions button:disabled {

@@ -57,6 +57,7 @@ pub fn routes(state: AppState) -> Router {
         .route("/api/v1/human/read", post(human_read_handler))
         .route("/api/v1/human/reply", post(human_reply_handler))
         .route("/api/v1/human/done", post(human_done_handler))
+        .route("/api/v1/human/cancel", post(human_cancel_handler))
         .route(
             "/api/v1/human/delivery/ack",
             post(human_delivery_ack_handler),
@@ -548,8 +549,11 @@ async fn human_read_handler(
 struct HumanReplyBody {
     message_id: String,
     body: String,
+    /// 单选兼容字段；多选用 choices。两者并存时合并。
     #[serde(default)]
     choice: Option<String>,
+    #[serde(default)]
+    choices: Vec<String>,
     #[serde(default = "default_human_surface")]
     surface: String,
     #[serde(default)]
@@ -565,12 +569,39 @@ async fn human_reply_handler(
     headers: HeaderMap,
     Json(body): Json<HumanReplyBody>,
 ) -> (StatusCode, Json<ServerMsg>) {
+    let mut choices = body.choices;
+    if let Some(c) = body.choice {
+        choices.push(c);
+    }
     json_response(human::handle_reply(
         &state,
         &headers,
         body.message_id,
         body.body,
-        body.choice,
+        choices,
+        body.surface,
+        body.external_event_id,
+    ))
+}
+
+#[derive(serde::Deserialize)]
+struct HumanCancelBody {
+    message_id: String,
+    #[serde(default = "default_human_surface")]
+    surface: String,
+    #[serde(default)]
+    external_event_id: Option<String>,
+}
+
+async fn human_cancel_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<HumanCancelBody>,
+) -> (StatusCode, Json<ServerMsg>) {
+    json_response(human::handle_cancel(
+        &state,
+        &headers,
+        body.message_id,
         body.surface,
         body.external_event_id,
     ))

@@ -108,23 +108,21 @@ impl HumanClient {
         }
     }
 
-    /// 回复消息；`choice` 用于审批选项。成功返回回复消息 id。
-    /// 审批已被其他 surface 处理时返回 Daemon{code: "already_resolved"}。
+    /// 回复消息；`choices` 为审批选中项（可多选，空切片 = 纯文本回复）。
+    /// 成功返回回复消息 id。审批已被其他 surface 处理时返回 Daemon{code: "already_resolved"}。
     pub fn reply(
         &self,
         surface: &str,
         message_id: &str,
         body: &str,
-        choice: Option<&str>,
+        choices: &[String],
     ) -> Result<String, HumanClientError> {
-        let mut payload = serde_json::json!({
+        let payload = serde_json::json!({
             "message_id": message_id,
             "body": body,
+            "choices": choices,
             "surface": surface,
         });
-        if let Some(c) = choice {
-            payload["choice"] = serde_json::Value::String(c.to_string());
-        }
         match self.request(reqwest::Method::POST, "/api/v1/human/reply", Some(payload))? {
             ServerMsg::Ok { id } => Ok(id),
             other => Err(HumanClientError::UnexpectedResponse(format!("{:?}", other))),
@@ -142,6 +140,21 @@ impl HumanClient {
             })),
         )? {
             ServerMsg::Ok { .. } => Ok(()),
+            other => Err(HumanClientError::UnexpectedResponse(format!("{:?}", other))),
+        }
+    }
+
+    /// 取消消息：给原发送方回「（已取消）」并终结原消息。成功返回取消通知消息 id。
+    pub fn cancel(&self, surface: &str, message_id: &str) -> Result<String, HumanClientError> {
+        match self.request(
+            reqwest::Method::POST,
+            "/api/v1/human/cancel",
+            Some(serde_json::json!({
+                "message_id": message_id,
+                "surface": surface,
+            })),
+        )? {
+            ServerMsg::Ok { id } => Ok(id),
             other => Err(HumanClientError::UnexpectedResponse(format!("{:?}", other))),
         }
     }
@@ -366,10 +379,27 @@ mod tests {
             let detail = c.read(&msg_id[..8]).unwrap();
             assert_eq!(detail.id, msg_id);
 
-            let reply_id = c.reply("popup", &msg_id, "go", None).unwrap();
+            let reply_id = c.reply("popup", &msg_id, "go", &[]).unwrap();
             assert!(!reply_id.is_empty());
 
             c.done("popup", &msg_id).unwrap();
+        });
+
+        let m = crate::routing::lookup::detail(&fx.storage, &msg.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(m.status, "done");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn client_cancel_returns_cancelled_reply() {
+        let fx = start_server().await;
+        let msg = send_to_human(&fx, "deploy?", "text", "{}");
+
+        let msg_id = msg.id.clone();
+        run_blocking(fx.base_url.clone(), fx.session.clone(), move |c| {
+            let cancel_id = c.cancel("popup", &msg_id).unwrap();
+            assert!(!cancel_id.is_empty());
         });
 
         let m = crate::routing::lookup::detail(&fx.storage, &msg.id)
@@ -390,8 +420,8 @@ mod tests {
 
         let id = msg.id.clone();
         run_blocking(fx.base_url.clone(), fx.session.clone(), move |c| {
-            c.reply("popup", &id, "", Some("yes")).unwrap();
-            match c.reply("gui", &id, "", Some("no")) {
+            c.reply("popup", &id, "", &["yes".to_string()]).unwrap();
+            match c.reply("gui", &id, "", &["no".to_string()]) {
                 Err(HumanClientError::Daemon { code, message }) => {
                     assert_eq!(code, "already_resolved");
                     assert!(!message.is_empty());

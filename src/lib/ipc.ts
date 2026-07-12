@@ -24,12 +24,16 @@ export interface PopupView {
 
 export const popupLoad = () => invoke<PopupView>('popup_load')
 
-export const popupReply = (body: string, choice?: string) =>
-  invoke<string>('popup_reply', { body, choice: choice ?? null })
+/** 回复消息；choices 为审批选中项（可多选，空数组 = 纯文本回复）。 */
+export const popupReply = (body: string, choices: string[]) =>
+  invoke<string>('popup_reply', { body, choices })
 
 export const popupDone = () => invoke<void>('popup_done')
 
-/** Later / 操作完成后关窗；直接关窗不改变消息状态（dismissed）。 */
+/** 取消：给原发送方回「（已取消）」并终结原消息。 */
+export const popupCancel = () => invoke<string>('popup_cancel')
+
+/** 操作完成后关窗；直接关窗不改变消息状态（dismissed）。 */
 export const closePopup = () => getCurrentWindow().close()
 
 export interface GuiConfigView {

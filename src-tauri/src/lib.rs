@@ -73,7 +73,8 @@ pub fn run_popup(message_id: Option<String>) {
         .invoke_handler(tauri::generate_handler![
             commands::popup_load,
             commands::popup_reply,
-            commands::popup_done
+            commands::popup_done,
+            commands::popup_cancel
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]

@@ -39,11 +39,11 @@ pub(crate) fn load_view(message_id: &str) -> Result<PopupView, String> {
 pub(crate) fn reply_message(
     message_id: &str,
     body: &str,
-    choice: Option<&str>,
+    choices: &[String],
 ) -> Result<String, String> {
     let client = HumanClient::from_local().map_err(|e| e.to_string())?;
     client
-        .reply(POPUP_SURFACE, message_id, body, choice)
+        .reply(POPUP_SURFACE, message_id, body, choices)
         .map_err(|e| e.to_string())
 }
 
@@ -52,6 +52,14 @@ pub(crate) fn done_message(message_id: &str) -> Result<(), String> {
     let client = HumanClient::from_local().map_err(|e| e.to_string())?;
     client
         .done(POPUP_SURFACE, message_id)
+        .map_err(|e| e.to_string())
+}
+
+/// 取消消息：给原发送方回「（已取消）」并终结原消息。
+pub(crate) fn cancel_message(message_id: &str) -> Result<String, String> {
+    let client = HumanClient::from_local().map_err(|e| e.to_string())?;
+    client
+        .cancel(POPUP_SURFACE, message_id)
         .map_err(|e| e.to_string())
 }
 
@@ -64,14 +72,19 @@ pub fn popup_load(state: tauri::State<'_, PopupState>) -> Result<PopupView, Stri
 pub fn popup_reply(
     state: tauri::State<'_, PopupState>,
     body: String,
-    choice: Option<String>,
+    choices: Vec<String>,
 ) -> Result<String, String> {
-    reply_message(&state.message_id, &body, choice.as_deref())
+    reply_message(&state.message_id, &body, &choices)
 }
 
 #[tauri::command]
 pub fn popup_done(state: tauri::State<'_, PopupState>) -> Result<(), String> {
     done_message(&state.message_id)
+}
+
+#[tauri::command]
+pub fn popup_cancel(state: tauri::State<'_, PopupState>) -> Result<String, String> {
+    cancel_message(&state.message_id)
 }
 
 // ---- GUI 主窗口（配置界面）----
@@ -231,13 +244,15 @@ mod tests {
     fn commands_without_human_session_return_stable_error() {
         let tmp = TempDir::new().unwrap();
         let _guard = EnvGuard::set(tmp.path());
-        // 无 session.json：三个命令都应返回 session 错误而不是 panic
+        // 无 session.json：各命令都应返回 session 错误而不是 panic
         let load_err = load_view("any-id").unwrap_err();
         assert!(load_err.contains("session"), "load: {}", load_err);
-        let reply_err = reply_message("any-id", "hi", None).unwrap_err();
+        let reply_err = reply_message("any-id", "hi", &[]).unwrap_err();
         assert!(reply_err.contains("session"), "reply: {}", reply_err);
         let done_err = done_message("any-id").unwrap_err();
         assert!(done_err.contains("session"), "done: {}", done_err);
+        let cancel_err = cancel_message("any-id").unwrap_err();
+        assert!(cancel_err.contains("session"), "cancel: {}", cancel_err);
     }
 
     /// 最小 mock daemon：复用 testutil 的共享实现。

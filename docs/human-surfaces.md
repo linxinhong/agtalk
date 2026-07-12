@@ -35,8 +35,9 @@ X-AgTalk-Human-Token: <token>
 ```text
 GET  /api/v1/human/inbox?all=true|false     # human 收件箱
 POST /api/v1/human/read                     # {message_id?} 读未读/指定消息并标 read
-POST /api/v1/human/reply                    # {message_id, body, choice?, surface?, external_event_id?}
-POST /api/v1/human/done                     # {message_id} 标记完成
+POST /api/v1/human/reply                    # {message_id, body, choices?, choice?, surface?, external_event_id?}（choices 多选；choice 单选兼容字段）
+POST /api/v1/human/done                     # {message_id} 标记完成（不通知 agent）
+POST /api/v1/human/cancel                   # {message_id, surface?, external_event_id?} 取消（给原发送方回「（已取消）」并终结原消息）
 POST /api/v1/human/delivery/ack             # {message_id, surface} delivery 回执（surface 确认已展示）
 GET  /api/v1/human/agents                   # 在线 agent 列表（活跃 mailbox，排除 human 自身）
 POST /api/v1/human/send                     # {to, body, subject?} 主动发信（to 必须是 agents 列表中的 UUID）
