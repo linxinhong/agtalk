@@ -571,6 +571,7 @@ agtalk config show
 agtalk config get <key>
 agtalk config set <key> <value>
 agtalk config path
+agtalk config gui    # 打开 GUI 配置界面（Tauri 窗口，薄客户端连本机 daemon）
 ```
 
 配置只管理全局设置，不做交互式向导。

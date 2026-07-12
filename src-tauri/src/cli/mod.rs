@@ -334,6 +334,8 @@ pub(crate) enum ConfigCmd {
     Set { key: String, value: String },
     /// 显示配置文件路径
     Path,
+    /// 打开 GUI 配置界面
+    Gui,
 }
 
 pub fn run_cli() -> ExitCode {
@@ -731,6 +733,10 @@ fn run(cli: Cli, json: bool) -> Result<(), CliError> {
                 client::tool::dispatch(ctx, cmd, json, as_name)
             }
             Commands::Config { cmd } => {
+                if matches!(cmd, ConfigCmd::Gui) {
+                    crate::run_gui();
+                    return Ok(());
+                }
                 let ctx = Context::current(as_name).ok();
                 client::config::dispatch(ctx, cmd, json)
             }
@@ -763,6 +769,17 @@ mod tests {
         let cli = Cli::try_parse_from(["agtalk", "--json"]).unwrap();
         assert!(cli.json);
         assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn parse_config_gui_subcommand() {
+        let cli = Cli::try_parse_from(["agtalk", "config", "gui"]).unwrap();
+        match cli.command {
+            Some(Commands::Config {
+                cmd: ConfigCmd::Gui,
+            }) => {}
+            _ => panic!("expected Config gui"),
+        }
     }
 
     #[test]

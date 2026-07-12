@@ -9,7 +9,7 @@
 agtalk 是**本地 Agent 对话总线**。daemon 是唯一真相来源，CLI / GUI / 浏览器扩展都是薄客户端。
 
 - 不复用 `~/projects/agtalk-office` 的代码（那是早期实现，本项目参考其设计思路但全新实现）。
-- 单二进制 `agtalk`，argv 分派：`daemon`（后台进程）/ `gui`（Tauri GUI）/ `__popup`（审批弹窗）/ 其它（CLI 子命令）。
+- 单二进制 `agtalk`，argv 分派：`daemon`（后台进程）/ `__popup`（审批弹窗）/ 其它（CLI 子命令）。GUI 经 CLI 子命令 `agtalk config gui` 启动（Tauri 薄客户端）。
 - 三个对话域（agent-agent / agent-human / agent-browser）必须用**同一套机制**（mailbox + SSE），不允许加域特例。
 
 ---
@@ -311,7 +311,7 @@ pnpm build:extension                   # cd extension && pnpm run build
 ./scripts/e2e-browser.sh               # 需要 cargo build 生成 debug 二进制
 
 # Tauri dev
-pnpm tauri dev -- gui
+pnpm tauri dev -- config gui
 
 # Daemon（开发态用 target/debug，安装态用 ~/.local/bin/agtalk）
 ./target/debug/agtalk daemon start

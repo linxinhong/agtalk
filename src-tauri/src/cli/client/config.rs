@@ -28,6 +28,8 @@ pub fn dispatch(ctx: Option<Context>, cmd: ConfigCmd, json: bool) -> Result<(), 
             "/api/v1/config/path",
             None,
         )?,
+        // Gui 在 cli::run 的 Commands::Config 分派臂拦截，不会到达这里。
+        ConfigCmd::Gui => unreachable!("config gui intercepted in cli::run"),
     };
     print_server_msg(json, &resp);
     Ok(())
