@@ -248,8 +248,9 @@ pub async fn trigger(
 /// 构造注入文本。不包含正文，只含信号 + 取信命令模板。
 pub fn build_hint_text(hint: &NotifyHint) -> String {
     format!(
-        "[agtalk:{}] | exec: agtalk --as {} msg read",
+        "[agtalk:{}] | from {} | exec: agtalk --as {} msg read",
         crate::notify::plugin::short_id(&hint.message_id),
+        hint.from_name,
         hint.agent_name
     )
 }
@@ -289,6 +290,7 @@ mod tests {
         };
         let text = build_hint_text(&hint);
         assert!(text.contains("[agtalk:msg]"));
+        assert!(text.contains("| from nora |"));
         assert!(text.contains("exec: agtalk --as codex msg read"));
         assert!(!text.contains("secret"));
     }

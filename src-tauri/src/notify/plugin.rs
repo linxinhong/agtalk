@@ -411,11 +411,7 @@ fn build_send_payload(endpoint: &serde_json::Value, hint: &NotifyHint) -> Notify
         "read".to_string(),
     ];
     let read_command = format!("agtalk --as {} msg read", hint.agent_name);
-    let text = format!(
-        "[agtalk:{}] | exec: {}",
-        short_id(&hint.message_id),
-        read_command
-    );
+    let text = crate::notify::build_hint_text(hint);
     NotifyPluginSendPayload {
         version: 1,
         type_: "notify".to_string(),
@@ -517,7 +513,7 @@ mod tests {
         assert!(json.contains("agtalk --as codex msg read"));
         assert!(json.contains("[\"--as\",\"codex\",\"msg\",\"read\"]"));
         assert!(json.contains("msg-123"));
-        assert!(json.contains("[agtalk:msg] | exec:"));
+        assert!(json.contains("[agtalk:msg] | from nora | exec:"));
         assert!(json.contains("\"send_enter\":true"));
         assert!(!json.contains("secret"));
         assert!(!json.contains("message body"));

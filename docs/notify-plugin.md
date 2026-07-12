@@ -118,7 +118,7 @@ chmod +x ~/.local/bin/agtalk-notify-zellij
   "agent_name": "coder",
   "agent_address": "550e8400-e29b-41d4-a716-446655440000",
   "message_id": "msg-123",
-  "text": "[agtalk:msg-123] | exec: agtalk --as coder msg read"
+  "text": "[agtalk:msg-123] | from nora | exec: agtalk --as coder msg read"
 }
 ```
 
@@ -143,7 +143,7 @@ chmod +x ~/.local/bin/agtalk-notify-zellij
 参考实现直接透传 `text`：
 
 ```text
-[agtalk:c3384a71] | exec: agtalk --as coder msg read
+[agtalk:c3384a71] | from nora | exec: agtalk --as coder msg read
 ```
 
 - 前缀 `[agtalk:<短 id>]` 为 `message_id` 的前 8 位，方便 agent 直接识别是哪条消息（完整 UUID 见 `agtalk msg read --json`）。

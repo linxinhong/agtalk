@@ -53,7 +53,7 @@ export TMUX_PANE=%2
 export TMUX=/tmp/tmux-501/default,12345,0
 export AGTALK_TEST_LOG="$LOG"
 
-TEXT='[agtalk:abcdef12] | exec: agtalk --as x msg read'
+TEXT='[agtalk:abcdef12] | from nora | exec: agtalk --as x msg read'
 
 printf '== zellij ==\n'
 
