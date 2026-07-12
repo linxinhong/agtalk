@@ -14,7 +14,14 @@
     "replyPlaceholder": "Type a reply…",
     "supplementPlaceholder": "Optional note…",
     "recommended": "Recommended",
-    "resolved": "This approval was handled on another surface"
+    "resolved": "This approval was handled on another surface",
+    "fromTitle": "Message from {name}",
+    "time": {
+      "justNow": "just now",
+      "secondsAgo": "{n}s ago",
+      "minutesAgo": "{n}m ago",
+      "hoursAgo": "{n}h ago"
+    }
   },
   "config": {
     "title": "Settings",

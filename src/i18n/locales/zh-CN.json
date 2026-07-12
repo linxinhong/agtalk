@@ -14,7 +14,14 @@
     "replyPlaceholder": "输入回复…",
     "supplementPlaceholder": "补充说明（可选）…",
     "recommended": "推荐",
-    "resolved": "该审批已被其他端处理"
+    "resolved": "该审批已被其他端处理",
+    "fromTitle": "来自 {name} 的消息",
+    "time": {
+      "justNow": "刚刚",
+      "secondsAgo": "{n} 秒前",
+      "minutesAgo": "{n} 分钟前",
+      "hoursAgo": "{n} 小时前"
+    }
   },
   "config": {
     "title": "配置",
