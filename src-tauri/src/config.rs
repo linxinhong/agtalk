@@ -175,11 +175,16 @@ impl AgConfig {
         Ok(cfg)
     }
 
-    /// 加载后归一化：空字符串的 feishu.base_url 回落默认值
-    /// （历史配置或手工清空写入的 "" 不是合法端点）。
+    /// 加载后归一化 feishu.base_url：
+    /// - 空串回落默认端点（历史配置或手工清空写入的 "" 不是合法端点）；
+    /// - 只填域名根（如 `https://open.feishu.cn`）时补 `/open-apis` 路径段
+    ///   （OpenAPI 均在该前缀下；长连接 endpoint 由 ws 侧剥离前缀到域名根）。
     fn normalize(&mut self) {
-        if self.feishu.base_url.trim().is_empty() {
+        let trimmed = self.feishu.base_url.trim().trim_end_matches('/');
+        if trimmed.is_empty() {
             self.feishu.base_url = default_feishu_base_url();
+        } else if !trimmed.ends_with("/open-apis") {
+            self.feishu.base_url = format!("{}/open-apis", trimmed);
         }
     }
 
@@ -358,6 +363,19 @@ mod tests {
         // 重新加载后空串回落默认值
         let reloaded = AgConfig::load().unwrap();
         assert_eq!(reloaded.feishu.base_url, default_feishu_base_url());
+    }
+
+    #[test]
+    fn host_only_feishu_base_url_gets_open_apis_suffix() {
+        let tmp = TempDir::new().unwrap();
+        let _guard = EnvGuard::set(tmp.path());
+
+        let mut cfg = AgConfig::load().unwrap();
+        cfg.set("feishu.base_url", "https://open.feishu.cn")
+            .unwrap();
+
+        let reloaded = AgConfig::load().unwrap();
+        assert_eq!(reloaded.feishu.base_url, "https://open.feishu.cn/open-apis");
     }
 
     #[test]
