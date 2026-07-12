@@ -1,7 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { guiLoadConfig, guiSetConfig } from '../lib/ipc'
+import { open as shellOpen } from '@tauri-apps/plugin-shell'
+import {
+  guiFeishuSetupBegin,
+  guiFeishuSetupPoll,
+  guiLoadConfig,
+  guiSetConfig,
+} from '../lib/ipc'
 
 const { t, locale } = useI18n()
 
@@ -100,6 +106,95 @@ async function save(row: ConfigRow) {
     busyKey.value = ''
   }
 }
+
+// ---- 飞书一键创建应用（设备授权流）----
+
+type SetupPhase = 'idle' | 'waiting' | 'success' | 'denied' | 'expired' | 'error'
+const setupPhase = ref<SetupPhase>('idle')
+const setupUrl = ref('')
+const setupMsg = ref('')
+let setupCancelled = false
+
+async function startFeishuSetup() {
+  error.value = ''
+  setupMsg.value = ''
+  setupCancelled = false
+  try {
+    const begin = await guiFeishuSetupBegin()
+    setupUrl.value = begin.url
+    setupPhase.value = 'waiting'
+    // 自动打开系统浏览器；失败时用户可手工复制链接
+    shellOpen(begin.url).catch(() => {})
+    schedulePoll(begin.device_code, begin.interval_secs)
+  } catch (e) {
+    setupPhase.value = 'error'
+    setupMsg.value = String(e)
+  }
+}
+
+function cancelFeishuSetup() {
+  setupCancelled = true
+  setupPhase.value = 'idle'
+}
+
+function schedulePoll(deviceCode: string, intervalSecs: number) {
+  if (setupCancelled) return
+  setTimeout(async () => {
+    if (setupCancelled) return
+    try {
+      const res = await guiFeishuSetupPoll(deviceCode)
+      if (setupCancelled) return
+      switch (res.status) {
+        case 'pending':
+          schedulePoll(deviceCode, intervalSecs)
+          break
+        case 'slow_down':
+          schedulePoll(deviceCode, res.interval_secs)
+          break
+        case 'success':
+          await applyFeishuSetup(res.app_id, res.app_secret, res.open_id)
+          setupPhase.value = 'success'
+          setupMsg.value = t('config.feishuSetup.success', { id: res.app_id })
+          break
+        case 'denied':
+          setupPhase.value = 'denied'
+          setupMsg.value = t('config.feishuSetup.denied')
+          break
+        case 'expired':
+          setupPhase.value = 'expired'
+          setupMsg.value = t('config.feishuSetup.expired')
+          break
+      }
+    } catch (e) {
+      setupPhase.value = 'error'
+      setupMsg.value = String(e)
+    }
+  }, intervalSecs * 1000)
+}
+
+async function applyFeishuSetup(appId: string, appSecret: string, openId: string) {
+  await guiSetConfig('feishu.app_id', appId)
+  await guiSetConfig('feishu.app_secret', appSecret)
+  if (openId) await guiSetConfig('feishu.open_id', openId)
+  await guiSetConfig('feishu.enabled', 'true')
+  // human.surfaces 求并集加入 feishu
+  const surfacesRow = rows.value.find((r) => r.key === 'human.surfaces')
+  let surfaces: string[] = []
+  try {
+    surfaces = JSON.parse(surfacesRow?.value ?? '[]')
+  } catch {
+    surfaces = []
+  }
+  if (!surfaces.includes('feishu')) {
+    surfaces.push('feishu')
+    await guiSetConfig('human.surfaces', JSON.stringify(surfaces))
+  }
+  await reload()
+}
+
+function copySetupLink() {
+  navigator.clipboard?.writeText(setupUrl.value).catch(() => {})
+}
 </script>
 
 <template>
@@ -122,6 +217,32 @@ async function save(row: ConfigRow) {
     <main class="settings-body">
       <div v-for="group in groups" :key="group.name" class="card">
         <p class="card-title">{{ groupTitle(group.name) }}</p>
+        <div v-if="group.name === 'feishu'" class="feishu-setup">
+          <div class="row">
+            <span class="label">{{ t('config.feishuSetup.label') }}</span>
+            <span class="spacer"></span>
+            <button
+              class="btn btn-primary save"
+              :disabled="setupPhase === 'waiting'"
+              @click="startFeishuSetup"
+            >
+              {{ t('config.feishuSetup.button') }}
+            </button>
+          </div>
+          <div v-if="setupPhase !== 'idle'" class="setup-status">
+            <template v-if="setupPhase === 'waiting'">
+              <p class="setup-waiting">{{ t('config.feishuSetup.waiting') }}</p>
+              <div class="setup-link">
+                <code class="setup-url">{{ setupUrl }}</code>
+                <button class="btn" @click="copySetupLink">{{ t('config.feishuSetup.copy') }}</button>
+                <button class="btn" @click="cancelFeishuSetup">{{ t('config.feishuSetup.cancel') }}</button>
+              </div>
+            </template>
+            <p v-else-if="setupPhase === 'success'" class="setup-ok">{{ setupMsg }}</p>
+            <p v-else class="setup-err">{{ setupMsg }}</p>
+          </div>
+          <hr class="divider" />
+        </div>
         <template v-for="(row, i) in group.rows" :key="row.key">
           <hr v-if="i > 0" class="divider" />
           <div class="row">
@@ -271,5 +392,46 @@ async function save(row: ConfigRow) {
   margin-top: 40px;
   color: var(--text-secondary);
   text-align: center;
+}
+
+.setup-status {
+  padding: 0 0 var(--space-2);
+}
+
+.setup-waiting {
+  margin: 0 0 var(--space-2);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.setup-link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.setup-url {
+  flex: 1;
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--bg);
+  border-radius: var(--radius-md);
+}
+
+.setup-ok {
+  margin: 0;
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.setup-err {
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger);
 }
 </style>

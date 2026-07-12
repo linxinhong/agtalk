@@ -27,6 +27,16 @@
       "message": "Messages",
       "notify": "Notify",
       "feishu": "Feishu"
+    },
+    "feishuSetup": {
+      "label": "Quick setup",
+      "button": "One-click app setup",
+      "waiting": "Waiting for confirmation in Feishu… (link expires in 10 min; copy it if the browser didn't open)",
+      "copy": "Copy link",
+      "cancel": "Cancel",
+      "success": "App created and saved (app_id: {id}). Restart the daemon to take effect: agtalk daemon stop && agtalk daemon start",
+      "denied": "Authorization cancelled; you can retry",
+      "expired": "Link expired; please retry"
     }
   }
 }

@@ -205,6 +205,7 @@ Tauri 2 是 agtalk 的桌面外壳。**GUI 是薄客户端**，所有逻辑走 d
 
 - `src-tauri/capabilities/default.json` 只开真正需要的权限。
 - agtalk-office 只开 `core:default` + `core:window:allow-close`（审批弹窗提交后自动关窗），这是合理的最小集，沿用。
+- `shell:allow-open`：GUI「飞书一键创建应用」需要在系统浏览器打开设备授权链接，仅此用途（前端同时提供复制链接兜底）。
 - 每加一个 capability 要说明理由。
 
 ### custom-protocol 特性（GUI 白屏陷阱）

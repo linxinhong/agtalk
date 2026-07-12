@@ -27,6 +27,16 @@
       "message": "消息",
       "notify": "打扰层",
       "feishu": "飞书"
+    },
+    "feishuSetup": {
+      "label": "快速接入",
+      "button": "一键创建应用",
+      "waiting": "等待在飞书中确认…（链接 10 分钟有效，未自动打开请复制链接）",
+      "copy": "复制链接",
+      "cancel": "取消",
+      "success": "创建成功，已写入配置（app_id: {id}）。重启 daemon 后生效：agtalk daemon stop && agtalk daemon start",
+      "denied": "已取消授权，可重试",
+      "expired": "链接已过期，请重试"
     }
   }
 }

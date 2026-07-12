@@ -41,3 +41,31 @@ export const guiLoadConfig = () => invoke<GuiConfigView>('gui_load_config')
 
 export const guiSetConfig = (key: string, value: string) =>
   invoke<void>('gui_set_config', { key, value })
+
+/** 飞书一键创建应用：设备授权流 begin 结果。 */
+export interface FeishuSetupBegin {
+  url: string
+  device_code: string
+  interval_secs: number
+  expires_in: number
+}
+
+/** 飞书一键创建应用：poll 结果（serde tag = status）。 */
+export type FeishuSetupPoll =
+  | { status: 'pending' }
+  | { status: 'slow_down'; interval_secs: number }
+  | {
+      status: 'success'
+      app_id: string
+      app_secret: string
+      open_id: string
+      tenant_brand: string | null
+    }
+  | { status: 'denied' }
+  | { status: 'expired' }
+
+export const guiFeishuSetupBegin = () =>
+  invoke<FeishuSetupBegin>('gui_feishu_setup_begin')
+
+export const guiFeishuSetupPoll = (deviceCode: string) =>
+  invoke<FeishuSetupPoll>('gui_feishu_setup_poll', { deviceCode })

@@ -127,7 +127,7 @@ agtalk config set human.surfaces '["popup","feishu"]'
 - **可观测**：`agtalk tool doctor` 输出 feishu 段（enabled/凭据存在性脱敏/open_id 绑定/
   surfaces 包含 feishu）；长连接状态见 daemon 日志。
 
-detect 向导（自动从飞书开放平台拉取 app 信息并写入配置）为接口预留，当前手工配置。
+detect 向导已实现为 GUI 一键创建：`agtalk config gui` →「飞书」卡片 →「一键创建应用」，走飞书开放平台 OAuth 设备授权流（RFC 8628）：打开授权链接 → 飞书中确认（应用按最小权限创建：`im:message:send_as_bot` / `im:message:update` / `im:message.p2p_msg:readonly` + 事件 `im.message.receive_v1` + 回调 `card.action.trigger`）→ 自动写入 `feishu.app_id` / `feishu.app_secret` / `feishu.open_id`（扫码用户的 open_id，无需手工发现）/ `feishu.enabled=true`，并把 `feishu` 并入 `human.surfaces`。重启 daemon 后生效。缺权限时在开发者后台手工补。
 
 ## 8. 错误码
 

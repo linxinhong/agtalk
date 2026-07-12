@@ -594,7 +594,10 @@ feishu.base_url         # 默认 https://open.feishu.cn/open-apis
 ```
 
 `config set` 自动解析布尔/整数；以 `[` 或 `{` 开头的值按 JSON 解析（用于 surfaces 等数组键）。
-飞书配置也可在 `agtalk config gui` 的「飞书」卡片中编辑。配置文件权限保持 0600。
+飞书配置也可在 `agtalk config gui` 的「飞书」卡片中编辑；该卡片还提供「一键创建应用」：
+走飞书开放平台设备授权流，扫码确认后自动创建最小权限应用并写入
+`feishu.app_id` / `feishu.app_secret` / `feishu.open_id` / `feishu.enabled`，
+同时把 `feishu` 并入 `human.surfaces`（重启 daemon 后生效）。配置文件权限保持 0600。
 
 ---
 
