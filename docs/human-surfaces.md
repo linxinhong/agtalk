@@ -95,7 +95,41 @@ pending → delivered（surface 确认收到）/ failed（可重试）
 - 历史占位数据（receipt 无结果 id，无法确定原动作是否已落库）返回
   `receipt_inconclusive`，不盲目重放/重试。
 
-## 7. 错误码
+## 7. 飞书 surface（内置 transport）
+
+飞书是 daemon 内置的 human transport（不是 notify plugin），启用方式：
+
+```bash
+agtalk config set feishu.enabled true
+agtalk config set feishu.app_id <app_id>
+agtalk config set feishu.app_secret <app_secret>
+agtalk config set feishu.open_id <绑定用户的 open_id>
+agtalk config set human.surfaces '["popup","feishu"]'
+```
+
+也可在 `agtalk config gui` 的「飞书」卡片中编辑（secret 字段密码框，surfaces 按 JSON 数组编辑）。
+配置存 `<config_dir>/config.json`（0600），不进 sqlite；sqlite 只存消息/身份/delivery/receipt 等运行时数据。
+
+行为：
+
+- **出站**：fanout 含 feishu surface 时，FeishuDispatcher 经长连接机器人发**交互卡片**
+  （approval_request 渲染 choices 按钮，普通消息为文本卡片）；卡片发送失败回退纯文本
+  `[agtalk] {from}: {body}`；再失败经 `deliver_via` 标 failed（attempts+1，可重试）。
+  成功标 delivered，external_ref = open_message_id。
+- **入站**：FeishuRouter 经飞书长连接（websocket）接收卡片回调与消息事件。
+  卡片按钮 value 携带 `{agtalk_msg, choice_index}` 精确路由到审批回复；
+  只有 `feishu.open_id` 绑定用户的点击/消息生效，其他人操作直接忽略（v1 单用户）。
+  自由文字消息不做归属猜测，回复提示文本引导用户在卡片上操作。
+- **幂等**：飞书 event_id 作为 external_event_id 走第 6 节同事务幂等；
+  重复事件回放终态卡片（视觉收敛），不重复创建消息。
+- **仲裁收尾**：审批被其他 surface（popup/GUI）处理时，daemon 回写飞书卡片为终态
+  「已由 {surface} 处理」；飞书自己胜出时由 Router 直接回终态。
+- **可观测**：`agtalk tool doctor` 输出 feishu 段（enabled/凭据存在性脱敏/open_id 绑定/
+  surfaces 包含 feishu）；长连接状态见 daemon 日志。
+
+detect 向导（自动从飞书开放平台拉取 app 信息并写入配置）为接口预留，当前手工配置。
+
+## 8. 错误码
 
 | code | 含义 |
 |---|---|
@@ -111,7 +145,7 @@ pending → delivered（surface 确认收到）/ failed（可重试）
 | `delivery_not_found` | delivery ack 的 message_id+surface 无对应 delivery 行 |
 | `invalid_surface` | delivery ack 的 surface 为空 |
 
-## 8. surface 实现 checklist
+## 9. surface 实现 checklist
 
 1. 读 `<config_dir>/human/session.json` 取 address + token（0600，失败提示重启 daemon）。
 2. `GET /api/v1/events` 带 token 订阅 SSE，断线用 Last-Event-ID 重放。

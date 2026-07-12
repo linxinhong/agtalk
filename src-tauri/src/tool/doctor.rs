@@ -20,6 +20,7 @@ pub fn run(ctx: DoctorContext) -> ServerMsg {
 
     checks.extend(runtime_checks());
     checks.extend(config_checks(&ctx.config));
+    checks.extend(feishu_checks(&ctx.config));
     checks.extend(daemon_checks(&ctx));
 
     let identity = resolve_identity_readonly(&ctx);
@@ -284,6 +285,116 @@ fn config_checks(config: &AgConfig) -> Vec<DiagnosisCheck> {
     ));
 
     checks
+}
+
+// ---- feishu ----
+
+/// 飞书 human transport 检查：仅检查本地配置（长连接状态见 daemon 日志）。
+fn feishu_checks(config: &AgConfig) -> Vec<DiagnosisCheck> {
+    let mut checks = Vec::new();
+    let f = &config.feishu;
+
+    if !f.enabled {
+        checks.push(check(
+            "feishu",
+            "feishu.enabled",
+            "ok",
+            "feishu transport not enabled",
+            None,
+            None,
+            serde_json::json!({ "enabled": false }),
+        ));
+        return checks;
+    }
+
+    checks.push(check(
+        "feishu",
+        "feishu.enabled",
+        "ok",
+        "feishu transport enabled",
+        None,
+        None,
+        serde_json::json!({ "enabled": true, "base_url": f.base_url }),
+    ));
+
+    checks.push(credential_check(
+        "feishu.app_id",
+        &f.app_id,
+        "app_id",
+        "agtalk config set feishu.app_id <app_id>",
+    ));
+    checks.push(credential_check(
+        "feishu.app_secret",
+        &f.app_secret,
+        "app_secret",
+        "agtalk config set feishu.app_secret <app_secret>",
+    ));
+
+    if f.open_id.is_empty() {
+        checks.push(check(
+            "feishu",
+            "feishu.open_id",
+            "warn",
+            "open_id not bound: card clicks and messages from feishu will be ignored",
+            Some("bind the human user's open_id so feishu events are accepted"),
+            Some("agtalk config set feishu.open_id <open_id>"),
+            serde_json::json!({ "open_id": "" }),
+        ));
+    } else {
+        checks.push(check(
+            "feishu",
+            "feishu.open_id",
+            "ok",
+            format!("open_id bound ({})", mask(&f.open_id)),
+            None,
+            None,
+            serde_json::json!({ "open_id": mask(&f.open_id) }),
+        ));
+    }
+
+    if !config.human.surfaces.iter().any(|s| s == "feishu") {
+        checks.push(check(
+            "feishu",
+            "feishu.surface",
+            "warn",
+            "human.surfaces does not include feishu: messages will not be delivered to feishu",
+            Some("add feishu to human.surfaces to enable delivery"),
+            Some("agtalk config set human.surfaces '[\"popup\",\"feishu\"]'"),
+            serde_json::json!({ "surfaces": config.human.surfaces }),
+        ));
+    }
+
+    checks
+}
+
+fn credential_check(name: &str, value: &str, label: &str, command: &str) -> DiagnosisCheck {
+    if value.is_empty() {
+        check(
+            "feishu",
+            name,
+            "error",
+            format!("feishu {} is empty", label),
+            Some("feishu is enabled but credentials are incomplete"),
+            Some(command),
+            serde_json::json!({}),
+        )
+    } else {
+        check(
+            "feishu",
+            name,
+            "ok",
+            format!("{} configured ({})", label, mask(value)),
+            None,
+            None,
+            serde_json::json!({}),
+        )
+    }
+}
+
+/// 脱敏：只保留前 4 位。
+fn mask(value: &str) -> String {
+    let prefix: String = value.chars().take(4).collect();
+    format!("{}***", prefix)
 }
 
 // ---- daemon ----

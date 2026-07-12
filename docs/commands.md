@@ -583,11 +583,18 @@ http_port
 notify.default
 human.name
 human.intro
+human.surfaces          # JSON 数组，如 '["popup","feishu"]'
 message.preview_limit_chars
 message.inbox_inline_limit_bytes
+feishu.enabled          # true/false
+feishu.app_id
+feishu.app_secret       # 敏感：doctor/日志脱敏，config gui 密码框
+feishu.open_id          # 绑定的人类用户 open_id（v1 单用户）
+feishu.base_url         # 默认 https://open.feishu.cn/open-apis
 ```
 
-配置文件权限保持 0600。
+`config set` 自动解析布尔/整数；以 `[` 或 `{` 开头的值按 JSON 解析（用于 surfaces 等数组键）。
+飞书配置也可在 `agtalk config gui` 的「飞书」卡片中编辑。配置文件权限保持 0600。
 
 ---
 
