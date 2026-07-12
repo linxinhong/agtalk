@@ -13,9 +13,14 @@ pub fn encode_action_value(message_id: &str, choice_index: usize) -> Value {
 }
 
 /// 解码按钮 value；形状不符返回 None（调用方按忽略处理）。
+/// 兼容飞书把 value 作为 JSON 字符串回传的情况。
 pub fn decode_action_value(value: &Value) -> Option<(String, usize)> {
-    let msg = value.get(ACTION_MSG_KEY)?.as_str()?.to_string();
-    let idx = value.get(ACTION_CHOICE_KEY)?.as_u64()? as usize;
+    let obj = match value {
+        Value::String(s) => serde_json::from_str::<Value>(s).ok()?,
+        v => v.clone(),
+    };
+    let msg = obj.get(ACTION_MSG_KEY)?.as_str()?.to_string();
+    let idx = obj.get(ACTION_CHOICE_KEY)?.as_u64()? as usize;
     Some((msg, idx))
 }
 
@@ -28,24 +33,36 @@ fn skeleton(elements: Vec<Value>) -> Value {
 }
 
 /// 审批卡片：正文 + choices 按钮行（首个按钮 primary）。
+/// Card JSON 2.0：按钮直接作为元素（column_set 横向排列），
+/// 回调数据放 behaviors callback value——V2 已不支持 V1 的 action 容器与按钮顶层 value。
 pub fn approval_card(msg: &Message, choices: &[String]) -> Value {
     let mut elements = vec![
         json!({ "tag": "markdown", "content": msg.body }),
         json!({ "tag": "hr" }),
     ];
-    let buttons: Vec<Value> = choices
+    let columns: Vec<Value> = choices
         .iter()
         .enumerate()
         .map(|(i, c)| {
             json!({
-                "tag": "button",
-                "text": { "tag": "plain_text", "content": c },
-                "type": if i == 0 { "primary" } else { "default" },
-                "value": encode_action_value(&msg.id, i),
+                "tag": "column",
+                "width": "auto",
+                "elements": [json!({
+                    "tag": "button",
+                    "text": { "tag": "plain_text", "content": c },
+                    "type": if i == 0 { "primary" } else { "default" },
+                    "behaviors": [
+                        { "type": "callback", "value": encode_action_value(&msg.id, i) }
+                    ],
+                })],
             })
         })
         .collect();
-    elements.push(json!({ "tag": "action", "actions": buttons }));
+    elements.push(json!({
+        "tag": "column_set",
+        "horizontal_spacing": "8px",
+        "columns": columns,
+    }));
     skeleton(elements)
 }
 
@@ -122,12 +139,26 @@ mod tests {
         let msg = approval_msg();
         let card = approval_card(&msg, &approval_choices(&msg));
         assert_eq!(card["schema"], "2.0");
-        let buttons = card["body"]["elements"][2]["actions"].as_array().unwrap();
-        assert_eq!(buttons.len(), 2);
-        assert_eq!(buttons[0]["value"]["agtalk_msg"], msg.id);
-        assert_eq!(buttons[0]["value"]["choice_index"], 0);
-        assert_eq!(buttons[1]["value"]["choice_index"], 1);
-        assert_eq!(buttons[0]["type"], "primary");
+        let columns = card["body"]["elements"][2]["columns"].as_array().unwrap();
+        assert_eq!(columns.len(), 2);
+        let btn0 = &columns[0]["elements"][0];
+        assert_eq!(btn0["tag"], "button");
+        assert_eq!(btn0["type"], "primary");
+        assert_eq!(
+            btn0["behaviors"][0]["value"]["agtalk_msg"],
+            serde_json::json!(msg.id)
+        );
+        assert_eq!(btn0["behaviors"][0]["value"]["choice_index"], 0);
+        assert_eq!(
+            columns[1]["elements"][0]["behaviors"][0]["value"]["choice_index"],
+            1
+        );
+    }
+
+    #[test]
+    fn decode_accepts_string_encoded_value() {
+        let v = serde_json::json!("{\"agtalk_msg\":\"uuid-1\",\"choice_index\":2}");
+        assert_eq!(decode_action_value(&v), Some(("uuid-1".to_string(), 2)));
     }
 
     #[test]
