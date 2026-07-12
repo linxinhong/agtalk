@@ -4,6 +4,8 @@ pub mod config;
 pub mod feishu;
 pub mod human;
 pub mod identity;
+#[cfg(target_os = "macos")]
+pub mod macos_dock;
 pub mod mem;
 pub mod notify;
 pub mod paths;
@@ -34,6 +36,9 @@ pub fn run_gui() {
             commands::gui_feishu_setup_poll
         ])
         .setup(|app| {
+            // 裸二进制无 .app 包图标来源，运行时设置 Dock/Cmd+Tab 图标
+            #[cfg(target_os = "macos")]
+            macos_dock::set_dock_icon();
             tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
@@ -71,6 +76,8 @@ pub fn run_popup(message_id: Option<String>) {
             commands::popup_done
         ])
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            macos_dock::set_dock_icon();
             // ?popup=1 让前端切到弹窗模式；消息 id 由 PopupState 持有，不进 URL
             tauri::WebviewWindowBuilder::new(
                 app,

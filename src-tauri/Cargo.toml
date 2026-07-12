@@ -65,6 +65,13 @@ base64 = "0.22"
 flate2 = "1"
 futures-util = { version = "0.3", default-features = false }
 
+# macOS 裸二进制运行时设置 Dock/Cmd+Tab 图标（bundle.active=false，无 .app 包图标来源）；
+# 版本锁定与 tao/wry 依赖树一致，避免重复编译两份 objc2。
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.4"
+objc2-app-kit = "=0.3.2"
+objc2-foundation = "=0.3.2"
+
 [dev-dependencies]
 tempfile = "3"
 tower = { version = "0.4", features = ["util"] }
