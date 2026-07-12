@@ -56,7 +56,7 @@ pub fn run_gui() {
 }
 
 /// 桌面审批弹窗：`agtalk __popup <message-id>` 由 daemon 的 PopupTransport 拉起。
-/// 窗口 480×400 不可调；展示消息正文/选项，Reply/Done 经 human API 提交后自动关窗；
+/// 窗口 480×480 不可调；展示消息正文/选项，Reply/Done 经 human API 提交后自动关窗；
 /// 直接关窗（Later）不改变消息状态（dismissed，消息仍在 human inbox）。
 pub fn run_popup(message_id: Option<String>) {
     let message_id = match message_id {
@@ -86,7 +86,7 @@ pub fn run_popup(message_id: Option<String>) {
                 tauri::WebviewUrl::App("index.html?popup=1".into()),
             )
             .title("agtalk")
-            .inner_size(480.0, 400.0)
+            .inner_size(480.0, 480.0)
             .resizable(false)
             .build()?;
             Ok(())
