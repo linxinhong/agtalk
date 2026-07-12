@@ -55,6 +55,9 @@ tokio-tungstenite = { version = "0.26", default-features = false, features = [
     "connect",
     "rustls-tls-webpki-roots",
 ] }
+# rustls 显式启用 ring provider：tokio-tungstenite 的 rustls 不带默认 CryptoProvider，
+# daemon 启动时 install_default（飞书长连接 wss 握手依赖）
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 prost = "0.13"
 base64 = "0.22"
 flate2 = "1"

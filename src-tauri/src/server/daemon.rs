@@ -91,6 +91,10 @@ pub async fn start(dot_agtalk: PathBuf) -> Result<(), DaemonError> {
 
     let _ = tracing_subscriber::fmt::try_init();
 
+    // rustls 0.23 未启用默认 CryptoProvider（tokio-tungstenite 的 rustls-tls-webpki-roots
+    // 不带 provider），飞书长连接首次握手前必须显式安装，否则 panic
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     if is_running() {
         return Err(DaemonError::AlreadyRunning);
     }
