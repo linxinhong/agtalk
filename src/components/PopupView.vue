@@ -360,6 +360,9 @@ async function submitCancel() {
 }
 
 .plain-body {
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 14px;
