@@ -114,7 +114,9 @@ impl FeishuRouter {
                                 match out.decision {
                                     CardDecision::Ack => ws.respond_ack(&frame).await,
                                     CardDecision::TerminalCard(card) => {
-                                        ws.respond_card(&frame, &card).await
+                                        // 回包必须包 card:{type:"raw"} 才会原地更新卡片
+                                        ws.respond_card(&frame, &card::callback_update_card(card))
+                                            .await
                                     }
                                 }
                             }

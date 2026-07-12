@@ -83,6 +83,13 @@ pub fn terminal_card(original_body: &str, status_line: &str) -> Value {
     ])
 }
 
+/// 卡片回调的同步「更新卡片」回包体：`{card:{type:"raw",data:<新卡片>}}`。
+/// 长连接回包必须带这层包装，飞书才会把按钮卡片原地换成终态卡片；
+/// 裸卡片 JSON 会被忽略——按钮无反应且可重复点击。
+pub fn callback_update_card(card: Value) -> Value {
+    json!({ "card": { "type": "raw", "data": card } })
+}
+
 /// 从审批消息 metadata 取 choices 列表。
 pub fn approval_choices(msg: &Message) -> Vec<String> {
     serde_json::from_str::<Value>(&msg.metadata)
@@ -159,6 +166,14 @@ mod tests {
     fn decode_accepts_string_encoded_value() {
         let v = serde_json::json!("{\"agtalk_msg\":\"uuid-1\",\"choice_index\":2}");
         assert_eq!(decode_action_value(&v), Some(("uuid-1".to_string(), 2)));
+    }
+
+    #[test]
+    fn callback_update_card_wraps_raw_card() {
+        let card = terminal_card("部署到生产？", "已收到你的选择：批准");
+        let body = callback_update_card(card.clone());
+        assert_eq!(body["card"]["type"], "raw");
+        assert_eq!(body["card"]["data"], card);
     }
 
     #[test]
