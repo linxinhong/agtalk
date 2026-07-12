@@ -7,8 +7,10 @@
 //! - 长连接帧为自研 protobuf（pbbp2，prost derive），不引 lark-oapi SDK。
 //! - v1 单用户模型：仅 `config.feishu.open_id` 一个允许的对话对象。
 
+pub mod card;
 pub mod client;
 pub mod proto;
+pub mod router;
 pub mod token;
 pub mod ws;
 

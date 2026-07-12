@@ -126,6 +126,18 @@ pub async fn start(dot_agtalk: PathBuf) -> Result<(), DaemonError> {
     let mut state = AppState::new(storage, config.clone(), dot_agtalk);
     // daemon 环境启用桌面弹窗投递（测试保持 disabled，不拉起真实子进程）
     state.popup = Arc::new(crate::human::popup::PopupTransport::enabled());
+
+    // 飞书 surface：enabled 时 spawn 全局 Router（单条长连接，入站 receipt 幂等）
+    if config.feishu.enabled {
+        let router = std::sync::Arc::new(crate::feishu::router::FeishuRouter::new(
+            state.storage.clone(),
+            config.feishu.clone(),
+            state.feishu_link.clone(),
+        ));
+        tokio::spawn(router.run());
+        info!("feishu surface 已启用，Router 已启动");
+    }
+
     let app = routes(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], config.http_port));

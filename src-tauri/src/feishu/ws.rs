@@ -32,10 +32,18 @@ type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 /// 上抛给上层的业务事件（`data` 为已解析的 event JSON）。
 pub enum WsEvent {
     /// 收到用户消息（`im.message.receive_v1` 的 `event`）。已自动 ACK。
-    Message(Value),
+    Message {
+        data: Value,
+        /// 飞书 header.event_id（跨端幂等键）。
+        event_id: Option<String>,
+    },
     /// 卡片回传交互（`card.action.trigger` 的 `event`）。**未自动 ACK**：上层须 3 秒内
     /// 调 `respond_card` / `respond_ack`（带回原 `frame`）回包，否则飞书会重推。
-    CardAction { data: Value, frame: PbFrame },
+    CardAction {
+        data: Value,
+        event_id: Option<String>,
+        frame: PbFrame,
+    },
 }
 
 pub struct FeishuWs {
@@ -157,11 +165,17 @@ impl FeishuWs {
             .unwrap_or("")
             .to_string();
         let frame_type = frame.header(HEADER_TYPE).to_string();
+        let event_id = value
+            .get("header")
+            .and_then(|h| h.get("event_id"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         if event_type == "card.action.trigger" || frame_type == MSG_TYPE_CARD {
             // 卡片回调：延迟 ACK——由上层算出回包后调 respond_*（须 3 秒内）。
             return Some(WsEvent::CardAction {
                 data: value.get("event").cloned().unwrap_or(Value::Null),
+                event_id,
                 frame,
             });
         }
@@ -169,9 +183,10 @@ impl FeishuWs {
         // 其余事件：立即空 ACK 再按需上抛。
         self.respond_ack(&frame).await;
         if event_type == "im.message.receive_v1" {
-            return Some(WsEvent::Message(
-                value.get("event").cloned().unwrap_or(Value::Null),
-            ));
+            return Some(WsEvent::Message {
+                data: value.get("event").cloned().unwrap_or(Value::Null),
+                event_id,
+            });
         }
         None
     }
