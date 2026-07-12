@@ -149,6 +149,13 @@ pub fn reply(
     } else {
         serde_json::json!({ "choice": selected }).to_string()
     };
+    // 审批回复正文为空时补「选择：X」——popup/GUI 只传补充文本，
+    // 空正文会让 agent 在 msg read 里看不到选择了什么
+    let body = if is_approval && !selected.is_empty() && req.body.trim().is_empty() {
+        format!("选择：{}", selected)
+    } else {
+        req.body.to_string()
+    };
     let now = unix_timestamp();
     tx.execute(
         "INSERT INTO messages (id, to_address, to_name, from_address, from_name, body, \
@@ -160,7 +167,7 @@ pub fn reply(
             original.from_name,
             human_addr,
             "human",
-            req.body,
+            body,
             content_type,
             original.id,
             original.subject,
@@ -222,7 +229,7 @@ pub fn reply(
         to_name: original.from_name,
         from_address: human_addr,
         from_name: "human".to_string(),
-        body: req.body.to_string(),
+        body,
         content_type: content_type.to_string(),
         reply_to_id: Some(original.id),
         subject: original.subject,
@@ -566,6 +573,18 @@ mod tests {
             Err(HumanError::InvalidChoice(c)) => assert_eq!(c, "x"),
             other => panic!("expected InvalidChoice, got {:?}", other.is_ok()),
         }
+    }
+
+    #[test]
+    fn approval_reply_empty_body_fills_selection_summary() {
+        let fx = setup();
+        let meta = r#"{"choices":["a","b"],"select_only":false}"#;
+        let msg = send_msg(&fx, "approval_request", meta);
+
+        // popup 路径：只传 choices 不传补充文本 → 正文补「选择：X」，agent 可读
+        let out = reply(&fx.storage, req(&msg, "", &["a", "b"])).unwrap();
+        assert_eq!(out.reply.body, "选择：a、b");
+        assert_eq!(out.reply.metadata, r#"{"choice":"a、b"}"#);
     }
 
     #[test]
