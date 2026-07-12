@@ -23,6 +23,7 @@ dependencies = [
  "comfy-table",
  "console",
  "dirs 5.0.1",
+ "flate2",
  "futures-util",
  "nix",
  "prost",

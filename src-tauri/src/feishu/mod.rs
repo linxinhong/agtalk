@@ -12,6 +12,7 @@ pub mod client;
 pub mod dispatch;
 pub mod proto;
 pub mod router;
+pub mod setup;
 pub mod token;
 pub mod ws;
 
