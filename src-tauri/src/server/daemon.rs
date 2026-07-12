@@ -89,7 +89,11 @@ pub async fn start(dot_agtalk: PathBuf) -> Result<(), DaemonError> {
         let _ = setsid();
     }
 
-    let _ = tracing_subscriber::fmt::try_init();
+    // tracing 默认写 stdout（daemon 启动时 stdout 已重定向到 /dev/null），
+    // 显式指定 stderr 才能落进 daemon.log
+    let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .try_init();
 
     // rustls 0.23 未启用默认 CryptoProvider（tokio-tungstenite 的 rustls-tls-webpki-roots
     // 不带 provider），飞书长连接首次握手前必须显式安装，否则 panic

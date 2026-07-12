@@ -249,13 +249,20 @@ impl FeishuWs {
 }
 
 /// 取长连接 endpoint：返回 (wss URL, ping 间隔秒)。
+///
+/// 注意：长连接 endpoint 在**域名根**下（`https://open.feishu.cn/callback/ws/endpoint`），
+/// 不在 `/open-apis` 前缀下，因此从 base_url 剥离 open-apis 路径段后拼接。
 async fn open_endpoint(
     http: &reqwest::Client,
     base_url: &str,
     app_id: &str,
     app_secret: &str,
 ) -> Result<(String, u64), FeishuError> {
-    let url = format!("{}{}", base_url.trim_end_matches('/'), GEN_ENDPOINT_URI);
+    let root = base_url
+        .trim_end_matches('/')
+        .trim_end_matches("/open-apis")
+        .trim_end_matches('/');
+    let url = format!("{}{}", root, GEN_ENDPOINT_URI);
     let v: Value = http
         .post(&url)
         .header("locale", "zh")
@@ -328,6 +335,37 @@ fn parse_query_i32(url: &str, key: &str) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn open_endpoint_strips_open_apis_prefix() {
+        let (base, rx, _h) = crate::testutil::mock_http_server(vec![serde_json::json!({
+            "code": 0,
+            "msg": "",
+            "data": {
+                "URL": "wss://example/ws/v2?service_id=1",
+                "ClientConfig": { "PingInterval": 90 }
+            }
+        })
+        .to_string()]);
+        // base_url 带 /open-apis 前缀时，长连接 endpoint 必须落在域名根
+        let (url, ping) = open_endpoint(
+            &reqwest::Client::new(),
+            &format!("{}/open-apis", base),
+            "app_id",
+            "app_secret",
+        )
+        .await
+        .unwrap();
+        assert!(url.starts_with("wss://"));
+        assert_eq!(ping, 90);
+        let req = rx.recv().unwrap();
+        assert!(
+            req.starts_with("POST /callback/ws/endpoint"),
+            "ws endpoint 必须在域名根下: {}",
+            req
+        );
+        assert!(req.contains("AppID"));
+    }
 
     #[test]
     fn combine_frag_out_of_order() {
