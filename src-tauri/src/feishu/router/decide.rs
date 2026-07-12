@@ -1,7 +1,10 @@
 //! 入站事件决策（IO 无关，可测）：卡片回调动作分派 + p2p 文本入站判定。
 //!
 //! 动作：
-//! - approval：value 精确路由 → receipt 幂等 reply → 终态卡片（仲裁语义不变）。
+//! - approval（旧版一键按钮）：value 精确路由 → receipt 幂等 reply → 终态卡片（仲裁语义不变）。
+//! - approval_submit：审批表单提交，form_value 取勾选 + 补充，复用 approval::reply 仲裁。
+//! - done：receipt 幂等置 done，不通知 agent。
+//! - cancel：receipt 幂等取消，给原发送方回「（已取消）」并终结原消息。
 //! - compose_submit：form_value 取正文/目标，服务端重验活跃 agent，复用 human 发信幂等。
 //! - reply_open / reply_submit：卡片内回复表单，复用 human reply 路径。
 //! - p2p 文本：仅绑定 open_id 的私聊文本产生 compose 草稿卡；群聊/非文本/空文本忽略。
@@ -76,6 +79,11 @@ pub fn decide_card_action(
             msg_id,
             choice_index,
         }) => decide_approval(storage, event_id, &msg_id, choice_index),
+        Some(card::CardAction::ApprovalSubmit { msg_id }) => {
+            decide_approval_submit(storage, data, event_id, &msg_id)
+        }
+        Some(card::CardAction::Done { msg_id }) => decide_done(storage, event_id, &msg_id),
+        Some(card::CardAction::Cancel { msg_id }) => decide_cancel(storage, event_id, &msg_id),
         Some(card::CardAction::ComposeSubmit) => decide_compose_submit(storage, data, event_id),
         Some(card::CardAction::ReplyOpen { msg_id }) => decide_reply_open(storage, &msg_id),
         Some(card::CardAction::ReplySubmit { msg_id }) => {
@@ -88,7 +96,8 @@ pub fn decide_card_action(
     }
 }
 
-/// 审批选择：value 精确路由 → receipt 幂等 reply → 终态卡片（仲裁语义不变）。
+/// 审批选择（旧版一键按钮，兼容已发出的旧卡片）：value 精确路由 →
+/// receipt 幂等 reply → 终态卡片（仲裁语义不变）。
 fn decide_approval(
     storage: &Storage,
     event_id: Option<&str>,
@@ -107,7 +116,7 @@ fn decide_approval(
     let req = HumanReplyRequest {
         message_id: msg_id,
         body: &body,
-        choice: Some(&choice),
+        choices: &[choice.as_str()],
         surface: SURFACE,
         external_event_id: event_id,
     };
@@ -116,7 +125,7 @@ fn decide_approval(
             decision: CardDecision::TerminalCard(card::terminal_card(
                 &msg,
                 &format!("已收到你的选择：{}", choice),
-                Some(&choice),
+                &[choice.as_str()],
             )),
             // 幂等回放未创建新消息，不重复唤醒接收方、不重复抢答收尾
             created: if out.deduplicated {
@@ -133,10 +142,193 @@ fn decide_approval(
         Err(HumanError::AlreadyResolved { resolved_by, .. }) => terminal(card::terminal_card(
             &msg,
             &format!("已由 {} 处理", resolved_by),
-            None,
+            &[],
         )),
         Err(e) => {
             warn!("feishu 卡片回调 reply 失败: {}", e);
+            ack()
+        }
+    }
+}
+
+/// 审批表单提交：form_value 取勾选（opt_{i}）+ 补充文本 → 服务端按原消息
+/// metadata 映射勾选为 choices → 复用 approval::reply（仲裁/幂等/校验）。
+fn decide_approval_submit(
+    storage: &Storage,
+    data: &Value,
+    event_id: Option<&str>,
+    msg_id: &str,
+) -> CardActionOutcome {
+    let msg = match query_message(storage, msg_id) {
+        Ok(Some(m)) if m.content_type == "approval_request" => m,
+        _ => return ack(),
+    };
+    let choices = card::approval_choices(&msg);
+    let form = data
+        .pointer("/action/form_value")
+        .cloned()
+        .unwrap_or(Value::Null);
+    // 勾选回传：{"opt_0": true}（bool 或 "true" 字符串都算勾上，对齐 AskHuman）
+    let selected: Vec<String> = choices
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| {
+            form.get(format!("{}{}", card::FORM_OPT_PREFIX, i))
+                .map(|v| v.as_bool().unwrap_or(false) || v.as_str() == Some("true"))
+                .unwrap_or(false)
+        })
+        .map(|(_, c)| c.clone())
+        .collect();
+    let supplement = form
+        .get(card::FORM_BODY)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    // 客户端可篡改 form_value，服务端按 metadata 重新校验
+    let meta: Value = serde_json::from_str(&msg.metadata).unwrap_or(Value::Null);
+    let select_only = meta
+        .get("select_only")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let single = meta
+        .get("single")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let title = format!("来自 {} 的审批", msg.from_name);
+    if select_only && selected.is_empty() {
+        return terminal(card::status_card(&title, &msg.body, "请至少选择一个选项"));
+    }
+    if single && selected.len() > 1 {
+        return terminal(card::status_card(
+            &title,
+            &msg.body,
+            "单选问题只能选择一个选项",
+        ));
+    }
+    if selected.is_empty() && supplement.is_empty() {
+        return terminal(card::status_card(
+            &title,
+            &msg.body,
+            "未选择选项且补充为空，未提交",
+        ));
+    }
+    let body = match (selected.is_empty(), supplement.is_empty()) {
+        (false, false) => format!("选择：{}\n{}", selected.join("、"), supplement),
+        (false, true) => format!("选择：{}", selected.join("、")),
+        (true, false) => supplement.clone(),
+        (true, true) => unreachable!(),
+    };
+    let selected_refs: Vec<&str> = selected.iter().map(|s| s.as_str()).collect();
+    let req = HumanReplyRequest {
+        message_id: msg_id,
+        body: &body,
+        choices: &selected_refs,
+        surface: SURFACE,
+        external_event_id: event_id,
+    };
+    match approval::reply(storage, req) {
+        Ok(out) => CardActionOutcome {
+            decision: CardDecision::TerminalCard(card::terminal_card(
+                &msg,
+                &format!("已收到你的选择：{}", selected.join("、")),
+                &selected_refs,
+            )),
+            // 幂等回放未创建新消息，不重复唤醒接收方、不重复抢答收尾
+            created: if out.deduplicated {
+                None
+            } else {
+                Some(out.reply)
+            },
+            settled: if out.deduplicated {
+                None
+            } else {
+                Some(msg_id.to_string())
+            },
+        },
+        Err(HumanError::AlreadyResolved { resolved_by, .. }) => terminal(card::terminal_card(
+            &msg,
+            &format!("已由 {} 处理", resolved_by),
+            &[],
+        )),
+        Err(e) => {
+            warn!("feishu 审批表单提交失败: {}", e);
+            terminal(card::status_card(
+                &title,
+                &msg.body,
+                &format!("提交失败：{}", e),
+            ))
+        }
+    }
+}
+
+/// 完成：receipt 幂等 done → 终态卡片（不通知 agent，仅本地状态收敛）。
+fn decide_done(storage: &Storage, event_id: Option<&str>, msg_id: &str) -> CardActionOutcome {
+    let msg = match query_message(storage, msg_id) {
+        Ok(Some(m)) => m,
+        _ => return ack(),
+    };
+    let title = format!("来自 {} 的消息", msg.from_name);
+    let human = match crate::human::human_address(storage) {
+        Ok(a) => a,
+        Err(e) => {
+            warn!("feishu done 取 human 地址失败: {}", e);
+            return ack();
+        }
+    };
+    let result: Result<bool, HumanError> = match event_id {
+        Some(eid) => crate::human::done_with_receipt(storage, msg_id, &human, SURFACE, eid)
+            .map(|(_, dedup)| dedup),
+        None => crate::routing::inbox::mark_done(storage, msg_id, &human)
+            .map(|_| false)
+            .map_err(HumanError::from),
+    };
+    match result {
+        Ok(deduplicated) => CardActionOutcome {
+            decision: CardDecision::TerminalCard(card::status_card(&title, &msg.body, "已完成")),
+            created: None,
+            settled: if deduplicated {
+                None
+            } else {
+                Some(msg_id.to_string())
+            },
+        },
+        Err(e) => {
+            warn!("feishu done 失败: {}", e);
+            ack()
+        }
+    }
+}
+
+/// 取消：receipt 幂等 cancel → 给原发送方回「（已取消）」（agent 可感知的一等结果）
+/// → 终态卡片；approval 消息同时写 resolution 阻止后续旧卡点击。
+fn decide_cancel(storage: &Storage, event_id: Option<&str>, msg_id: &str) -> CardActionOutcome {
+    let msg = match query_message(storage, msg_id) {
+        Ok(Some(m)) => m,
+        _ => return ack(),
+    };
+    let title = format!("来自 {} 的消息", msg.from_name);
+    match approval::cancel_with_receipt(storage, msg_id, SURFACE, event_id) {
+        Ok((reply, deduplicated)) => CardActionOutcome {
+            decision: CardDecision::TerminalCard(card::status_card(
+                &title,
+                &msg.body,
+                &format!("已取消（已通知 {}）", msg.from_name),
+            )),
+            created: if deduplicated { None } else { Some(reply) },
+            settled: if deduplicated {
+                None
+            } else {
+                Some(msg_id.to_string())
+            },
+        },
+        Err(HumanError::AlreadyResolved { resolved_by, .. }) => terminal(card::terminal_card(
+            &msg,
+            &format!("已由 {} 处理", resolved_by),
+            &[],
+        )),
+        Err(e) => {
+            warn!("feishu cancel 失败: {}", e);
             ack()
         }
     }
@@ -258,7 +450,7 @@ fn decide_reply_submit(
     let req = HumanReplyRequest {
         message_id: msg_id,
         body: &body,
-        choice: None,
+        choices: &[],
         surface: SURFACE,
         external_event_id: event_id,
     };

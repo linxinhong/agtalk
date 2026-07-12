@@ -8,46 +8,52 @@ use serde_json::{json, Value};
 pub const ACTION_MSG_KEY: &str = "agtalk_msg";
 pub const ACTION_CHOICE_KEY: &str = "choice_index";
 
-/// 对话类动作标记：审批按钮不带 action 字段（向后兼容），对话类按钮必带。
+/// 对话类动作标记：旧版一键审批按钮不带 action 字段（向后兼容），其余按钮必带。
 pub const ACTION_KEY: &str = "action";
 pub const ACTION_COMPOSE_SUBMIT: &str = "compose_submit";
 pub const ACTION_REPLY_OPEN: &str = "reply_open";
 pub const ACTION_REPLY_SUBMIT: &str = "reply_submit";
-/// form 组件 name：正文输入框 / 目标 agent 下拉。
+pub const ACTION_APPROVAL_SUBMIT: &str = "approval_submit";
+pub const ACTION_DONE: &str = "done";
+pub const ACTION_CANCEL: &str = "cancel";
+/// form 组件 name：正文输入框 / 目标 agent 下拉 / 审批选项勾选框前缀。
 pub const FORM_BODY: &str = "body";
 pub const FORM_TARGET: &str = "target";
+pub const FORM_OPT_PREFIX: &str = "opt_";
 
-/// 卡片回调动作：审批选择 / compose 发送 / 打开回复表单 / 提交回复。
+/// 卡片回调动作：审批选择（旧版一键按钮）/ 审批表单提交 / 完成 / 取消 /
+/// compose 发送 / 打开回复表单 / 提交回复。
 pub enum CardAction {
     Approval { msg_id: String, choice_index: usize },
+    ApprovalSubmit { msg_id: String },
+    Done { msg_id: String },
+    Cancel { msg_id: String },
     ComposeSubmit,
     ReplyOpen { msg_id: String },
     ReplySubmit { msg_id: String },
 }
 
 /// 解码按钮 value 为动作；形状不符返回 None（调用方按忽略处理）。
-/// 兼容飞书把 value 作为 JSON 字符串回传；无 action 字段时回落审批形状。
+/// 兼容飞书把 value 作为 JSON 字符串回传；无 action 字段时回落旧版审批形状。
 pub fn decode_action(value: &Value) -> Option<CardAction> {
     let obj = match value {
         Value::String(s) => serde_json::from_str::<Value>(s).ok()?,
         v => v.clone(),
     };
+    let msg_id = |key: &str| obj.get(key).and_then(|v| v.as_str()).map(|m| m.to_string());
     match obj.get(ACTION_KEY).and_then(|v| v.as_str()) {
         Some(ACTION_COMPOSE_SUBMIT) => Some(CardAction::ComposeSubmit),
         Some(ACTION_REPLY_OPEN) => {
-            obj.get(ACTION_MSG_KEY)
-                .and_then(|v| v.as_str())
-                .map(|m| CardAction::ReplyOpen {
-                    msg_id: m.to_string(),
-                })
+            msg_id(ACTION_MSG_KEY).map(|msg_id| CardAction::ReplyOpen { msg_id })
         }
         Some(ACTION_REPLY_SUBMIT) => {
-            obj.get(ACTION_MSG_KEY)
-                .and_then(|v| v.as_str())
-                .map(|m| CardAction::ReplySubmit {
-                    msg_id: m.to_string(),
-                })
+            msg_id(ACTION_MSG_KEY).map(|msg_id| CardAction::ReplySubmit { msg_id })
         }
+        Some(ACTION_APPROVAL_SUBMIT) => {
+            msg_id(ACTION_MSG_KEY).map(|msg_id| CardAction::ApprovalSubmit { msg_id })
+        }
+        Some(ACTION_DONE) => msg_id(ACTION_MSG_KEY).map(|msg_id| CardAction::Done { msg_id }),
+        Some(ACTION_CANCEL) => msg_id(ACTION_MSG_KEY).map(|msg_id| CardAction::Cancel { msg_id }),
         Some(_) => None,
         None => decode_action_value(&obj).map(|(msg_id, choice_index)| CardAction::Approval {
             msg_id,
@@ -101,57 +107,94 @@ fn styled_header(title: &str) -> Vec<Value> {
     ]
 }
 
-/// 审批卡片：样式化头部（来源 agent）+ 正文 + choices 按钮行。
-/// Card JSON 2.0：按钮直接作为元素（column_set 横向排列），
-/// 回调数据放 behaviors callback value——V2 已不支持 V1 的 action 容器与按钮顶层 value。
-/// recommended 选项的按钮 primary 高亮；无 recommended 时首个按钮 primary。
+/// 审批卡片：样式化头部（来源 agent）+ 正文 + 勾选表单（checker 多选 +
+/// 非 select_only 时补充输入框 + 提交按钮）+ 表单外「取消」按钮（danger）。
+/// 对齐 AskHuman 审批表单：勾选状态经 form_value 回传（opt_{i}: bool），
+/// 不在按钮 value 里放业务结论；recommended 选项前缀 ⭐ 提示。
+/// Card JSON 2.0：回调数据放 behaviors callback value。
 pub fn approval_card(msg: &Message, choices: &[String]) -> Value {
     let recommended = approval_recommended(msg);
+    let select_only = approval_select_only(msg);
     let mut elements = styled_header(&format!("来自 {} 的审批", msg.from_name));
     elements.push(json!({ "tag": "markdown", "content": msg.body }));
     elements.push(json!({ "tag": "hr" }));
-    let columns: Vec<Value> = choices
+    let mut form_elements: Vec<Value> = choices
         .iter()
         .enumerate()
         .map(|(i, c)| {
-            let primary = match &recommended {
-                Some(r) => r == c,
-                None => i == 0,
+            let label = match &recommended {
+                Some(r) if r == c => format!("⭐ {}", c),
+                _ => c.clone(),
             };
             json!({
-                "tag": "column",
-                "width": "auto",
-                "elements": [json!({
-                    "tag": "button",
-                    "text": { "tag": "plain_text", "content": c },
-                    "type": if primary { "primary" } else { "default" },
-                    "behaviors": [
-                        { "type": "callback", "value": encode_action_value(&msg.id, i) }
-                    ],
-                })],
+                "tag": "checker",
+                "name": format!("{}{}", FORM_OPT_PREFIX, i),
+                "checked": false,
+                "text": { "tag": "lark_md", "content": label },
             })
         })
         .collect();
+    if !select_only {
+        form_elements.push(json!({
+            "tag": "input",
+            "name": FORM_BODY,
+            "placeholder": { "tag": "plain_text", "content": "补充说明（可选）" },
+        }));
+    }
+    form_elements.push(json!({
+        "tag": "button",
+        "name": "submit",
+        "form_action_type": "submit",
+        "text": { "tag": "plain_text", "content": "提交" },
+        "type": "primary",
+        "behaviors": [
+            { "type": "callback", "value": { ACTION_KEY: ACTION_APPROVAL_SUBMIT, ACTION_MSG_KEY: msg.id } }
+        ],
+    }));
     elements.push(json!({
-        "tag": "column_set",
-        "horizontal_spacing": "8px",
-        "columns": columns,
+        "tag": "form",
+        "name": "approval_form",
+        "elements": form_elements,
+    }));
+    elements.push(json!({
+        "tag": "button",
+        "text": { "tag": "plain_text", "content": "取消" },
+        "type": "danger",
+        "behaviors": [
+            { "type": "callback", "value": { ACTION_KEY: ACTION_CANCEL, ACTION_MSG_KEY: msg.id } }
+        ],
     }));
     skeleton(elements)
 }
 
-/// 文本卡片：样式化头部（来源 agent）+ markdown 正文 +「回复」入口。
+/// 文本卡片：样式化头部（来源 agent）+ markdown 正文 + 三件套按钮
+/// （回复 / 完成 / 取消，对齐 GUI popup 的一等动作；取消是 danger 样式）。
 /// 点击回复后卡片原地切换为回复表单（reply_form_card），目标锁定原发送 agent。
 pub fn text_card(msg: &Message) -> Value {
     let mut elements = styled_header(&format!("来自 {} 的消息", msg.from_name));
     elements.push(json!({ "tag": "markdown", "content": msg.body }));
     elements.push(json!({ "tag": "hr" }));
+    let button = |label: &str, kind: &str, action: &str| {
+        json!({
+            "tag": "column",
+            "width": "auto",
+            "elements": [json!({
+                "tag": "button",
+                "text": { "tag": "plain_text", "content": label },
+                "type": kind,
+                "behaviors": [
+                    { "type": "callback", "value": { ACTION_KEY: action, ACTION_MSG_KEY: msg.id } }
+                ],
+            })],
+        })
+    };
     elements.push(json!({
-        "tag": "button",
-        "text": { "tag": "plain_text", "content": "回复" },
-        "type": "default",
-        "behaviors": [
-            { "type": "callback", "value": { ACTION_KEY: ACTION_REPLY_OPEN, ACTION_MSG_KEY: msg.id } }
+        "tag": "column_set",
+        "horizontal_spacing": "8px",
+        "columns": [
+            button("回复", "default", ACTION_REPLY_OPEN),
+            button("完成", "default", ACTION_DONE),
+            button("取消", "danger", ACTION_CANCEL),
         ],
     }));
     skeleton(elements)
@@ -288,8 +331,8 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-/// 终态卡片：样式化头部 + 正文 + 选项回显（选中项 ✅）+ 状态行。
-pub fn terminal_card(msg: &Message, status_line: &str, selected: Option<&str>) -> Value {
+/// 终态卡片：样式化头部 + 正文 + 选项回显（选中项 ✅，支持多选）+ 状态行。
+pub fn terminal_card(msg: &Message, status_line: &str, selected: &[&str]) -> Value {
     let mut elements = styled_header(&format!("来自 {} 的审批", msg.from_name));
     elements.push(json!({ "tag": "markdown", "content": msg.body }));
     elements.push(json!({ "tag": "hr" }));
@@ -298,7 +341,7 @@ pub fn terminal_card(msg: &Message, status_line: &str, selected: Option<&str>) -
         let lines: Vec<String> = choices
             .iter()
             .map(|c| {
-                if Some(c.as_str()) == selected {
+                if selected.contains(&c.as_str()) {
                     format!("✅ {}", c)
                 } else {
                     format!("⬜ {}", c)
@@ -323,6 +366,14 @@ pub fn approval_recommended(msg: &Message) -> Option<String> {
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
         })
+}
+
+/// 从审批消息 metadata 取 select_only 标记（缺省 false）。
+pub fn approval_select_only(msg: &Message) -> bool {
+    serde_json::from_str::<Value>(&msg.metadata)
+        .ok()
+        .and_then(|m| m.get("select_only").and_then(|v| v.as_bool()))
+        .unwrap_or(false)
 }
 
 /// 卡片回调的同步「更新卡片」回包体：`{card:{type:"raw",data:<新卡片>}}`。

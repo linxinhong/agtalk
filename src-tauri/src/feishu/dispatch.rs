@@ -19,6 +19,14 @@ pub enum FeishuDispatcher {
     Enabled { cfg: FeishuConfig },
 }
 
+/// 抢答收尾的终态种类：approval 回显胜出选项；reply 回显原消息 + 回复正文；
+/// done 只显示已完成（无回复正文可回显）。
+pub enum SettleKind<'a> {
+    Approval,
+    Reply(&'a Message),
+    Done,
+}
+
 impl FeishuDispatcher {
     pub fn disabled() -> Self {
         Self::Disabled
@@ -51,18 +59,18 @@ impl FeishuDispatcher {
     }
 
     /// 仲裁/抢答收尾：human 消息被某 surface 处理后，向飞书卡片回写终态（best-effort）。
-    /// approval 回显胜出选项；文本回复（reply 提供时）回显原消息 + 回复正文。
+    /// approval 回显胜出选项；文本回复回显原消息 + 回复正文；完成只显示状态。
     pub fn settle(
         &self,
         storage: &Storage,
         message_id: &str,
         resolved_by: &str,
-        reply: Option<&Message>,
+        kind: SettleKind<'_>,
     ) {
         let Self::Enabled { cfg } = self else {
             return;
         };
-        let Some((open_message_id, card)) = plan_settle(storage, message_id, resolved_by, reply)
+        let Some((open_message_id, card)) = plan_settle(storage, message_id, resolved_by, kind)
         else {
             return;
         };
@@ -109,12 +117,13 @@ pub async fn deliver_message(
 
 /// 仲裁/抢答收尾决策（可测）：找到该消息已 delivered 的 feishu delivery 及其外部引用，
 /// 生成终态卡片；无对应 delivery 或缺 external_ref 返回 None。
-/// approval 回显胜出选项；文本消息在 reply 提供时回显原消息 + 回复正文，否则不回写。
+/// approval 回显胜出选项（多选按「、」拆分逐项 ✅）；文本回复回显原消息 +
+/// 回复正文；完成只显示「已由 X 完成」；文本消息无 reply/done 时不回写。
 pub fn plan_settle(
     storage: &Storage,
     message_id: &str,
     resolved_by: &str,
-    reply: Option<&Message>,
+    kind: SettleKind<'_>,
 ) -> Option<(String, serde_json::Value)> {
     let original = {
         let conn = storage.conn();
@@ -132,32 +141,43 @@ pub fn plan_settle(
         .iter()
         .find(|d| d.surface == SURFACE && d.status == "delivered")?;
     let open_message_id = d.external_ref.clone()?;
-    let card = if original.content_type == "approval_request" {
-        // 回显胜出选项（resolution 由胜出 surface 写入；查不到则只显示处理方）
-        let selected: Option<String> = {
-            let conn = storage.conn();
-            conn.query_row(
-                "SELECT selected_choice FROM approval_resolutions WHERE request_message_id = ?1",
-                [message_id],
-                |r| r.get(0),
+    let card = match kind {
+        SettleKind::Approval => {
+            // 回显胜出选项（resolution 由胜出 surface 写入；查不到则只显示处理方）
+            let selected: Option<String> = {
+                let conn = storage.conn();
+                conn.query_row(
+                    "SELECT selected_choice FROM approval_resolutions WHERE request_message_id = ?1",
+                    [message_id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .ok()
+                .flatten()
+            };
+            let selected_refs: Vec<&str> = selected
+                .as_deref()
+                .map(|s| s.split('、').collect())
+                .unwrap_or_default();
+            card::terminal_card(
+                &original,
+                &format!("已由 {} 处理", resolved_by),
+                &selected_refs,
             )
-            .optional()
-            .ok()
-            .flatten()
-        };
-        card::terminal_card(
-            &original,
-            &format!("已由 {} 处理", resolved_by),
-            selected.as_deref(),
-        )
-    } else {
-        // 文本消息：抢答收尾回显原消息 + 回复正文，保留对话上下文
-        let reply = reply?;
-        card::reply_terminal_card(
-            &original,
-            &reply.body,
-            &format!("已由 {} 回复", resolved_by),
-        )
+        }
+        SettleKind::Reply(reply) => {
+            // 文本消息：抢答收尾回显原消息 + 回复正文，保留对话上下文
+            card::reply_terminal_card(
+                &original,
+                &reply.body,
+                &format!("已由 {} 回复", resolved_by),
+            )
+        }
+        SettleKind::Done => card::status_card(
+            &format!("来自 {} 的消息", original.from_name),
+            &original.body,
+            &format!("已由 {} 完成", resolved_by),
+        ),
     };
     Some((open_message_id, card))
 }
@@ -268,7 +288,8 @@ mod tests {
         let (storage, human_addr) = setup();
         let msg = send_approval(&storage, &human_addr);
         delivery::mark_delivered(&storage, &msg.id, SURFACE, Some("om_settle_1")).unwrap();
-        let (open_message_id, card) = plan_settle(&storage, &msg.id, "popup", None).unwrap();
+        let (open_message_id, card) =
+            plan_settle(&storage, &msg.id, "popup", SettleKind::Approval).unwrap();
         assert_eq!(open_message_id, "om_settle_1");
         let texts: Vec<&str> = card["body"]["elements"]
             .as_array()
@@ -288,7 +309,7 @@ mod tests {
         let (storage, human_addr) = setup();
         let msg = send_approval(&storage, &human_addr);
         // delivery 仍是 pending（未投递成功）→ 不回写
-        assert!(plan_settle(&storage, &msg.id, "popup", None).is_none());
+        assert!(plan_settle(&storage, &msg.id, "popup", SettleKind::Approval).is_none());
     }
 
     fn send_text_and_reply(storage: &Storage, human_addr: &str) -> (Message, Message) {
@@ -323,7 +344,7 @@ mod tests {
             crate::human::approval::HumanReplyRequest {
                 message_id: &msg.id,
                 body: "已完成",
-                choice: None,
+                choices: &[],
                 surface: "popup",
                 external_event_id: None,
             },
@@ -339,7 +360,7 @@ mod tests {
         let (msg, reply) = send_text_and_reply(&storage, &human_addr);
         delivery::mark_delivered(&storage, &msg.id, SURFACE, Some("om_text_settle")).unwrap();
         let (open_message_id, card) =
-            plan_settle(&storage, &msg.id, "popup", Some(&reply)).unwrap();
+            plan_settle(&storage, &msg.id, "popup", SettleKind::Reply(&reply)).unwrap();
         assert_eq!(open_message_id, "om_text_settle");
         let texts: Vec<&str> = card["body"]["elements"]
             .as_array()
@@ -362,12 +383,29 @@ mod tests {
     }
 
     #[test]
-    fn plan_settle_text_without_reply_returns_none() {
+    fn plan_settle_done_shows_completed_status() {
         let (storage, human_addr) = setup();
         let (msg, _reply) = send_text_and_reply(&storage, &human_addr);
-        delivery::mark_delivered(&storage, &msg.id, SURFACE, Some("om_text_2")).unwrap();
-        // 文本消息没有回复正文可回显 → 不回写
-        assert!(plan_settle(&storage, &msg.id, "popup", None).is_none());
+        delivery::mark_delivered(&storage, &msg.id, SURFACE, Some("om_done_1")).unwrap();
+        let (open_message_id, card) =
+            plan_settle(&storage, &msg.id, "popup", SettleKind::Done).unwrap();
+        assert_eq!(open_message_id, "om_done_1");
+        let texts: Vec<&str> = card["body"]["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|e| e.get("content").and_then(|c| c.as_str()))
+            .collect();
+        assert!(
+            texts.iter().any(|t| t.contains("进展如何？")),
+            "{:?}",
+            texts
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("已由 popup 完成")),
+            "{:?}",
+            texts
+        );
     }
 
     #[test]
@@ -376,7 +414,7 @@ mod tests {
         let msg = send_approval(&storage, &human_addr);
         let d = FeishuDispatcher::disabled();
         d.dispatch(&storage, &msg, &[SURFACE.to_string()]);
-        d.settle(&storage, &msg.id, "popup", None);
+        d.settle(&storage, &msg.id, "popup", SettleKind::Approval);
         let ds = delivery::list_for_message(&storage, &msg.id).unwrap();
         assert_eq!(ds[0].status, "pending");
     }

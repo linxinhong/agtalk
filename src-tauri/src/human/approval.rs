@@ -17,8 +17,9 @@ pub struct HumanReplyRequest<'a> {
     pub message_id: &'a str,
     /// 回复正文（选择 choice 时的说明文本，可为空）。
     pub body: &'a str,
-    /// 审批选项；select_only 审批必填。
-    pub choice: Option<&'a str>,
+    /// 审批选中项（空切片 = 自由文本；select_only 审批必填且每项须 ∈ choices；
+    /// single 审批至多一项）。多选存 `join("、")` 展示字符串。
+    pub choices: &'a [&'a str],
     /// 发起回复的 surface（如 popup / gui / feishu）。
     pub surface: &'a str,
     /// 跨端事件 id（飞书 event、Android command id）；提供时参与去重。
@@ -105,19 +106,25 @@ pub fn reply(
             .get("select_only")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        match req.choice {
-            None if select_only => return Err(HumanError::SelectOnlyRequiresChoice),
-            Some(choice) => {
-                let choices: Vec<&str> = meta
-                    .get("choices")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
-                    .unwrap_or_default();
-                if !choices.contains(&choice) {
-                    return Err(HumanError::InvalidChoice(choice.to_string()));
-                }
+        let single = meta
+            .get("single")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if select_only && req.choices.is_empty() {
+            return Err(HumanError::SelectOnlyRequiresChoice);
+        }
+        if single && req.choices.len() > 1 {
+            return Err(HumanError::SingleChoiceOnly(req.choices.len()));
+        }
+        let known: Vec<&str> = meta
+            .get("choices")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        for choice in req.choices {
+            if !known.contains(choice) {
+                return Err(HumanError::InvalidChoice(choice.to_string()));
             }
-            None => {}
         }
     }
 
@@ -135,9 +142,12 @@ pub fn reply(
     } else {
         "text"
     };
-    let metadata = match req.choice {
-        Some(c) => serde_json::json!({ "choice": c }).to_string(),
-        None => "{}".to_string(),
+    // 多选存 join("、") 展示字符串（agent 阅读用，不做结构化多值存储）
+    let selected = req.choices.join("、");
+    let metadata = if selected.is_empty() {
+        "{}".to_string()
+    } else {
+        serde_json::json!({ "choice": selected }).to_string()
     };
     let now = unix_timestamp();
     tx.execute(
@@ -162,11 +172,22 @@ pub fn reply(
 
     // 5. approval 仲裁：INSERT OR IGNORE + 主键冲突判定首个胜出
     if is_approval {
+        let selected_choice = if selected.is_empty() {
+            None
+        } else {
+            Some(selected.as_str())
+        };
         let changed = tx.execute(
             "INSERT OR IGNORE INTO approval_resolutions \
              (request_message_id, resolved_by, resolution, selected_choice, response_message_id) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![original.id, req.surface, content_type, req.choice, reply_id],
+            params![
+                original.id,
+                req.surface,
+                content_type,
+                selected_choice,
+                reply_id
+            ],
         )?;
         if changed == 0 {
             // 回滚事务（撤销回复消息与 receipt），返回已处理信息
@@ -216,6 +237,138 @@ pub fn reply(
         resolved: is_approval,
         deduplicated: false,
     })
+}
+
+/// human 取消（跨端事件幂等）：给原发送方回一条「（已取消）」并终结原消息。
+///
+/// 与 reply 的区别：取消是一等结果——agent 收到带 `metadata.cancelled=true` 的回复，
+/// `msg wait` 立即返回，不必等超时。approval 消息同时写 resolution（resolution="cancelled"），
+/// 后续旧卡点击被仲裁拒绝。单事务：receipt + 回复 + resolution + 原消息置 done。
+/// 重复事件回放首次结果（不重复创建回复、不重复置状态）。
+pub fn cancel_with_receipt(
+    storage: &Storage,
+    message_id: &str,
+    surface: &str,
+    external_event_id: Option<&str>,
+) -> Result<(Message, bool), HumanError> {
+    let mut conn = storage.conn();
+    let tx = conn.transaction()?;
+
+    // 1. 跨端事件去重（与 reply 同构：预生成回复 id 写入 receipt）
+    let reply_id = Uuid::new_v4().to_string();
+    if let Some(eid) = external_event_id {
+        if !delivery::record_receipt(&tx, surface, eid, Some(&reply_id), "cancel")? {
+            let original_reply_id: Option<String> = tx
+                .query_row(
+                    "SELECT message_id FROM human_action_receipts \
+                     WHERE surface = ?1 AND external_event_id = ?2",
+                    params![surface, eid],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .flatten();
+            let original_reply_id =
+                original_reply_id.ok_or_else(|| HumanError::ReceiptInconclusive {
+                    surface: surface.to_string(),
+                    event: eid.to_string(),
+                })?;
+            let reply_msg = query_message(&tx, &original_reply_id)?
+                .ok_or_else(|| HumanError::MessageNotFound(original_reply_id.clone()))?;
+            return Ok((reply_msg, true));
+        }
+    }
+
+    // 2. 原消息必须存在且属于 human mailbox
+    let human_addr: String = tx
+        .query_row(
+            "SELECT address FROM system_mailboxes WHERE role = 'human'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or(HumanError::HumanMailboxMissing)?;
+    let original = query_message(&tx, message_id)?
+        .filter(|m| m.to_address == human_addr)
+        .ok_or_else(|| HumanError::MessageNotFound(message_id.to_string()))?;
+
+    // 3. 插入「（已取消）」回复（to = 原消息发送方，event_id 按接收方地址分配）
+    let event_id: i64 = tx
+        .query_row(
+            "UPDATE event_sequences SET last_event_id = last_event_id + 1 \
+             WHERE address = ?1 RETURNING last_event_id",
+            [&original.from_address],
+            |row| row.get(0),
+        )
+        .map_err(|_| HumanError::EventIdAllocation)?;
+    let now = unix_timestamp();
+    let metadata = serde_json::json!({ "cancelled": true }).to_string();
+    tx.execute(
+        "INSERT INTO messages (id, to_address, to_name, from_address, from_name, body, \
+         content_type, reply_to_id, subject, metadata, event_id, status, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'text', ?7, ?8, ?9, ?10, 'pending', ?11)",
+        params![
+            reply_id,
+            original.from_address,
+            original.from_name,
+            human_addr,
+            "human",
+            "（已取消）",
+            original.id,
+            original.subject,
+            metadata,
+            event_id,
+            now
+        ],
+    )?;
+
+    // 4. approval 消息写取消仲裁：首个动作胜出，后续旧卡点击被 AlreadyResolved 拒绝
+    if original.content_type == "approval_request" {
+        let changed = tx.execute(
+            "INSERT OR IGNORE INTO approval_resolutions \
+             (request_message_id, resolved_by, resolution, selected_choice, response_message_id) \
+             VALUES (?1, ?2, 'cancelled', NULL, ?3)",
+            params![original.id, surface, reply_id],
+        )?;
+        if changed == 0 {
+            let (resolved_by, response_id): (String, String) = tx.query_row(
+                "SELECT resolved_by, response_message_id FROM approval_resolutions \
+                 WHERE request_message_id = ?1",
+                [&original.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            return Err(HumanError::AlreadyResolved {
+                resolved_by,
+                response_id,
+            });
+        }
+    }
+
+    // 5. 原消息置 done（取消即终结，不再期待处理）
+    tx.execute(
+        "UPDATE messages SET status = 'done' WHERE id = ?1 AND status != 'done'",
+        [&original.id],
+    )?;
+
+    tx.commit()?;
+
+    Ok((
+        Message {
+            id: reply_id,
+            to_address: original.from_address,
+            to_name: original.from_name,
+            from_address: human_addr,
+            from_name: "human".to_string(),
+            body: "（已取消）".to_string(),
+            content_type: "text".to_string(),
+            reply_to_id: Some(original.id),
+            subject: original.subject,
+            metadata,
+            event_id,
+            status: "pending".to_string(),
+            created_at: now,
+        },
+        false,
+    ))
 }
 
 fn query_message(conn: &rusqlite::Connection, id: &str) -> Result<Option<Message>, HumanError> {
@@ -310,11 +463,11 @@ mod tests {
         .unwrap()
     }
 
-    fn req<'a>(msg: &'a Message, body: &'a str, choice: Option<&'a str>) -> HumanReplyRequest<'a> {
+    fn req<'a>(msg: &'a Message, body: &'a str, choices: &'a [&'a str]) -> HumanReplyRequest<'a> {
         HumanReplyRequest {
             message_id: &msg.id,
             body,
-            choice,
+            choices,
             surface: "popup",
             external_event_id: None,
         }
@@ -325,7 +478,7 @@ mod tests {
         let fx = setup();
         let msg = send_msg(&fx, "text", "{}");
 
-        let first = reply(&fx.storage, req(&msg, "第一条", None)).unwrap();
+        let first = reply(&fx.storage, req(&msg, "第一条", &[])).unwrap();
         assert_eq!(first.reply.to_address, fx.agent_addr);
         assert_eq!(first.reply.reply_to_id.as_deref(), Some(msg.id.as_str()));
         assert_eq!(first.reply.content_type, "text");
@@ -336,7 +489,7 @@ mod tests {
         assert_eq!(change.new_status, "read");
 
         // 再次回复允许，且不再产生状态变化
-        let second = reply(&fx.storage, req(&msg, "第二条", None)).unwrap();
+        let second = reply(&fx.storage, req(&msg, "第二条", &[])).unwrap();
         assert!(second.original_status_change.is_none());
         assert_ne!(first.reply.id, second.reply.id);
     }
@@ -347,7 +500,7 @@ mod tests {
         let meta = r#"{"choices":["yes","no"],"select_only":false}"#;
         let msg = send_msg(&fx, "approval_request", meta);
 
-        let out = reply(&fx.storage, req(&msg, "同意", Some("yes"))).unwrap();
+        let out = reply(&fx.storage, req(&msg, "同意", &["yes"])).unwrap();
         assert!(out.resolved);
         assert_eq!(out.reply.content_type, "approval_response");
         assert_eq!(out.reply.metadata, r#"{"choice":"yes"}"#);
@@ -369,13 +522,60 @@ mod tests {
     }
 
     #[test]
+    fn approval_multi_select_joins_choices() {
+        let fx = setup();
+        let meta = r#"{"choices":["a","b","c"],"select_only":false}"#;
+        let msg = send_msg(&fx, "approval_request", meta);
+
+        let out = reply(&fx.storage, req(&msg, "选两个", &["a", "b"])).unwrap();
+        assert!(out.resolved);
+        assert_eq!(out.reply.metadata, r#"{"choice":"a、b"}"#);
+        let conn = fx.storage.conn();
+        let selected: String = conn
+            .query_row(
+                "SELECT selected_choice FROM approval_resolutions WHERE request_message_id = ?1",
+                [&msg.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(selected, "a、b");
+    }
+
+    #[test]
+    fn approval_single_rejects_multiple_choices() {
+        let fx = setup();
+        let meta = r#"{"choices":["a","b"],"single":true,"select_only":false}"#;
+        let msg = send_msg(&fx, "approval_request", meta);
+
+        match reply(&fx.storage, req(&msg, "都要", &["a", "b"])) {
+            Err(HumanError::SingleChoiceOnly(2)) => {}
+            other => panic!("expected SingleChoiceOnly, got {:?}", other.is_ok()),
+        }
+        // 单选合法
+        let out = reply(&fx.storage, req(&msg, "选 a", &["a"])).unwrap();
+        assert!(out.resolved);
+    }
+
+    #[test]
+    fn approval_multi_select_rejects_any_invalid_choice() {
+        let fx = setup();
+        let meta = r#"{"choices":["a","b"],"select_only":false}"#;
+        let msg = send_msg(&fx, "approval_request", meta);
+
+        match reply(&fx.storage, req(&msg, "夹带", &["a", "x"])) {
+            Err(HumanError::InvalidChoice(c)) => assert_eq!(c, "x"),
+            other => panic!("expected InvalidChoice, got {:?}", other.is_ok()),
+        }
+    }
+
+    #[test]
     fn approval_second_reply_returns_already_resolved() {
         let fx = setup();
         let meta = r#"{"choices":["yes","no"],"select_only":false}"#;
         let msg = send_msg(&fx, "approval_request", meta);
 
-        let first = reply(&fx.storage, req(&msg, "同意", Some("yes"))).unwrap();
-        match reply(&fx.storage, req(&msg, "反对", Some("no"))) {
+        let first = reply(&fx.storage, req(&msg, "同意", &["yes"])).unwrap();
+        match reply(&fx.storage, req(&msg, "反对", &["no"])) {
             Err(HumanError::AlreadyResolved {
                 resolved_by,
                 response_id,
@@ -393,7 +593,7 @@ mod tests {
         let meta = r#"{"choices":["a","b"],"select_only":true}"#;
         let msg = send_msg(&fx, "approval_request", meta);
 
-        match reply(&fx.storage, req(&msg, "随便说说", None)) {
+        match reply(&fx.storage, req(&msg, "随便说说", &[])) {
             Err(HumanError::SelectOnlyRequiresChoice) => {}
             other => panic!("expected SelectOnlyRequiresChoice, got {:?}", other.is_ok()),
         }
@@ -405,7 +605,7 @@ mod tests {
         let meta = r#"{"choices":["a","b"],"select_only":false}"#;
         let msg = send_msg(&fx, "approval_request", meta);
 
-        match reply(&fx.storage, req(&msg, "", Some("c"))) {
+        match reply(&fx.storage, req(&msg, "", &["c"])) {
             Err(HumanError::InvalidChoice(c)) => assert_eq!(c, "c"),
             other => panic!("expected InvalidChoice, got {:?}", other.is_ok()),
         }
@@ -433,7 +633,7 @@ mod tests {
         )
         .unwrap();
 
-        match reply(&fx.storage, req(&msg, "hack", None)) {
+        match reply(&fx.storage, req(&msg, "hack", &[])) {
             Err(HumanError::MessageNotFound(_)) => {}
             other => panic!("expected MessageNotFound, got {:?}", other.is_ok()),
         }
@@ -446,7 +646,7 @@ mod tests {
 
         let r1 = HumanReplyRequest {
             external_event_id: Some("evt-1"),
-            ..req(&msg, "第一条", None)
+            ..req(&msg, "第一条", &[])
         };
         let first = reply(&fx.storage, r1).unwrap();
         assert!(!first.deduplicated);
@@ -454,7 +654,7 @@ mod tests {
         // 重复事件：回放首次结果，不重复创建回复
         let r2 = HumanReplyRequest {
             external_event_id: Some("evt-1"),
-            ..req(&msg, "重复", None)
+            ..req(&msg, "重复", &[])
         };
         let second = reply(&fx.storage, r2).unwrap();
         assert!(second.deduplicated);
@@ -482,7 +682,7 @@ mod tests {
 
         let r = HumanReplyRequest {
             external_event_id: Some("evt-crash"),
-            ..req(&msg, "重试", None)
+            ..req(&msg, "重试", &[])
         };
         match reply(&fx.storage, r) {
             Err(HumanError::ReceiptInconclusive { surface, event }) => {
@@ -502,7 +702,7 @@ mod tests {
         let bad = HumanReplyRequest {
             message_id: "no-such-msg",
             external_event_id: Some("evt-retry"),
-            ..req(&msg, "失败", None)
+            ..req(&msg, "失败", &[])
         };
         assert!(matches!(
             reply(&fx.storage, bad),
@@ -522,7 +722,7 @@ mod tests {
         // 同一事件修正后重试成功
         let good = HumanReplyRequest {
             external_event_id: Some("evt-retry"),
-            ..req(&msg, "重试", None)
+            ..req(&msg, "重试", &[])
         };
         let out = reply(&fx.storage, good).unwrap();
         assert!(!out.deduplicated);
@@ -532,12 +732,131 @@ mod tests {
     fn reply_allocates_event_id_on_receiver() {
         let fx = setup();
         let msg = send_msg(&fx, "text", "{}");
-        let out = reply(&fx.storage, req(&msg, "hi", None)).unwrap();
+        let out = reply(&fx.storage, req(&msg, "hi", &[])).unwrap();
         // 回复消息落在 agent 的 event 序列上，可用 agent inbox 查到
         let inbox = crate::routing::inbox::inbox(&fx.storage, &fx.agent_addr, false).unwrap();
         assert!(inbox.iter().any(|m| m.id == out.reply.id));
         // 短 ID 可解析
         let resolved = lookup::resolve_id(&fx.storage, &fx.agent_addr, &out.reply.id[..8]).unwrap();
         assert_eq!(resolved, out.reply.id);
+    }
+
+    #[test]
+    fn cancel_creates_cancelled_reply_and_marks_done() {
+        let fx = setup();
+        let msg = send_msg(&fx, "text", "{}");
+
+        let (reply_msg, dedup) =
+            cancel_with_receipt(&fx.storage, &msg.id, "feishu", Some("evt-c1")).unwrap();
+        assert!(!dedup);
+        assert_eq!(reply_msg.body, "（已取消）");
+        assert_eq!(reply_msg.to_address, fx.agent_addr);
+        assert_eq!(reply_msg.reply_to_id.as_deref(), Some(msg.id.as_str()));
+        assert_eq!(reply_msg.metadata, r#"{"cancelled":true}"#);
+
+        // 原消息置 done（conn guard 必须在后续 storage 调用前释放，避免死锁）
+        {
+            let conn = fx.storage.conn();
+            let status: String = conn
+                .query_row(
+                    "SELECT status FROM messages WHERE id = ?1",
+                    [&msg.id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(status, "done");
+        }
+
+        // 重复事件：回放首次结果，不重复创建
+        let (replayed, dedup) =
+            cancel_with_receipt(&fx.storage, &msg.id, "feishu", Some("evt-c1")).unwrap();
+        assert!(dedup);
+        assert_eq!(replayed.id, reply_msg.id);
+        let inbox = crate::routing::inbox::inbox(&fx.storage, &fx.agent_addr, false).unwrap();
+        let cancels: Vec<_> = inbox
+            .iter()
+            .filter(|m| m.reply_to_id.as_deref() == Some(msg.id.as_str()))
+            .collect();
+        assert_eq!(cancels.len(), 1);
+    }
+
+    #[test]
+    fn cancel_approval_writes_resolution_and_blocks_later_choice() {
+        let fx = setup();
+        let meta = r#"{"choices":["yes","no"],"select_only":true}"#;
+        let msg = send_msg(&fx, "approval_request", meta);
+
+        let (reply_msg, _) =
+            cancel_with_receipt(&fx.storage, &msg.id, "feishu", Some("evt-c2")).unwrap();
+        {
+            let conn = fx.storage.conn();
+            let (resolution, selected): (String, Option<String>) = conn
+                .query_row(
+                    "SELECT resolution, selected_choice FROM approval_resolutions \
+                     WHERE request_message_id = ?1",
+                    [&msg.id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(resolution, "cancelled");
+            assert_eq!(selected, None);
+        }
+
+        // 取消后旧卡再点选项：被仲裁拒绝
+        match reply(&fx.storage, req(&msg, "同意", &["yes"])) {
+            Err(HumanError::AlreadyResolved {
+                resolved_by,
+                response_id,
+            }) => {
+                assert_eq!(resolved_by, "feishu");
+                assert_eq!(response_id, reply_msg.id);
+            }
+            other => panic!("expected AlreadyResolved, got {:?}", other.is_ok()),
+        }
+    }
+
+    #[test]
+    fn cancel_after_resolved_returns_already_resolved() {
+        let fx = setup();
+        let meta = r#"{"choices":["yes","no"],"select_only":false}"#;
+        let msg = send_msg(&fx, "approval_request", meta);
+
+        let first = reply(&fx.storage, req(&msg, "同意", &["yes"])).unwrap();
+        match cancel_with_receipt(&fx.storage, &msg.id, "feishu", Some("evt-c3")) {
+            Err(HumanError::AlreadyResolved {
+                resolved_by,
+                response_id,
+            }) => {
+                assert_eq!(resolved_by, "popup");
+                assert_eq!(response_id, first.reply.id);
+            }
+            other => panic!("expected AlreadyResolved, got {:?}", other.is_ok()),
+        }
+    }
+
+    #[test]
+    fn cancel_to_non_human_message_rejected() {
+        let fx = setup();
+        let other_agent = create(&fx.storage, "agent2", "", "").unwrap();
+        let msg = send(
+            &fx.storage,
+            SendRequest {
+                to: &other_agent,
+                to_name: "agent2",
+                from: &fx.agent_addr,
+                from_name: "agent",
+                body: "not for human",
+                content_type: "text",
+                reply_to_id: None,
+                subject: None,
+                metadata: "{}",
+                more_coming: false,
+            },
+        )
+        .unwrap();
+        match cancel_with_receipt(&fx.storage, &msg.id, "feishu", None) {
+            Err(HumanError::MessageNotFound(_)) => {}
+            other => panic!("expected MessageNotFound, got {:?}", other.is_ok()),
+        }
     }
 }

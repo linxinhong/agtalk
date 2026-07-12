@@ -123,7 +123,7 @@ fn losing_surface_gets_resolved_card() {
         HumanReplyRequest {
             message_id: &msg.id,
             body: "go",
-            choice: Some("批准"),
+            choices: &["批准"],
             surface: "popup",
             external_event_id: None,
         },
@@ -467,4 +467,227 @@ fn reply_submit_empty_body_returns_error_card() {
 fn link_status_defaults_disconnected() {
     let link = LinkStatus::default();
     assert!(!link.is_connected());
+}
+
+// ===== 审批表单提交 / 完成 / 取消 =====
+
+fn approval_submit_event(msg_id: &str, form_value: Value, operator: &str) -> Value {
+    json!({
+        "operator": { "open_id": operator },
+        "action": {
+            "value": { "action": "approval_submit", "agtalk_msg": msg_id },
+            "form_value": form_value,
+        },
+    })
+}
+
+fn send_multi_approval(storage: &Storage, human_addr: &str, metadata: Value) -> Message {
+    let agent = create(storage, "agent", "", "").unwrap();
+    send(
+        storage,
+        SendRequest {
+            to: human_addr,
+            to_name: "human",
+            from: &agent,
+            from_name: "agent",
+            body: "选哪些？",
+            content_type: "approval_request",
+            reply_to_id: None,
+            subject: None,
+            metadata: &metadata.to_string(),
+            more_coming: false,
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn approval_submit_multi_select_joins_choices_with_supplement() {
+    let (storage, human_addr) = setup();
+    let msg = send_multi_approval(&storage, &human_addr, json!({ "choices": ["a", "b", "c"] }));
+    let data = approval_submit_event(
+        &msg.id,
+        json!({ "opt_0": true, "opt_2": true, "body": "尽快" }),
+        "ou_user",
+    );
+    let out = decide_card_action(&storage, "ou_user", &data, Some("evt-a1"));
+    match &out.decision {
+        CardDecision::TerminalCard(card) => {
+            let texts = card_texts(card);
+            assert!(
+                texts.iter().any(|t| t.contains("已收到你的选择：a、c")),
+                "{:?}",
+                texts
+            );
+            // 终态卡回显多选
+            assert!(texts.iter().any(|t| t.contains("✅ a")), "{:?}", texts);
+            assert!(texts.iter().any(|t| t.contains("⬜ b")), "{:?}", texts);
+            assert!(texts.iter().any(|t| t.contains("✅ c")), "{:?}", texts);
+        }
+        CardDecision::Ack => panic!("expected terminal card"),
+    }
+    let reply = out.created.expect("审批提交应产生新回复");
+    assert_eq!(reply.content_type, "approval_response");
+    assert_eq!(reply.metadata, r#"{"choice":"a、c"}"#);
+    assert_eq!(reply.body, "选择：a、c\n尽快");
+    assert_eq!(out.settled.as_deref(), Some(msg.id.as_str()));
+    // resolution 落库为多选 join
+    let conn = storage.conn();
+    let selected: String = conn
+        .query_row(
+            "SELECT selected_choice FROM approval_resolutions WHERE request_message_id = ?1",
+            [&msg.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(selected, "a、c");
+}
+
+#[test]
+fn approval_submit_select_only_requires_choice() {
+    let (storage, human_addr) = setup();
+    let msg = send_approval(&storage, &human_addr);
+    let data = approval_submit_event(&msg.id, json!({}), "ou_user");
+    let out = decide_card_action(&storage, "ou_user", &data, Some("evt-a2"));
+    match &out.decision {
+        CardDecision::TerminalCard(card) => {
+            let texts = card_texts(card);
+            assert!(
+                texts.iter().any(|t| t.contains("请至少选择一个选项")),
+                "{:?}",
+                texts
+            );
+        }
+        CardDecision::Ack => panic!("expected error terminal card"),
+    }
+    assert!(out.created.is_none());
+    assert_eq!(count_replies(&storage, &msg.id), 0);
+}
+
+#[test]
+fn approval_submit_single_rejects_multiple_choices() {
+    let (storage, human_addr) = setup();
+    let msg = send_multi_approval(
+        &storage,
+        &human_addr,
+        json!({ "choices": ["a", "b"], "single": true }),
+    );
+    let data = approval_submit_event(&msg.id, json!({ "opt_0": true, "opt_1": true }), "ou_user");
+    let out = decide_card_action(&storage, "ou_user", &data, Some("evt-a3"));
+    match &out.decision {
+        CardDecision::TerminalCard(card) => {
+            let texts = card_texts(card);
+            assert!(
+                texts.iter().any(|t| t.contains("单选问题只能选择一个选项")),
+                "{:?}",
+                texts
+            );
+        }
+        CardDecision::Ack => panic!("expected error terminal card"),
+    }
+    assert!(out.created.is_none());
+    assert_eq!(count_replies(&storage, &msg.id), 0);
+}
+
+#[test]
+fn approval_submit_on_text_message_is_acked() {
+    let (storage, human_addr) = setup();
+    let msg = send_text_to_human(&storage, &human_addr);
+    let data = approval_submit_event(&msg.id, json!({ "opt_0": true }), "ou_user");
+    let out = decide_card_action(&storage, "ou_user", &data, Some("evt-a4"));
+    assert!(matches!(out.decision, CardDecision::Ack));
+    assert!(out.created.is_none());
+}
+
+#[test]
+fn done_marks_message_done_and_settles() {
+    let (storage, human_addr) = setup();
+    let msg = send_text_to_human(&storage, &human_addr);
+    let data = reply_event("done", &msg.id, None, "ou_user");
+    let out = decide_card_action(&storage, "ou_user", &data, Some("evt-d1"));
+    match &out.decision {
+        CardDecision::TerminalCard(card) => {
+            let texts = card_texts(card);
+            assert!(texts.iter().any(|t| t.contains("已完成")), "{:?}", texts);
+        }
+        CardDecision::Ack => panic!("expected terminal card"),
+    }
+    assert!(out.created.is_none(), "完成不产生回复消息");
+    assert_eq!(out.settled.as_deref(), Some(msg.id.as_str()));
+    let status: String = storage
+        .conn()
+        .query_row(
+            "SELECT status FROM messages WHERE id = ?1",
+            [&msg.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "done");
+    // 重复事件：回放终态卡，不重复收尾
+    let dup = decide_card_action(&storage, "ou_user", &data, Some("evt-d1"));
+    assert!(matches!(dup.decision, CardDecision::TerminalCard(_)));
+    assert!(dup.settled.is_none());
+}
+
+#[test]
+fn cancel_creates_cancelled_reply_and_marks_done() {
+    let (storage, human_addr) = setup();
+    let msg = send_text_to_human(&storage, &human_addr);
+    let data = reply_event("cancel", &msg.id, None, "ou_user");
+    let out = decide_card_action(&storage, "ou_user", &data, Some("evt-x1"));
+    match &out.decision {
+        CardDecision::TerminalCard(card) => {
+            let texts = card_texts(card);
+            assert!(
+                texts.iter().any(|t| t.contains("已取消（已通知 nora）")),
+                "{:?}",
+                texts
+            );
+        }
+        CardDecision::Ack => panic!("expected terminal card"),
+    }
+    let reply = out.created.expect("取消应产生通知回复");
+    assert_eq!(reply.body, "（已取消）");
+    assert_eq!(reply.metadata, r#"{"cancelled":true}"#);
+    assert_eq!(reply.to_address, msg.from_address);
+    assert_eq!(out.settled.as_deref(), Some(msg.id.as_str()));
+    let status: String = storage
+        .conn()
+        .query_row(
+            "SELECT status FROM messages WHERE id = ?1",
+            [&msg.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "done");
+    // 重复事件：回放，不重复创建
+    let dup = decide_card_action(&storage, "ou_user", &data, Some("evt-x1"));
+    assert!(dup.created.is_none());
+    assert!(dup.settled.is_none());
+    assert_eq!(count_replies(&storage, &msg.id), 1);
+}
+
+#[test]
+fn cancel_on_approval_blocks_later_submit() {
+    let (storage, human_addr) = setup();
+    let msg = send_approval(&storage, &human_addr);
+    let cancel = reply_event("cancel", &msg.id, None, "ou_user");
+    let out = decide_card_action(&storage, "ou_user", &cancel, Some("evt-x2"));
+    assert!(out.created.is_some());
+    // 取消后再提交审批表单：被仲裁拒绝
+    let submit = approval_submit_event(&msg.id, json!({ "opt_0": true }), "ou_user");
+    let out2 = decide_card_action(&storage, "ou_user", &submit, Some("evt-x3"));
+    match &out2.decision {
+        CardDecision::TerminalCard(card) => {
+            let texts = card_texts(card);
+            assert!(
+                texts.iter().any(|t| t.contains("已由 feishu 处理")),
+                "{:?}",
+                texts
+            );
+        }
+        CardDecision::Ack => panic!("expected resolved terminal card"),
+    }
+    assert!(out2.created.is_none());
+    assert_eq!(count_replies(&storage, &msg.id), 1);
 }

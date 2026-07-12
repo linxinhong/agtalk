@@ -64,6 +64,15 @@ GET  /api/v1/events                         # SSE 订阅 human mailbox（带 hum
   `select_only_requires_choice`；choice 不在选项中返回 `invalid_choice`。
 - `select_only=false` 允许纯文本回复（不带 choice）。
 - 回复消息 content_type 为 `approval_response`（审批）或 `text`，经 SSE/notify 送达原发送方。
+- 领域层（`human::approval::reply`）支持**多选**：choices 切片逐项校验 ∈ metadata.choices，
+  `single=true` 时多于一项返回 `single_choice_only`；多选以 `join("、")` 展示字符串存
+  回复 metadata `{"choice": ...}` 与 resolution.selected_choice（agent 阅读用，不做结构化多值）。
+  HTTP API 当前仍是单 choice；多选由飞书审批表单在 daemon 内部映射。
+- **取消是一等结果**（`human::approval::cancel_with_receipt`，飞书「取消」按钮触发）：
+  给原发送方回一条 body「（已取消）」、`metadata.cancelled=true` 的回复消息（走 SSE+notify，
+  agent 的 `msg wait` 立即返回，不必等超时），原消息置 done；approval 消息同时写
+  resolution（`resolution='cancelled'`、selected_choice=NULL），后续旧卡点击被
+  `already_resolved` 拒绝。与「完成」的本质区别：取消通知 agent，完成只改本地状态。
 
 ## 5. delivery 状态机（surface 可观测性）
 
@@ -113,13 +122,21 @@ agtalk config set human.surfaces '["popup","feishu"]'
 行为：
 
 - **出站**：fanout 含 feishu surface 时，FeishuDispatcher 经长连接机器人发**交互卡片**
-  （approval_request 渲染 choices 按钮，普通消息为文本卡片）；卡片发送失败回退纯文本
+  （approval_request 渲染为勾选表单：checker 多选 + 非 select_only 时补充输入框 +
+  「提交」按钮 + 表单外 danger「取消」按钮，recommended 选项加 ⭐ 前缀；普通文本卡片带
+  三件套按钮：回复 / 完成 / 取消，对齐 GUI popup 的一等动作）；卡片发送失败回退纯文本
   `[agtalk] {from}: {body}`；再失败经 `deliver_via` 标 failed（attempts+1，可重试）。
   成功标 delivered，external_ref = open_message_id。
 - **入站**：FeishuRouter 经飞书长连接（websocket）接收卡片回调与消息事件；
   只有 `feishu.open_id` 绑定用户的点击/消息生效，其他人操作直接忽略（v1 单用户）。
   卡片回调按动作分派：
-  - `approval`：按钮 value 携带 `{agtalk_msg, choice_index}` 精确路由审批回复（仲裁语义不变）。
+  - `approval_submit`：审批表单提交——从 `action.form_value` 读勾选（`opt_{i}: bool`，
+    按原消息 metadata.choices 映射）与补充文本，**服务端重新校验**（select_only 空选、
+    single 多选、无效项均拒绝并回错误终态卡），复用 approval::reply 仲裁路径。
+  - `done`：receipt 幂等置 done，不通知 agent（仅本地状态收敛）。
+  - `cancel`：receipt 幂等取消——给原发送方回「（已取消）」并终结原消息（见 §4 取消语义）。
+  - `approval`（旧版一键按钮，兼容已发出的旧卡片）：按钮 value 携带
+    `{agtalk_msg, choice_index}` 精确路由审批回复（仲裁语义不变）。
   - `compose_submit`：从 `action.form_value` 读取正文与目标 agent；**服务端必须再次验证**
     目标 UUID 是活跃 agent（不信任卡片 payload），然后复用 human→agent 发信与 receipt 幂等路径。
   - `reply_open` / `reply_submit`：普通文本卡片的「回复」入口——卡片原地切换为回复表单
@@ -131,8 +148,9 @@ agtalk config set human.surfaces '["popup","feishu"]'
 - **幂等**：飞书 event_id 作为 external_event_id 走第 6 节同事务幂等；
   重复事件回放终态卡片（视觉收敛），不重复创建消息、不重复触发 SSE/notify。
 - **仲裁/抢答收尾**：human 消息被任一 surface 处理后，其他 surface 的展示同步收敛——
-  - 飞书卡片：daemon 回写终态。approval 回显胜出选项「已由 {surface} 处理」；
-    文本回复回显原消息 + 回复正文「已由 {surface} 回复」（保留对话上下文）。
+  - 飞书卡片：daemon 回写终态。approval 回显胜出选项（多选逐项 ✅）「已由 {surface} 处理」；
+    文本回复回显原消息 + 回复正文「已由 {surface} 回复」（保留对话上下文）；
+    完成回显「已由 {surface} 完成」。
     飞书自己胜出时由 Router 在回调回包里直接换终态卡。
   - 桌面 popup：daemon 直接关闭该消息的弹窗进程（PopupTransport 按 message id 持有子进程句柄）。
   - 幂等回放（重复 event_id）不重复收尾。
@@ -152,6 +170,7 @@ detect 向导已实现为 GUI 一键创建：`agtalk config gui` →「飞书」
 | `message_id_too_short` / `message_id_ambiguous` | 短 ID 非法/歧义 |
 | `already_resolved` | 审批已被其他 surface 处理 |
 | `select_only_requires_choice` | select_only 审批不允许自由文本 |
+| `single_choice_only` | single 审批提交了多个选项 |
 | `invalid_choice` | choice 不在审批选项中 |
 | `agent_not_found` | send 目标不存在、已离开或为 human 自身 |
 | `receipt_inconclusive` | 历史占位 receipt 无结果 id，无法确定原动作是否已落库（需人工清理该 receipt 后重试） |

@@ -47,6 +47,8 @@ pub enum HumanError {
     AgentNotFound(String),
     #[error("receipt 缺少结果消息 id（历史占位数据），无法确定原动作是否已落库: surface={surface} event={event}")]
     ReceiptInconclusive { surface: String, event: String },
+    #[error("单选审批只能选择一个选项，实际传入 {0} 个")]
+    SingleChoiceOnly(usize),
 }
 
 /// 查询 receipt 中记录的结果消息 id；缺失（历史占位数据）返回 ReceiptInconclusive。

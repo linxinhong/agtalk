@@ -37,40 +37,65 @@ fn decode_rejects_bad_shape() {
 }
 
 #[test]
-fn approval_card_has_button_per_choice_with_route_value() {
+fn approval_card_has_checker_form_with_submit_and_cancel() {
     let msg = approval_msg();
     let card = approval_card(&msg, &approval_choices(&msg));
     assert_eq!(card["schema"], "2.0");
-    // 布局：头部行 + hr + 正文 + hr + column_set
+    // 布局：头部行 + hr + 正文 + hr + form + 取消按钮
     let header = &card["body"]["elements"][0];
     assert_eq!(header["tag"], "div");
     assert_eq!(header["text"]["content"], "来自 nora 的审批");
-    let columns = card["body"]["elements"][4]["columns"].as_array().unwrap();
-    assert_eq!(columns.len(), 2);
-    let btn0 = &columns[0]["elements"][0];
-    assert_eq!(btn0["tag"], "button");
-    assert_eq!(btn0["type"], "primary");
+    let form = &card["body"]["elements"][4];
+    assert_eq!(form["tag"], "form");
+    let fe = form["elements"].as_array().unwrap();
+    // select_only=true：两个 checker + 提交按钮，无补充输入框
+    assert_eq!(fe.len(), 3);
+    assert_eq!(fe[0]["tag"], "checker");
+    assert_eq!(fe[0]["name"], "opt_0");
+    assert_eq!(fe[0]["text"]["content"], "批准");
+    assert_eq!(fe[1]["tag"], "checker");
+    assert_eq!(fe[1]["name"], "opt_1");
+    let submit = &fe[2];
+    assert_eq!(submit["tag"], "button");
+    assert_eq!(submit["form_action_type"], "submit");
+    assert_eq!(submit["behaviors"][0]["value"]["action"], "approval_submit");
     assert_eq!(
-        btn0["behaviors"][0]["value"]["agtalk_msg"],
+        submit["behaviors"][0]["value"]["agtalk_msg"],
         serde_json::json!(msg.id)
     );
-    assert_eq!(btn0["behaviors"][0]["value"]["choice_index"], 0);
+    // 表单外取消按钮（danger）
+    let cancel = &card["body"]["elements"][5];
+    assert_eq!(cancel["tag"], "button");
+    assert_eq!(cancel["type"], "danger");
+    assert_eq!(cancel["behaviors"][0]["value"]["action"], "cancel");
     assert_eq!(
-        columns[1]["elements"][0]["behaviors"][0]["value"]["choice_index"],
-        1
+        cancel["behaviors"][0]["value"]["agtalk_msg"],
+        serde_json::json!(msg.id)
     );
 }
 
 #[test]
-fn recommended_choice_button_is_primary() {
+fn approval_card_non_select_only_has_supplement_input() {
+    let mut msg = approval_msg();
+    msg.metadata = json!({ "choices": ["批准", "拒绝"] }).to_string();
+    let card = approval_card(&msg, &approval_choices(&msg));
+    let fe = card["body"]["elements"][4]["elements"].as_array().unwrap();
+    // 两个 checker + 补充输入框 + 提交按钮
+    assert_eq!(fe.len(), 4);
+    assert_eq!(fe[2]["tag"], "input");
+    assert_eq!(fe[2]["name"], "body");
+}
+
+#[test]
+fn recommended_choice_gets_star_prefix() {
     let mut msg = approval_msg();
     msg.metadata =
         json!({ "choices": ["批准", "拒绝"], "select_only": true, "recommended": "拒绝" })
             .to_string();
     let card = approval_card(&msg, &approval_choices(&msg));
-    let columns = card["body"]["elements"][4]["columns"].as_array().unwrap();
-    assert_eq!(columns[0]["elements"][0]["type"], "default");
-    assert_eq!(columns[1]["elements"][0]["type"], "primary");
+    let fe = card["body"]["elements"][4]["elements"].as_array().unwrap();
+    assert_eq!(fe[0]["text"]["content"], "批准");
+    assert_eq!(fe[1]["text"]["content"], "⭐ 拒绝");
 }
 
 #[test]
@@ -82,7 +107,7 @@ fn decode_accepts_string_encoded_value() {
 #[test]
 fn callback_update_card_wraps_raw_card() {
     let msg = approval_msg();
-    let card = terminal_card(&msg, "已收到你的选择：批准", Some("批准"));
+    let card = terminal_card(&msg, "已收到你的选择：批准", &["批准"]);
     let body = callback_update_card(card.clone());
     assert_eq!(body["card"]["type"], "raw");
     assert_eq!(body["card"]["data"], card);
@@ -120,10 +145,26 @@ fn decode_action_distinguishes_all_actions() {
         decode_action(&json!({ "action": "reply_submit", "agtalk_msg": "m-2" })),
         Some(CardAction::ReplySubmit { msg_id }) if msg_id == "m-2"
     ));
+    assert!(matches!(
+        decode_action(&json!({ "action": "approval_submit", "agtalk_msg": "m-3" })),
+        Some(CardAction::ApprovalSubmit { msg_id }) if msg_id == "m-3"
+    ));
+    assert!(matches!(
+        decode_action(&json!({ "action": "done", "agtalk_msg": "m-4" })),
+        Some(CardAction::Done { msg_id }) if msg_id == "m-4"
+    ));
+    assert!(matches!(
+        decode_action(&json!({ "action": "cancel", "agtalk_msg": "m-5" })),
+        Some(CardAction::Cancel { msg_id }) if msg_id == "m-5"
+    ));
     // 未知动作 / 缺 msg id / 字符串编码
     assert!(matches!(decode_action(&json!({ "action": "nope" })), None));
     assert!(matches!(
         decode_action(&json!({ "action": "reply_open" })),
+        None
+    ));
+    assert!(matches!(
+        decode_action(&json!({ "action": "cancel" })),
         None
     ));
     let s = json!("{\"action\":\"reply_open\",\"agtalk_msg\":\"m-3\"}");
@@ -169,14 +210,32 @@ fn compose_card_options_use_uuid_value_with_name_intro_label() {
 }
 
 #[test]
-fn text_card_has_reply_entry_with_msg_id() {
+fn text_card_has_reply_done_cancel_actions() {
     let msg = approval_msg();
     let card = text_card(&msg);
     let elements = card["body"]["elements"].as_array().unwrap();
-    let btn = elements.last().unwrap();
-    assert_eq!(btn["tag"], "button");
-    assert_eq!(btn["behaviors"][0]["value"]["action"], "reply_open");
-    assert_eq!(btn["behaviors"][0]["value"]["agtalk_msg"], msg.id);
+    let row = elements.last().unwrap();
+    assert_eq!(row["tag"], "column_set");
+    let columns = row["columns"].as_array().unwrap();
+    assert_eq!(columns.len(), 3);
+    let action_of = |i: usize| {
+        columns[i]["elements"][0]["behaviors"][0]["value"]["action"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(action_of(0), "reply_open");
+    assert_eq!(action_of(1), "done");
+    assert_eq!(action_of(2), "cancel");
+    // 取消按钮 danger 样式
+    assert_eq!(columns[2]["elements"][0]["type"], "danger");
+    // 三个按钮都带 msg id 路由
+    for i in 0..3 {
+        assert_eq!(
+            columns[i]["elements"][0]["behaviors"][0]["value"]["agtalk_msg"],
+            serde_json::json!(msg.id)
+        );
+    }
 }
 
 #[test]
@@ -208,7 +267,7 @@ fn reply_form_card_locks_target_via_msg_id() {
 #[test]
 fn terminal_card_contains_status_line_and_choice_echo() {
     let msg = approval_msg();
-    let card = terminal_card(&msg, "已由 popup 处理", Some("批准"));
+    let card = terminal_card(&msg, "已由 popup 处理", &["批准"]);
     let contents: Vec<&str> = card["body"]["elements"]
         .as_array()
         .unwrap()
@@ -223,4 +282,21 @@ fn terminal_card_contains_status_line_and_choice_echo() {
     let echo = contents.iter().find(|c| c.contains("批准")).unwrap();
     assert!(echo.contains("✅ 批准"), "{}", echo);
     assert!(echo.contains("⬜ 拒绝"), "{}", echo);
+}
+
+#[test]
+fn terminal_card_marks_multiple_selected_choices() {
+    let mut msg = approval_msg();
+    msg.metadata = json!({ "choices": ["a", "b", "c"] }).to_string();
+    let card = terminal_card(&msg, "已收到你的选择：a、c", &["a", "c"]);
+    let contents: Vec<&str> = card["body"]["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e.get("content").and_then(|c| c.as_str()))
+        .collect();
+    let echo = contents.iter().find(|c| c.contains("✅")).unwrap();
+    assert!(echo.contains("✅ a"), "{}", echo);
+    assert!(echo.contains("⬜ b"), "{}", echo);
+    assert!(echo.contains("✅ c"), "{}", echo);
 }

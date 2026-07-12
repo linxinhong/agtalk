@@ -67,6 +67,7 @@ fn human_error_msg(e: &HumanError) -> ServerMsg {
         HumanError::InvalidChoice(_) => "invalid_choice",
         HumanError::AgentNotFound(_) => "agent_not_found",
         HumanError::ReceiptInconclusive { .. } => "receipt_inconclusive",
+        HumanError::SingleChoiceOnly(_) => "single_choice_only",
         _ => "human_failed",
     };
     ServerMsg::Error {

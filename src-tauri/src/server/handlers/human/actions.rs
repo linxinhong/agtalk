@@ -24,12 +24,13 @@ pub fn handle_reply(
         Ok(r) => r,
         Err(e) => return e,
     };
+    let choices: Vec<&str> = choice.as_deref().into_iter().collect();
     match approval::reply(
         &state.storage,
         approval::HumanReplyRequest {
             message_id: &resolved,
             body: &body,
-            choice: choice.as_deref(),
+            choices: &choices,
             surface: &surface,
             external_event_id: external_event_id.as_deref(),
         },
@@ -45,9 +46,14 @@ pub fn handle_reply(
                 }
                 // - 本端非 feishu：回写飞书卡片为终态（approval 回显选项，文本回显回复）
                 if surface != crate::feishu::router::SURFACE {
+                    let kind = if out.resolved {
+                        crate::feishu::dispatch::SettleKind::Approval
+                    } else {
+                        crate::feishu::dispatch::SettleKind::Reply(&out.reply)
+                    };
                     state
                         .feishu
-                        .settle(&state.storage, &resolved, &surface, Some(&out.reply));
+                        .settle(&state.storage, &resolved, &surface, kind);
                 }
             }
             ServerMsg::Ok { id: out.reply.id }
@@ -72,7 +78,7 @@ pub fn handle_done(
         Err(e) => return e,
     };
     // 提供 surface+external_event_id 时走同事务幂等路径；否则普通 mark_done
-    match (&surface, &external_event_id) {
+    let done_result = match (&surface, &external_event_id) {
         (Some(surface), Some(eid)) => {
             match human::done_with_receipt(
                 &state.storage,
@@ -81,14 +87,36 @@ pub fn handle_done(
                 surface,
                 eid,
             ) {
-                Ok(_) => ServerMsg::Ok { id: resolved },
-                Err(e) => human_error_msg(&e),
+                Ok((_, deduplicated)) => Ok(deduplicated),
+                Err(e) => Err(human_error_msg(&e)),
             }
         }
         _ => match inbox::mark_done(&state.storage, &resolved, &session.address) {
-            Ok(_) => ServerMsg::Ok { id: resolved },
-            Err(e) => err("done_failed", e),
+            Ok(_) => Ok(false),
+            Err(e) => Err(err("done_failed", e)),
         },
+    };
+    match done_result {
+        Ok(deduplicated) => {
+            // 抢答收尾（与 reply 同构）：他端 surface 的展示同步收敛
+            // 重复事件回放不重复收尾
+            if !deduplicated {
+                let surface = surface.as_deref().unwrap_or("");
+                if surface != crate::human::popup::POPUP_SURFACE {
+                    state.popup.settle(&resolved);
+                }
+                if surface != crate::feishu::router::SURFACE {
+                    state.feishu.settle(
+                        &state.storage,
+                        &resolved,
+                        surface,
+                        crate::feishu::dispatch::SettleKind::Done,
+                    );
+                }
+            }
+            ServerMsg::Ok { id: resolved }
+        }
+        Err(e) => e,
     }
 }
 
