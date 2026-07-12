@@ -13,6 +13,7 @@ interface ConfigRow {
   key: string
   value: string
   editable: boolean
+  secret: boolean
 }
 
 interface ConfigGroup {
@@ -27,20 +28,26 @@ const error = ref('')
 const savedKey = ref('')
 const busyKey = ref('')
 
-// 扁平化嵌套配置为点分键；标量可编辑，数组/对象/null 只读展示
+// 敏感字段用密码框展示/编辑
+function isSecretKey(key: string): boolean {
+  const lower = key.toLowerCase()
+  return lower.includes('secret') || lower.includes('token') || lower.includes('password')
+}
+
+// 扁平化嵌套配置为点分键；标量与数组可编辑（数组按 JSON 文本），对象递归
 function flatten(obj: unknown, prefix: string, out: ConfigRow[]) {
   if (obj === null || typeof obj !== 'object') {
-    out.push({ key: prefix, value: String(obj), editable: true })
+    out.push({ key: prefix, value: String(obj), editable: true, secret: isSecretKey(prefix) })
     return
   }
   if (Array.isArray(obj)) {
-    out.push({ key: prefix, value: JSON.stringify(obj), editable: false })
+    out.push({ key: prefix, value: JSON.stringify(obj), editable: true, secret: false })
     return
   }
   for (const [k, v] of Object.entries(obj)) {
     const key = prefix ? `${prefix}.${k}` : k
     if (v !== null && typeof v === 'object') flatten(v, key, out)
-    else out.push({ key, value: String(v), editable: true })
+    else out.push({ key, value: String(v), editable: true, secret: isSecretKey(key) })
   }
 }
 
@@ -124,6 +131,7 @@ async function save(row: ConfigRow) {
               v-if="row.editable"
               v-model="drafts[row.key]"
               class="input value"
+              :type="row.secret ? 'password' : 'text'"
               :disabled="busyKey === row.key"
               @keyup.enter="save(row)"
             />

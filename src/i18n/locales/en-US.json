@@ -25,7 +25,8 @@
       "general": "General",
       "human": "Human Inbox",
       "message": "Messages",
-      "notify": "Notify"
+      "notify": "Notify",
+      "feishu": "Feishu"
     }
   }
 }

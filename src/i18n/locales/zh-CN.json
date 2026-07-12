@@ -25,7 +25,8 @@
       "general": "通用",
       "human": "Human 收件箱",
       "message": "消息",
-      "notify": "打扰层"
+      "notify": "打扰层",
+      "feishu": "飞书"
     }
   }
 }

@@ -223,6 +223,13 @@ fn parse_config_value(s: &str) -> serde_json::Value {
     if let Ok(n) = s.parse::<i64>() {
         return serde_json::Value::Number(serde_json::Number::from(n));
     }
+    // 数组/对象按 JSON 解析（如 human.surfaces），解析失败回退为字符串
+    let trimmed = s.trim();
+    if trimmed.starts_with('[') || trimmed.starts_with('{') {
+        if let Ok(v) = serde_json::from_str(trimmed) {
+            return v;
+        }
+    }
     serde_json::Value::String(s.to_string())
 }
 
@@ -311,6 +318,22 @@ mod tests {
         assert_eq!(reloaded.notify.default, "none");
 
         assert_eq!(reloaded.get("http_port").unwrap(), serde_json::json!(19528));
+    }
+
+    #[test]
+    fn set_array_value_parses_json() {
+        let tmp = TempDir::new().unwrap();
+        let _guard = EnvGuard::set(tmp.path());
+
+        let mut cfg = AgConfig::load().unwrap();
+        cfg.set("human.surfaces", "[\"popup\",\"feishu\"]").unwrap();
+
+        let reloaded = AgConfig::load().unwrap();
+        assert_eq!(reloaded.human.surfaces, vec!["popup", "feishu"]);
+
+        // 非法 JSON 回退为字符串，写入 surfaces 会因类型不匹配报错
+        let mut cfg = AgConfig::load().unwrap();
+        assert!(cfg.set("human.surfaces", "[not json").is_err());
     }
 
     #[test]
