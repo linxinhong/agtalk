@@ -10,10 +10,14 @@ use super::{card, client::FeishuClient};
 use crate::config::FeishuConfig;
 use crate::human::approval::{self, HumanReplyRequest};
 use crate::human::HumanError;
+use crate::notify::NotifyLimiter;
 use crate::routing::Message;
+use crate::server::handlers::msg as msg_handlers;
 use crate::storage::Storage;
+use crate::transport::wake::{SseEvent, SubscriberRegistry};
 use rusqlite::OptionalExtension;
 use serde_json::Value;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -42,16 +46,29 @@ pub struct FeishuRouter {
     cfg: FeishuConfig,
     client: FeishuClient,
     link: LinkStatus,
+    registry: SubscriberRegistry,
+    notify_limiter: Arc<NotifyLimiter>,
+    dot_agtalk: PathBuf,
 }
 
 impl FeishuRouter {
-    pub fn new(storage: Storage, cfg: FeishuConfig, link: LinkStatus) -> Self {
+    pub fn new(
+        storage: Storage,
+        cfg: FeishuConfig,
+        link: LinkStatus,
+        registry: SubscriberRegistry,
+        notify_limiter: Arc<NotifyLimiter>,
+        dot_agtalk: PathBuf,
+    ) -> Self {
         let client = FeishuClient::new(&cfg.base_url, &cfg.app_id, &cfg.app_secret);
         Self {
             storage,
             cfg,
             client,
             link,
+            registry,
+            notify_limiter,
+            dot_agtalk,
         }
     }
 
@@ -84,12 +101,17 @@ impl FeishuRouter {
                                 event_id,
                                 frame,
                             } => {
-                                match decide_card_action(
+                                let out = decide_card_action(
                                     &self.storage,
                                     &self.cfg.open_id,
                                     &data,
                                     event_id.as_deref(),
-                                ) {
+                                );
+                                // 新回复落库后唤醒接收方（与 popup/GUI 回复同一套机制）
+                                if let Some(reply) = &out.reply {
+                                    self.wake_recipient(reply);
+                                }
+                                match out.decision {
                                     CardDecision::Ack => ws.respond_ack(&frame).await,
                                     CardDecision::TerminalCard(card) => {
                                         ws.respond_card(&frame, &card).await
@@ -120,6 +142,43 @@ impl FeishuRouter {
             }
         }
     }
+
+    /// 回复落库后唤醒接收方：SSE 推送 + notify 打扰 + 本地 history 记录。
+    /// 与 popup/GUI 回复路径（server::handlers::human::after_human_reply）保持同一套机制，
+    /// 否则飞书点击产生的 approval_response 只落库不推送，agent 侧 msg wait 会超时。
+    fn wake_recipient(&self, msg: &Message) {
+        self.registry.notify(
+            &msg.to_address,
+            SseEvent {
+                message: msg.clone(),
+            },
+        );
+        let storage = self.storage.clone();
+        let to = msg.to_address.clone();
+        let message_id = msg.id.clone();
+        let limiter = self.notify_limiter.clone();
+        tokio::spawn(async move {
+            if let Err(e) =
+                crate::notify::trigger(&storage, &to, "human", &message_id, &limiter, None).await
+            {
+                tracing::debug!("notify trigger skipped: {}", e);
+            }
+        });
+        if let Some(root) =
+            msg_handlers::participant_root(&self.storage, &self.dot_agtalk, &msg.to_address)
+        {
+            if let Err(e) = crate::identity::history::append_message(
+                &root,
+                &msg.to_name,
+                &msg.to_address,
+                "in",
+                msg,
+                "human.reply",
+            ) {
+                warn!("receiver history append failed: {}", e);
+            }
+        }
+    }
 }
 
 /// 卡片回调的处理决策（IO 无关，可测）。
@@ -130,6 +189,21 @@ pub enum CardDecision {
     TerminalCard(Value),
 }
 
+/// 卡片回调处理结果：回包决策 + 新创建的回复消息。
+pub struct CardActionOutcome {
+    pub decision: CardDecision,
+    /// 新创建的回复消息（幂等回放、仲裁落败、忽略场景为 None）；
+    /// 调用方据此唤醒接收方 SSE + notify。
+    pub reply: Option<Message>,
+}
+
+fn ack() -> CardActionOutcome {
+    CardActionOutcome {
+        decision: CardDecision::Ack,
+        reply: None,
+    }
+}
+
 /// 卡片回调决策：解析 value → receipt 幂等 reply → 终态卡片。
 /// 幂等回放也返回终态卡片（飞书重推时视觉收敛）。
 pub fn decide_card_action(
@@ -137,7 +211,7 @@ pub fn decide_card_action(
     bound_open_id: &str,
     data: &Value,
     event_id: Option<&str>,
-) -> CardDecision {
+) -> CardActionOutcome {
     // operator 校验：v1 单用户，仅绑定 open_id 的点击生效
     let operator = data
         .pointer("/operator/open_id")
@@ -145,7 +219,7 @@ pub fn decide_card_action(
         .unwrap_or("");
     if !bound_open_id.is_empty() && operator != bound_open_id {
         warn!("feishu 卡片回调来自未绑定 open_id: {}", operator);
-        return CardDecision::Ack;
+        return ack();
     }
     let value = data
         .pointer("/action/value")
@@ -153,15 +227,15 @@ pub fn decide_card_action(
         .unwrap_or(Value::Null);
     let Some((msg_id, idx)) = card::decode_action_value(&value) else {
         warn!("feishu 卡片回调 value 无法解析");
-        return CardDecision::Ack;
+        return ack();
     };
     let msg = match query_message(storage, &msg_id) {
         Ok(Some(m)) => m,
-        _ => return CardDecision::Ack,
+        _ => return ack(),
     };
     let choices = card::approval_choices(&msg);
     let Some(choice) = choices.get(idx).cloned() else {
-        return CardDecision::Ack;
+        return ack();
     };
     let body = format!("选择：{}", choice);
     let req = HumanReplyRequest {
@@ -172,16 +246,28 @@ pub fn decide_card_action(
         external_event_id: event_id,
     };
     match approval::reply(storage, req) {
-        Ok(_) => CardDecision::TerminalCard(card::terminal_card(
-            &msg.body,
-            &format!("已收到你的选择：{}", choice),
-        )),
-        Err(HumanError::AlreadyResolved { resolved_by, .. }) => CardDecision::TerminalCard(
-            card::terminal_card(&msg.body, &format!("已由 {} 处理", resolved_by)),
-        ),
+        Ok(out) => CardActionOutcome {
+            decision: CardDecision::TerminalCard(card::terminal_card(
+                &msg.body,
+                &format!("已收到你的选择：{}", choice),
+            )),
+            // 幂等回放未创建新消息，不重复唤醒接收方
+            reply: if out.deduplicated {
+                None
+            } else {
+                Some(out.reply)
+            },
+        },
+        Err(HumanError::AlreadyResolved { resolved_by, .. }) => CardActionOutcome {
+            decision: CardDecision::TerminalCard(card::terminal_card(
+                &msg.body,
+                &format!("已由 {} 处理", resolved_by),
+            )),
+            reply: None,
+        },
         Err(e) => {
             warn!("feishu 卡片回调 reply 失败: {}", e);
-            CardDecision::Ack
+            ack()
         }
     }
 }
@@ -267,13 +353,18 @@ mod tests {
         let (storage, human_addr) = setup();
         let msg = send_approval(&storage, &human_addr);
         let data = card_event(&msg.id, 0, "ou_user");
-        match decide_card_action(&storage, "ou_user", &data, Some("evt-1")) {
+        let out = decide_card_action(&storage, "ou_user", &data, Some("evt-1"));
+        match out.decision {
             CardDecision::TerminalCard(card) => {
                 let text = card["body"]["elements"][2]["content"].as_str().unwrap();
                 assert!(text.contains("已收到你的选择：批准"), "{}", text);
             }
             CardDecision::Ack => panic!("expected terminal card"),
         }
+        // 新回复必须暴露给调用方，用于唤醒接收方 SSE + notify
+        let reply = out.reply.expect("新回复应暴露给调用方");
+        assert_eq!(reply.to_address, msg.from_address);
+        assert_eq!(reply.reply_to_id.as_deref(), Some(msg.id.as_str()));
         assert_eq!(count_replies(&storage, &msg.id), 1);
     }
 
@@ -283,12 +374,14 @@ mod tests {
         let msg = send_approval(&storage, &human_addr);
         let data = card_event(&msg.id, 1, "ou_user");
         let first = decide_card_action(&storage, "ou_user", &data, Some("evt-1"));
-        assert!(matches!(first, CardDecision::TerminalCard(_)));
+        assert!(matches!(first.decision, CardDecision::TerminalCard(_)));
+        assert!(first.reply.is_some(), "首次执行应产生新回复");
         let second = decide_card_action(&storage, "ou_user", &data, Some("evt-1"));
         assert!(
-            matches!(second, CardDecision::TerminalCard(_)),
+            matches!(second.decision, CardDecision::TerminalCard(_)),
             "重推应回放终态卡片"
         );
+        assert!(second.reply.is_none(), "幂等回放不得再次唤醒接收方");
         assert_eq!(
             count_replies(&storage, &msg.id),
             1,
@@ -313,13 +406,15 @@ mod tests {
         )
         .unwrap();
         let data = card_event(&msg.id, 0, "ou_user");
-        match decide_card_action(&storage, "ou_user", &data, Some("evt-2")) {
+        let out = decide_card_action(&storage, "ou_user", &data, Some("evt-2"));
+        match out.decision {
             CardDecision::TerminalCard(card) => {
                 let text = card["body"]["elements"][2]["content"].as_str().unwrap();
                 assert!(text.contains("已由 popup 处理"), "{}", text);
             }
             CardDecision::Ack => panic!("expected terminal card"),
         }
+        assert!(out.reply.is_none(), "仲裁落败不产生新回复");
         // 落败方的回复消息已被回滚，只有 popup 的一条
         assert_eq!(count_replies(&storage, &msg.id), 1);
     }
@@ -329,10 +424,9 @@ mod tests {
         let (storage, human_addr) = setup();
         let msg = send_approval(&storage, &human_addr);
         let data = card_event(&msg.id, 0, "ou_stranger");
-        assert!(matches!(
-            decide_card_action(&storage, "ou_user", &data, Some("evt-3")),
-            CardDecision::Ack
-        ));
+        let out = decide_card_action(&storage, "ou_user", &data, Some("evt-3"));
+        assert!(matches!(out.decision, CardDecision::Ack));
+        assert!(out.reply.is_none());
         assert_eq!(count_replies(&storage, &msg.id), 0);
     }
 
@@ -343,20 +437,18 @@ mod tests {
             "operator": { "open_id": "ou_user" },
             "action": { "value": { "garbage": true } },
         });
-        assert!(matches!(
-            decide_card_action(&storage, "ou_user", &data, Some("evt-4")),
-            CardDecision::Ack
-        ));
+        let out = decide_card_action(&storage, "ou_user", &data, Some("evt-4"));
+        assert!(matches!(out.decision, CardDecision::Ack));
+        assert!(out.reply.is_none());
     }
 
     #[test]
     fn unknown_message_is_acked() {
         let (storage, _human_addr) = setup();
         let data = card_event("no-such-uuid", 0, "ou_user");
-        assert!(matches!(
-            decide_card_action(&storage, "ou_user", &data, Some("evt-5")),
-            CardDecision::Ack
-        ));
+        let out = decide_card_action(&storage, "ou_user", &data, Some("evt-5"));
+        assert!(matches!(out.decision, CardDecision::Ack));
+        assert!(out.reply.is_none());
     }
 
     #[test]

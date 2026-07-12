@@ -144,6 +144,9 @@ pub async fn start(dot_agtalk: PathBuf) -> Result<(), DaemonError> {
             state.storage.clone(),
             config.feishu.clone(),
             state.feishu_link.clone(),
+            state.registry.clone(),
+            state.notify_limiter.clone(),
+            state.dot_agtalk.clone(),
         ));
         tokio::spawn(router.run());
         info!("feishu surface 已启用，Router 已启动");

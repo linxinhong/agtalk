@@ -92,7 +92,9 @@ fn after_human_reply(state: &AppState, msg: &crate::routing::Message) {
             tracing::debug!("notify trigger skipped: {}", e);
         }
     });
-    if let Some(root) = msg_handlers::participant_root(state, &msg.to_address) {
+    if let Some(root) =
+        msg_handlers::participant_root(&state.storage, &state.dot_agtalk, &msg.to_address)
+    {
         if let Err(e) = crate::identity::history::append_message(
             &root,
             &msg.to_name,

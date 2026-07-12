@@ -468,8 +468,12 @@ pub fn handle_wait(
 /// daemon 自身 workspace（`state.dot_agtalk`）下确实存在该 agent session 的情形，以兼容迁移
 /// 前的存量单 workspace agent。都不可达时返回 `None`（远端 / human / 未在本机注册），
 /// 调用方据此跳过该侧写入，不影响消息投递。
-pub(crate) fn participant_root(state: &AppState, address: &str) -> Option<std::path::PathBuf> {
-    let mb = match mailbox_db::get_by_address(&state.storage, address) {
+pub(crate) fn participant_root(
+    storage: &crate::storage::Storage,
+    dot_agtalk: &Path,
+    address: &str,
+) -> Option<std::path::PathBuf> {
+    let mb = match mailbox_db::get_by_address(storage, address) {
         Ok(Some(mb)) => mb,
         _ => return None,
     };
@@ -485,9 +489,9 @@ pub(crate) fn participant_root(state: &AppState, address: &str) -> Option<std::p
         }
     }
 
-    if let Ok(session) = session_file::read(&state.dot_agtalk, &mb.name) {
+    if let Ok(session) = session_file::read(dot_agtalk, &mb.name) {
         if session.address == address {
-            return Some(state.dot_agtalk.clone());
+            return Some(dot_agtalk.to_path_buf());
         }
     }
 
@@ -523,7 +527,7 @@ fn record_send_relations(
     to_address: &str,
     msg: &crate::routing::Message,
 ) {
-    let receiver_root = participant_root(state, to_address);
+    let receiver_root = participant_root(&state.storage, &state.dot_agtalk, to_address);
     let peer_intro_value = peer_intro(state, receiver_root.as_deref(), to_address, "");
     if let Err(e) = relations::record_send(
         &sender.workspace_root,
@@ -567,7 +571,7 @@ fn record_reply_relations(
     original: &crate::routing::Message,
     reply: &crate::routing::Message,
 ) {
-    let original_root = participant_root(state, &original.from_address);
+    let original_root = participant_root(&state.storage, &state.dot_agtalk, &original.from_address);
     let peer_intro_value = peer_intro(state, original_root.as_deref(), &original.from_address, "");
     if let Err(e) = relations::record_send(
         &sender.workspace_root,
@@ -620,7 +624,7 @@ fn record_send_history(
     ) {
         tracing::warn!("sender history append failed: {}", e);
     }
-    match participant_root(state, &msg.to_address) {
+    match participant_root(&state.storage, &state.dot_agtalk, &msg.to_address) {
         Some(root) => {
             if let Err(e) = crate::identity::history::append_message(
                 &root,
@@ -662,7 +666,7 @@ fn record_reply_history(
         tracing::warn!("reply sender history append failed: {}", e);
     }
     // 原消息发送方收到 reply 的 in 事件
-    match participant_root(state, &original.from_address) {
+    match participant_root(&state.storage, &state.dot_agtalk, &original.from_address) {
         Some(root) => {
             if let Err(e) = crate::identity::history::append_message(
                 &root,
