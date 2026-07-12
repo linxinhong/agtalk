@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod commands;
 pub mod config;
+pub mod feishu;
 pub mod human;
 pub mod identity;
 pub mod mem;
@@ -10,6 +11,8 @@ pub mod proto;
 pub mod routing;
 pub mod server;
 pub mod storage;
+#[cfg(test)]
+pub mod testutil;
 pub mod tool;
 pub mod transport;
 

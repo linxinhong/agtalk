@@ -204,7 +204,7 @@ mod tests {
         assert!(done_err.contains("session"), "done: {}", done_err);
     }
 
-    /// 最小 mock daemon：按序返回预置响应，请求行经 channel 回报给测试断言。
+    /// 最小 mock daemon：复用 testutil 的共享实现。
     fn mock_daemon(
         responses: Vec<String>,
     ) -> (
@@ -212,46 +212,7 @@ mod tests {
         std::sync::mpsc::Receiver<String>,
         std::thread::JoinHandle<()>,
     ) {
-        use std::io::{BufRead, BufReader, Read, Write};
-        use std::net::TcpListener;
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let handle = std::thread::spawn(move || {
-            for body in responses {
-                let (mut stream, _) = listener.accept().unwrap();
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut request_line = String::new();
-                reader.read_line(&mut request_line).unwrap();
-                tx.send(request_line.trim_end().to_string()).unwrap();
-                let mut content_length = 0usize;
-                loop {
-                    let mut line = String::new();
-                    reader.read_line(&mut line).unwrap();
-                    let trimmed = line.trim_end();
-                    if let Some(v) = trimmed
-                        .to_ascii_lowercase()
-                        .strip_prefix("content-length: ")
-                    {
-                        content_length = v.trim().parse().unwrap();
-                    }
-                    if trimmed.is_empty() {
-                        break;
-                    }
-                }
-                if content_length > 0 {
-                    let mut buf = vec![0u8; content_length];
-                    reader.read_exact(&mut buf).unwrap();
-                }
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                stream.write_all(resp.as_bytes()).unwrap();
-            }
-        });
-        (format!("http://127.0.0.1:{}", port), rx, handle)
+        crate::testutil::mock_http_server(responses)
     }
 
     #[test]
@@ -280,10 +241,13 @@ mod tests {
         let pong = serde_json::json!({ "type": "pong" }).to_string();
         let (base, rx, handle) = mock_daemon(vec![pong]);
         set_config_value_to(&base, "notify.default", "none").unwrap();
-        assert_eq!(
-            rx.recv().unwrap(),
-            "PATCH /api/v1/config/notify.default HTTP/1.1"
+        let req = rx.recv().unwrap();
+        assert!(
+            req.starts_with("PATCH /api/v1/config/notify.default HTTP/1.1"),
+            "{}",
+            req
         );
+        assert!(req.contains("\"value\":\"none\""), "{}", req);
         handle.join().unwrap();
     }
 

@@ -64,6 +64,26 @@ pub struct NotifyConfig {
     pub default: String,
 }
 
+fn default_feishu_base_url() -> String {
+    "https://open.feishu.cn/open-apis".to_string()
+}
+
+/// 飞书 surface 配置：内置 human transport（不是 notify plugin）。
+/// v1 单用户模型：仅一个允许的 open_id；secret 明文存 config.json（0600）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FeishuConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub app_id: String,
+    #[serde(default)]
+    pub app_secret: String,
+    #[serde(default)]
+    pub open_id: String,
+    #[serde(default = "default_feishu_base_url")]
+    pub base_url: String,
+}
+
 impl Default for NotifyConfig {
     fn default() -> Self {
         Self {
@@ -83,6 +103,8 @@ pub struct AgConfig {
     pub message: MessageConfig,
     #[serde(default)]
     pub notify: NotifyConfig,
+    #[serde(default)]
+    pub feishu: FeishuConfig,
 }
 
 impl Default for AgConfig {
@@ -92,6 +114,7 @@ impl Default for AgConfig {
             human: HumanConfig::default(),
             message: MessageConfig::default(),
             notify: NotifyConfig::default(),
+            feishu: FeishuConfig::default(),
         }
     }
 }
