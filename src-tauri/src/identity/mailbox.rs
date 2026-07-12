@@ -293,6 +293,21 @@ pub fn ensure_human(storage: &Storage, cfg: &HumanConfig) -> Result<String, Iden
     };
 
     if let Some(addr) = existing {
+        // 复活：历史清理可能把 human mailbox 误标 left 或删掉行，
+        // system_mailboxes 仍指向它——确保 mailboxes/event_sequences 行存在且未离开
+        let conn = storage.conn();
+        conn.execute(
+            "INSERT OR IGNORE INTO mailboxes (address, name, intro) VALUES (?1, ?2, ?3)",
+            params![addr, cfg.name, cfg.intro],
+        )?;
+        conn.execute(
+            "UPDATE mailboxes SET left_at = NULL WHERE address = ?1",
+            [&addr],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO event_sequences (address, last_event_id) VALUES (?1, 0)",
+            [&addr],
+        )?;
         return Ok(addr);
     }
 
@@ -348,6 +363,21 @@ mod tests {
         let a = ensure_human(&storage, &cfg).unwrap();
         let b = ensure_human(&storage, &cfg).unwrap();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn ensure_human_revives_left_mailbox() {
+        let storage = Storage::open_in_memory().unwrap();
+        let cfg = HumanConfig::default();
+        let addr = ensure_human(&storage, &cfg).unwrap();
+        mark_left(&storage, &addr).unwrap();
+        assert!(get_by_address(&storage, &addr).unwrap().is_none());
+
+        // 再次 ensure（如 daemon 重启）：误标 left 的 human 应被复活
+        let addr2 = ensure_human(&storage, &cfg).unwrap();
+        assert_eq!(addr2, addr);
+        let mb = get_by_address(&storage, &addr).unwrap().unwrap();
+        assert!(mb.left_at.is_none());
     }
 
     #[test]
