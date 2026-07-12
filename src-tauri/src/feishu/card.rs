@@ -110,7 +110,7 @@ fn styled_header(title: &str) -> Vec<Value> {
 /// 审批卡片：样式化头部（来源 agent）+ 正文 + 勾选表单（checker 多选 +
 /// 非 select_only 时补充输入框 + 提交按钮）+ 表单外「取消」按钮（danger）。
 /// 对齐 AskHuman 审批表单：勾选状态经 form_value 回传（opt_{i}: bool），
-/// 不在按钮 value 里放业务结论；recommended 选项前缀 ⭐ 提示。
+/// 不在按钮 value 里放业务结论；recommended 选项带绿色 [推荐] 标记。
 /// Card JSON 2.0：回调数据放 behaviors callback value。
 pub fn approval_card(msg: &Message, choices: &[String]) -> Value {
     let recommended = approval_recommended(msg);
@@ -123,7 +123,7 @@ pub fn approval_card(msg: &Message, choices: &[String]) -> Value {
         .enumerate()
         .map(|(i, c)| {
             let label = match &recommended {
-                Some(r) if r == c => format!("⭐ {}", c),
+                Some(r) if r == c => format!("{}  <font color='green'>[推荐]</font>", c),
                 _ => c.clone(),
             };
             json!({

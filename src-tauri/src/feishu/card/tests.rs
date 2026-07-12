@@ -87,7 +87,7 @@ fn approval_card_non_select_only_has_supplement_input() {
 }
 
 #[test]
-fn recommended_choice_gets_star_prefix() {
+fn recommended_choice_gets_green_tag() {
     let mut msg = approval_msg();
     msg.metadata =
         json!({ "choices": ["批准", "拒绝"], "select_only": true, "recommended": "拒绝" })
@@ -95,7 +95,10 @@ fn recommended_choice_gets_star_prefix() {
     let card = approval_card(&msg, &approval_choices(&msg));
     let fe = card["body"]["elements"][4]["elements"].as_array().unwrap();
     assert_eq!(fe[0]["text"]["content"], "批准");
-    assert_eq!(fe[1]["text"]["content"], "⭐ 拒绝");
+    assert_eq!(
+        fe[1]["text"]["content"],
+        "拒绝  <font color='green'>[推荐]</font>"
+    );
 }
 
 #[test]

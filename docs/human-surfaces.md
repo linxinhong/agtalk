@@ -124,7 +124,7 @@ agtalk config set human.surfaces '["popup","feishu"]'
 
 - **出站**：fanout 含 feishu surface 时，FeishuDispatcher 经长连接机器人发**交互卡片**
   （approval_request 渲染为勾选表单：checker 多选 + 非 select_only 时补充输入框 +
-  「提交」按钮 + 表单外 danger「取消」按钮，recommended 选项加 ⭐ 前缀；普通文本卡片带
+  「提交」按钮 + 表单外 danger「取消」按钮，recommended 选项带绿色 [推荐] 标记；普通文本卡片带
   三件套按钮：回复 / 完成 / 取消，对齐 GUI popup 的一等动作）；卡片发送失败回退纯文本
   `[agtalk] {from}: {body}`；再失败经 `deliver_via` 标 failed（attempts+1，可重试）。
   成功标 delivered，external_ref = open_message_id。
