@@ -9,16 +9,7 @@
     "beforeBuildCommand": "pnpm build"
   },
   "app": {
-    "windows": [
-      {
-        "label": "main",
-        "title": "agtalk",
-        "width": 900,
-        "height": 700,
-        "resizable": true,
-        "fullscreen": false
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }

@@ -23,8 +23,8 @@ fn app_context() -> tauri::Context {
 }
 
 pub fn run_gui() {
-    // GUI 主窗口（配置界面）：窗口由 tauri.conf.json 的 "main" 配置创建，
-    // 配置读写经 Tauri 命令桥 → daemon HTTP API（薄客户端）。
+    // GUI 主窗口（配置界面）：窗口在 setup 显式创建——tauri.conf.json 不配 windows，
+    // 否则 __popup 进程启动时也会自动创建配置窗口；配置读写经 Tauri 命令桥 → daemon HTTP API（薄客户端）。
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
@@ -33,6 +33,18 @@ pub fn run_gui() {
             commands::gui_feishu_setup_begin,
             commands::gui_feishu_setup_poll
         ])
+        .setup(|app| {
+            tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::App("index.html".into()),
+            )
+            .title("agtalk")
+            .inner_size(900.0, 700.0)
+            .resizable(true)
+            .build()?;
+            Ok(())
+        })
         .build(app_context())
         .expect("failed to build gui app");
     app.run(|_, _| {});
