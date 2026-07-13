@@ -122,6 +122,8 @@ agtalk id join [name] [--intro <text>] [--notify <channel>]
 
 创建或复用当前工作目录下的 agent 身份。
 
+`agtalk` 始终写入 `<当前目录>/.agtalk/`。在目标项目目录执行命令；daemon 从哪里启动不会改变 session 位置。成功输出会显示实际 `workspace` 与 `session` 路径。
+
 - 如果 `.agtalk/<name>/session.json` 已存在，复用原 address，只重新绑定当前进程/会话锚点。
 - 如果不存在，创建新 mailbox、session、agents.json 记录。
 - `--intro` 传入时更新展示元数据；未传入则保留旧值。
@@ -721,6 +723,7 @@ GET  /api/v1/id/lookup?name=<name>
 
 `POST /api/v1/id/join` 对应 `agtalk id join`：
 
+- 必须携带绝对路径的 `X-AgTalk-Workspace-Root: <cwd>/.agtalk`；缺失时返回 `workspace_root_required`，格式错误返回 `workspace_root_invalid`。
 - 创建或复用 session。
 - 注册 PID/start_time。
 - 捕获或刷新 notify target。

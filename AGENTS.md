@@ -26,6 +26,7 @@ agtalk 是**本地 Agent 对话总线**。daemon 是唯一真相来源，CLI / G
 6. **三域统一**：human/browser 不是特例，都是不同生命周期的 mailbox。
 7. **mailbox 生命周期 = 文件夹生命周期**。daemon 的 lookup 表是文件系统的镜像，不是独立真相源。消除身份用 `agtalk id leave`（实时）+ `agtalk id cleanup`（批量清理）+ 惰性清理（兜底）。
 8. **agent-first 身份选择**：`--as <name>` 与 `AGTALK_NAME=<name>` 只用于选择本地 `session.json`，不参与消息路由。`agtalk id join <name>` 是幂等的：session 存在则复用原 address，仅更新 PID/start_time 锚点；不存在才创建新 mailbox。
+   - **workspace 固定为当前目录**：Agent CLI 一律使用 `<cwd>/.agtalk/`，不得由 daemon 启动目录或环境变量重定向。缺少 workspace header 的 Agent HTTP 请求必须拒绝，禁止回退写入 daemon 自身项目目录。
 
 ---
 

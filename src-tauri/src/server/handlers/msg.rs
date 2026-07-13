@@ -821,6 +821,10 @@ mod tests {
         let session = crate::identity::session_file::read(&state.dot_agtalk, name).unwrap();
         let mut headers = HeaderMap::new();
         headers.insert("X-AgTalk-Address", session.address.parse().unwrap());
+        headers.insert(
+            "X-AgTalk-Workspace-Root",
+            state.dot_agtalk.to_string_lossy().as_ref().parse().unwrap(),
+        );
         headers
     }
 

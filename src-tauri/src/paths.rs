@@ -17,8 +17,6 @@ pub enum PathsError {
 }
 
 pub const CONFIG_DIR_ENV: &str = "AGTALK_CONFIG_DIR";
-/// 覆盖当前 workspace root 的环境变量名。
-pub const WORKSPACE_ROOT_ENV: &str = "AGTALK_ROOT";
 
 /// 全局配置目录：
 /// - Linux / macOS: ~/.config/agtalk2
@@ -53,13 +51,10 @@ pub fn ensure_config_dir() -> Result<PathBuf, PathsError> {
     Ok(dir)
 }
 
-/// 定位当前命令的 workspace root：
-/// 1. 若 `AGTALK_ROOT` 存在，直接使用；
-/// 2. 否则返回 `current_dir/.agtalk`。
+/// 定位当前命令的 workspace root：始终为 `current_dir/.agtalk`。
+///
+/// Agent identity 必须归属执行命令时的当前目录，不能由 daemon 工作目录或环境变量重定向。
 pub fn workspace_dir(current_dir: impl AsRef<Path>) -> Result<PathBuf, PathsError> {
-    if let Some(root) = std::env::var_os(WORKSPACE_ROOT_ENV) {
-        return Ok(PathBuf::from(root));
-    }
     Ok(current_dir.as_ref().join(".agtalk"))
 }
 
@@ -193,6 +188,14 @@ pub fn set_permissions_0700(path: &Path) -> Result<(), PathsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_dir_is_always_current_directory_dot_agtalk() {
+        assert_eq!(
+            workspace_dir("/tmp/project").unwrap(),
+            PathBuf::from("/tmp/project/.agtalk")
+        );
+    }
 
     #[test]
     fn config_dir_ends_with_agtalk2() {

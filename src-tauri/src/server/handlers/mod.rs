@@ -4,7 +4,7 @@ use crate::identity::auth::{self, AuthenticatedSession};
 use crate::proto::ServerMsg;
 use crate::server::state::AppState;
 use axum::http::{HeaderMap, StatusCode};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub mod config;
 pub mod daemon;
@@ -14,13 +14,28 @@ pub mod mem;
 pub mod msg;
 pub mod tool;
 
-/// 从 header 读取 workspace root；缺失时退化为 daemon 启动时的 legacy 目录。
-pub fn workspace_root_from_headers(headers: &HeaderMap, fallback: &Path) -> PathBuf {
-    headers
+/// 从 Agent 请求头读取 `.agtalk` 根目录。
+///
+/// 不允许回退到 daemon 启动目录，否则其它项目的 agent session 会被错误写入 daemon 项目。
+#[allow(clippy::result_large_err)]
+pub fn workspace_root_from_headers(headers: &HeaderMap) -> Result<PathBuf, ServerMsg> {
+    let raw = headers
         .get("X-AgTalk-Workspace-Root")
         .and_then(|v| v.to_str().ok())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| fallback.to_path_buf())
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| ServerMsg::Error {
+            code: "workspace_root_required".to_string(),
+            message: "缺少 X-AgTalk-Workspace-Root；请在目标项目目录执行 agtalk".to_string(),
+        })?;
+    let root = PathBuf::from(raw);
+    let is_dot_agtalk = root.file_name().and_then(|v| v.to_str()) == Some(".agtalk");
+    if !root.is_absolute() || !is_dot_agtalk {
+        return Err(ServerMsg::Error {
+            code: "workspace_root_invalid".to_string(),
+            message: "X-AgTalk-Workspace-Root 必须是绝对的 .agtalk 目录".to_string(),
+        });
+    }
+    Ok(root)
 }
 
 /// 从请求头读取认证信息并认证。
@@ -29,7 +44,6 @@ pub fn authenticate_req(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<AuthenticatedSession, ServerMsg> {
-    let workspace_root = workspace_root_from_headers(headers, &state.dot_agtalk);
     let address = headers
         .get("X-AgTalk-Address")
         .and_then(|v| v.to_str().ok())
@@ -45,6 +59,12 @@ pub fn authenticate_req(
     let browser_token = headers
         .get("X-AgTalk-Browser-Token")
         .and_then(|v| v.to_str().ok());
+    // 浏览器扩展由 token 认证，workspace 由 browser_session 决定；CLI agent 必须显式携带当前目录。
+    let workspace_root = if browser_token.is_some() {
+        state.dot_agtalk.clone()
+    } else {
+        workspace_root_from_headers(headers)?
+    };
 
     auth::authenticate(
         &state.storage,
@@ -88,4 +108,42 @@ pub fn browser_token(headers: &HeaderMap) -> Option<String> {
         .get("X-AgTalk-Browser-Token")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workspace_root_requires_header() {
+        let err = workspace_root_from_headers(&HeaderMap::new()).unwrap_err();
+        assert!(
+            matches!(err, ServerMsg::Error { ref code, .. } if code == "workspace_root_required")
+        );
+    }
+
+    #[test]
+    fn workspace_root_rejects_non_absolute_or_non_dot_agtalk_path() {
+        for value in [".agtalk", "/tmp/not-agtalk", "relative/.agtalk"] {
+            let mut headers = HeaderMap::new();
+            headers.insert("X-AgTalk-Workspace-Root", value.parse().unwrap());
+            let err = workspace_root_from_headers(&headers).unwrap_err();
+            assert!(
+                matches!(err, ServerMsg::Error { ref code, .. } if code == "workspace_root_invalid")
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_root_accepts_absolute_dot_agtalk_path() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-AgTalk-Workspace-Root",
+            "/tmp/project/.agtalk".parse().unwrap(),
+        );
+        assert_eq!(
+            workspace_root_from_headers(&headers).unwrap(),
+            PathBuf::from("/tmp/project/.agtalk")
+        );
+    }
 }

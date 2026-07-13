@@ -95,8 +95,10 @@ async fn id_join_handler(
     headers: HeaderMap,
     Json(body): Json<IdJoinBody>,
 ) -> (StatusCode, Json<ServerMsg>) {
-    let workspace_root =
-        crate::server::handlers::workspace_root_from_headers(&headers, &state.dot_agtalk);
+    let workspace_root = match crate::server::handlers::workspace_root_from_headers(&headers) {
+        Ok(root) => root,
+        Err(error) => return json_response(error),
+    };
     json_response(id::handle_join(
         &state,
         &workspace_root,
@@ -136,8 +138,10 @@ async fn id_cleanup_handler(
     headers: HeaderMap,
     Json(body): Json<IdCleanupBody>,
 ) -> (StatusCode, Json<ServerMsg>) {
-    let workspace_root =
-        crate::server::handlers::workspace_root_from_headers(&headers, &state.dot_agtalk);
+    let workspace_root = match crate::server::handlers::workspace_root_from_headers(&headers) {
+        Ok(root) => root,
+        Err(error) => return json_response(error),
+    };
     json_response(id::handle_cleanup(&state, &workspace_root, body.execute))
 }
 
@@ -448,8 +452,10 @@ async fn tool_doctor_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> (StatusCode, Json<ServerMsg>) {
-    let workspace_root =
-        crate::server::handlers::workspace_root_from_headers(&headers, &state.dot_agtalk);
+    let workspace_root = match crate::server::handlers::workspace_root_from_headers(&headers) {
+        Ok(root) => root,
+        Err(error) => return json_response(error),
+    };
     json_response(tool::handle_doctor(&state, &workspace_root))
 }
 
@@ -728,8 +734,12 @@ async fn events_handler(
     let browser_token = headers
         .get("X-AgTalk-Browser-Token")
         .and_then(|v| v.to_str().ok());
-    let workspace_root =
-        crate::server::handlers::workspace_root_from_headers(&headers, &state.dot_agtalk);
+    let workspace_root = if browser_token.is_some() {
+        state.dot_agtalk.clone()
+    } else {
+        crate::server::handlers::workspace_root_from_headers(&headers)
+            .map_err(|_| StatusCode::BAD_REQUEST)?
+    };
 
     crate::identity::auth::authenticate(
         &state.storage,
@@ -911,6 +921,10 @@ mod tests {
             .uri("/api/v1/msg/send")
             .header("Content-Type", "application/json")
             .header("X-AgTalk-Address", nora.clone())
+            .header(
+                "X-AgTalk-Workspace-Root",
+                state.dot_agtalk.to_string_lossy().as_ref(),
+            )
             .body(Body::from(body))
             .unwrap();
 
@@ -1115,6 +1129,10 @@ mod tests {
             .method("POST")
             .uri("/api/v1/id/join")
             .header("Content-Type", "application/json")
+            .header(
+                "X-AgTalk-Workspace-Root",
+                state.dot_agtalk.to_string_lossy().as_ref(),
+            )
             .body(Body::from(body1))
             .unwrap();
         let resp1 = app.clone().oneshot(join1).await.unwrap();
@@ -1143,6 +1161,10 @@ mod tests {
             .method("POST")
             .uri("/api/v1/id/join")
             .header("Content-Type", "application/json")
+            .header(
+                "X-AgTalk-Workspace-Root",
+                state.dot_agtalk.to_string_lossy().as_ref(),
+            )
             .body(Body::from(body2))
             .unwrap();
         let resp2 = app.clone().oneshot(join2).await.unwrap();
@@ -1167,6 +1189,35 @@ mod tests {
             .unwrap();
         assert_eq!(mb.intro, "后端");
         assert_eq!(mb.workspace, "");
+    }
+
+    #[tokio::test]
+    async fn v1_id_join_requires_workspace_header() {
+        let (state, _nora, _quinn, _tmp) = test_state();
+        let app = routes(state);
+        let body = serde_json::to_string(&serde_json::json!({
+            "name": "nora",
+            "notify": "none",
+            "pid": std::process::id(),
+            "start_time": 1,
+        }))
+        .unwrap();
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/id/join")
+            .header("Content-Type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let msg: ServerMsg = serde_json::from_slice(&body).unwrap();
+        assert!(
+            matches!(msg, ServerMsg::Error { ref code, .. } if code == "workspace_root_required")
+        );
     }
 
     #[tokio::test]
@@ -1197,6 +1248,10 @@ mod tests {
             .method("POST")
             .uri("/api/v1/id/join")
             .header("Content-Type", "application/json")
+            .header(
+                "X-AgTalk-Workspace-Root",
+                state.dot_agtalk.to_string_lossy().as_ref(),
+            )
             .body(Body::from(body))
             .unwrap();
         let resp = app.oneshot(join).await.unwrap();
@@ -1219,6 +1274,10 @@ mod tests {
             .uri("/api/v1/msg/read")
             .header("Content-Type", "application/json")
             .header("X-AgTalk-Address", nora.clone())
+            .header(
+                "X-AgTalk-Workspace-Root",
+                state.dot_agtalk.to_string_lossy().as_ref(),
+            )
             .body(Body::from(r#"{"message_id":null}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -1250,6 +1309,10 @@ mod tests {
             .uri("/api/v1/mem/plan")
             .header("Content-Type", "application/json")
             .header("X-AgTalk-Address", nora.clone())
+            .header(
+                "X-AgTalk-Workspace-Root",
+                state.dot_agtalk.to_string_lossy().as_ref(),
+            )
             .body(Body::from(update))
             .unwrap();
         let update_resp = app.clone().oneshot(update_req).await.unwrap();
@@ -1259,6 +1322,10 @@ mod tests {
             .method("GET")
             .uri("/api/v1/mem/plan")
             .header("X-AgTalk-Address", nora.clone())
+            .header(
+                "X-AgTalk-Workspace-Root",
+                state.dot_agtalk.to_string_lossy().as_ref(),
+            )
             .body(Body::empty())
             .unwrap();
         let show_resp = app.clone().oneshot(show_req).await.unwrap();
@@ -1302,6 +1369,10 @@ mod tests {
             .uri("/api/v1/mem/plan")
             .header("Content-Type", "application/json")
             .header("X-AgTalk-Address", nora.clone())
+            .header(
+                "X-AgTalk-Workspace-Root",
+                state.dot_agtalk.to_string_lossy().as_ref(),
+            )
             .body(Body::from(update))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -1336,6 +1407,10 @@ mod tests {
             .uri("/api/v1/mem/plan")
             .header("Content-Type", "application/json")
             .header("X-AgTalk-Address", quinn.clone())
+            .header(
+                "X-AgTalk-Workspace-Root",
+                state.dot_agtalk.to_string_lossy().as_ref(),
+            )
             .body(Body::from(update))
             .unwrap();
         let update_resp = app.clone().oneshot(update_req).await.unwrap();
@@ -1346,6 +1421,10 @@ mod tests {
             .method("GET")
             .uri(format!("/api/v1/mem/plan/status?target={}", quinn))
             .header("X-AgTalk-Address", nora.clone())
+            .header(
+                "X-AgTalk-Workspace-Root",
+                state.dot_agtalk.to_string_lossy().as_ref(),
+            )
             .body(Body::empty())
             .unwrap();
         let status_resp = app.clone().oneshot(status_req).await.unwrap();
@@ -1372,6 +1451,10 @@ mod tests {
             .method("GET")
             .uri("/api/v1/mem/plan?target=quinn")
             .header("X-AgTalk-Address", nora.clone())
+            .header(
+                "X-AgTalk-Workspace-Root",
+                state.dot_agtalk.to_string_lossy().as_ref(),
+            )
             .body(Body::empty())
             .unwrap();
         let show_resp = app.clone().oneshot(show_req).await.unwrap();
@@ -1397,6 +1480,10 @@ mod tests {
             .method("GET")
             .uri("/api/v1/mem/pack")
             .header("X-AgTalk-Address", nora.clone())
+            .header(
+                "X-AgTalk-Workspace-Root",
+                state.dot_agtalk.to_string_lossy().as_ref(),
+            )
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -1424,6 +1511,10 @@ mod tests {
             .method("GET")
             .uri("/api/v1/mem/pack?topic=agtalk/agent-guide")
             .header("X-AgTalk-Address", nora.clone())
+            .header(
+                "X-AgTalk-Workspace-Root",
+                state.dot_agtalk.to_string_lossy().as_ref(),
+            )
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -1452,6 +1543,10 @@ mod tests {
             .method("GET")
             .uri("/api/v1/mem/pack?topic=agent-learning-handbook")
             .header("X-AgTalk-Address", nora.clone())
+            .header(
+                "X-AgTalk-Workspace-Root",
+                state.dot_agtalk.to_string_lossy().as_ref(),
+            )
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -1491,6 +1586,10 @@ mod tests {
                 .uri("/api/v1/msg/ask")
                 .header("Content-Type", "application/json")
                 .header("X-AgTalk-Address", nora.clone())
+                .header(
+                    "X-AgTalk-Workspace-Root",
+                    state.dot_agtalk.to_string_lossy().as_ref(),
+                )
                 .body(Body::from(body.to_string()))
                 .unwrap();
             let response = app.oneshot(request).await.unwrap();

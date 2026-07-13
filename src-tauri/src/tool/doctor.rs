@@ -718,6 +718,15 @@ fn identity_checks(
     let dot_exists = dot.exists();
     checks.push(check(
         "identity",
+        "identity.workspace_root",
+        "ok",
+        format!("当前目录 identity root: {}", dot.display()),
+        None,
+        None,
+        serde_json::json!({ "workspace_root": dot }),
+    ));
+    checks.push(check(
+        "identity",
         "identity.dot_agtalk",
         if dot_exists { "ok" } else { "warn" },
         if dot_exists {

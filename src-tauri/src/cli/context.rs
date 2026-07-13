@@ -96,7 +96,13 @@ impl Context {
             env::current_dir().map_err(|e| IdentityResolutionError::Io(e.to_string()))?;
         let dot_agtalk =
             workspace_dir(&current_dir).map_err(|e| IdentityResolutionError::Io(e.to_string()))?;
+        Self::for_leave_in(dot_agtalk, as_name)
+    }
 
+    fn for_leave_in(
+        dot_agtalk: PathBuf,
+        as_name: Option<&str>,
+    ) -> Result<Self, IdentityResolutionError> {
         let (pid, start_time, name) = if let Some(name) = as_name {
             Self::resolve_by_name(&dot_agtalk, name)?
         } else if let Some(name) = env::var_os("AGTALK_NAME") {
@@ -138,6 +144,13 @@ impl Context {
             env::current_dir().map_err(|e| IdentityResolutionError::Io(e.to_string()))?;
         let dot_agtalk =
             workspace_dir(&current_dir).map_err(|e| IdentityResolutionError::Io(e.to_string()))?;
+        Self::for_address_in(dot_agtalk, address)
+    }
+
+    fn for_address_in(
+        dot_agtalk: PathBuf,
+        address: String,
+    ) -> Result<Self, IdentityResolutionError> {
         let config = AgConfig::load().map_err(|e| IdentityResolutionError::Io(e.to_string()))?;
         let base_url = format!("http://127.0.0.1:{}", config.http_port);
         Ok(Self {
@@ -594,26 +607,13 @@ mod tests {
         assert!(agents_map::get_by_pid(&dot, cur_pid).unwrap().is_none());
     }
 
-    fn with_workspace_root<T>(tmp: &TempDir, f: impl FnOnce() -> T) -> T {
-        let prev = std::env::var_os(crate::paths::WORKSPACE_ROOT_ENV);
-        let dot = tmp.path().join(".agtalk");
-        std::env::set_var(crate::paths::WORKSPACE_ROOT_ENV, &dot);
-        let result = f();
-        if let Some(p) = prev {
-            std::env::set_var(crate::paths::WORKSPACE_ROOT_ENV, p);
-        } else {
-            std::env::remove_var(crate::paths::WORKSPACE_ROOT_ENV);
-        }
-        result
-    }
-
     #[test]
     fn for_leave_uses_as_name() {
         let tmp = TempDir::new().unwrap();
         let dot = tmp.path().join(".agtalk");
         write_session(&dot, "nora");
 
-        let ctx = with_workspace_root(&tmp, || Context::for_leave(Some("nora")).unwrap());
+        let ctx = Context::for_leave_in(dot, Some("nora")).unwrap();
         assert_eq!(ctx.name, "nora");
     }
 
@@ -624,11 +624,9 @@ mod tests {
         write_session(&dot, "nora");
         write_session(&dot, "quinn");
 
-        let code = with_workspace_root(&tmp, || {
-            Context::for_leave(None)
-                .map(|_| "".to_string())
-                .unwrap_or_else(|e| e.code().to_string())
-        });
+        let code = Context::for_leave_in(dot, None)
+            .map(|_| "".to_string())
+            .unwrap_or_else(|e| e.code().to_string());
         assert_eq!(code, "identity_required");
     }
 
@@ -638,20 +636,20 @@ mod tests {
         let dot = tmp.path().join(".agtalk");
         write_session(&dot, "nora");
 
-        let code = with_workspace_root(&tmp, || {
-            Context::for_leave(None)
-                .map(|_| "".to_string())
-                .unwrap_or_else(|e| e.code().to_string())
-        });
+        let code = Context::for_leave_in(dot, None)
+            .map(|_| "".to_string())
+            .unwrap_or_else(|e| e.code().to_string());
         assert_eq!(code, "identity_required");
     }
 
     #[test]
     fn for_address_does_not_read_session() {
         let tmp = TempDir::new().unwrap();
-        let ctx = with_workspace_root(&tmp, || {
-            Context::for_address("550e8400-e29b-41d4-a716-446655440000".into()).unwrap()
-        });
+        let ctx = Context::for_address_in(
+            tmp.path().join(".agtalk"),
+            "550e8400-e29b-41d4-a716-446655440000".into(),
+        )
+        .unwrap();
         assert_eq!(ctx.address, "550e8400-e29b-41d4-a716-446655440000");
     }
 }

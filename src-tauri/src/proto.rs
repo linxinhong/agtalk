@@ -354,6 +354,7 @@ pub enum ServerMsg {
         intro: String,
         notify_channel: String,
         notify_ready: bool,
+        workspace_root: String,
     },
     IdentityLeft {
         address: String,

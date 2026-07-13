@@ -151,6 +151,7 @@ pub fn handle_join(
         intro: session.intro,
         notify_channel,
         notify_ready,
+        workspace_root: workspace_root_str,
     }
 }
 
@@ -169,6 +170,7 @@ pub fn handle_show(state: &AppState, headers: &HeaderMap) -> ServerMsg {
         intro,
         notify_channel,
         notify_ready,
+        workspace_root: session.workspace_root.to_string_lossy().into_owned(),
     }
 }
 
@@ -817,6 +819,10 @@ mod tests {
             "X-AgTalk-Start-Time",
             start_time.to_string().parse().unwrap(),
         );
+        headers.insert(
+            "X-AgTalk-Workspace-Root",
+            state.dot_agtalk.to_string_lossy().as_ref().parse().unwrap(),
+        );
 
         let msg = handle_show(&state, &headers);
         match msg {
@@ -1094,6 +1100,10 @@ mod tests {
         headers.insert(
             "X-AgTalk-Start-Time",
             start_time.to_string().parse().unwrap(),
+        );
+        headers.insert(
+            "X-AgTalk-Workspace-Root",
+            state.dot_agtalk.to_string_lossy().as_ref().parse().unwrap(),
         );
 
         // 默认 purge=false，不删除本地 session 目录

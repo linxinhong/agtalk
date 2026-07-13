@@ -325,10 +325,13 @@ fn print_text_server_msg(msg: &ServerMsg) {
             intro,
             notify_channel,
             notify_ready,
+            workspace_root,
         } => {
             println!("address   : {}", address);
             println!("name      : {}", name);
             println!("intro     : {}", intro);
+            println!("workspace : {}", workspace_root);
+            println!("session   : {}/{}/session.json", workspace_root, name);
             if *notify_ready {
                 println!("notify    : {} ready", notify_channel);
             } else {

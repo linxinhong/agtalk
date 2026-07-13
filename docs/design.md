@@ -45,6 +45,7 @@ name    : 字符串    ← 可读展示名（人看，不唯一，不进路由�
 ```
 
 - 同一工作目录可并存多个 agent，每个一个 `<name>/session.json` 子目录。
+- **workspace 固定为执行 `agtalk` 时的当前目录**：CLI 一律写入 `<cwd>/.agtalk/`，不受 daemon 启动目录或环境变量影响。daemon 只接受 CLI 传来的绝对 `.agtalk` 路径；缺失时拒绝请求，绝不回退写入 daemon 自己的项目目录。
 - `agents.json` 提供 `pid → name` 映射，让进程能自查身份（多 agent 并存时知道读哪个 session 文件）。
 - session.json 权限 0600。
 
