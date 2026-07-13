@@ -152,6 +152,7 @@ pub fn handle_join(
         notify_channel,
         notify_ready,
         workspace_root: workspace_root_str,
+        notify_diagnostics: Vec::new(),
     }
 }
 
@@ -171,6 +172,7 @@ pub fn handle_show(state: &AppState, headers: &HeaderMap) -> ServerMsg {
         notify_channel,
         notify_ready,
         workspace_root: session.workspace_root.to_string_lossy().into_owned(),
+        notify_diagnostics: Vec::new(),
     }
 }
 

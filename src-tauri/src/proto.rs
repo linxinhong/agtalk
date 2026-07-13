@@ -17,6 +17,16 @@ pub struct LookupMailbox {
     pub notify_ready: bool,
 }
 
+/// `id join --notify auto` 的逐项插件探测结果。
+///
+/// 仅由 CLI 在注册时生成；daemon 不持久化瞬态环境诊断。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotifyProbe {
+    pub name: String,
+    pub status: String,
+    pub message: String,
+}
+
 impl LookupMailbox {
     pub fn from_mailbox(mb: &Mailbox, notify_channel: String, notify: String, ready: bool) -> Self {
         Self {
@@ -355,6 +365,8 @@ pub enum ServerMsg {
         notify_channel: String,
         notify_ready: bool,
         workspace_root: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        notify_diagnostics: Vec<NotifyProbe>,
     },
     IdentityLeft {
         address: String,

@@ -133,7 +133,7 @@ agtalk id join [name] [--intro <text>] [--notify <channel>]
 notify channel：
 
 ```text
-auto              由 CLI 依次尝试 plugin:zellij / plugin:tmux discover，否则 none
+auto              由 CLI 依次尝试 plugin:zellij / plugin:tmux discover，否则 none；回退时输出每个插件的失败原因
 plugin:<name>     由 CLI 调用外部 notify 插件 discover（如 zellij、tmux、macos、webhook）
 none              关闭打扰，仅 pull
 ```

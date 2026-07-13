@@ -535,33 +535,67 @@ fn print_agent_help(json: bool) {
 /// 失败时返回错误，不自动降级，让 agent 明确知道原因。
 /// 对 `auto`，如果没有任何 plugin 就绪，返回 `("none", None)`。
 /// `agent_name` 仅在 join 场景传入，用于让插件重命名当前 pane/tab 等上下文。
-fn resolve_notify(
-    notify: &str,
-    agent_name: Option<&str>,
-) -> Result<(String, Option<serde_json::Value>), CliError> {
+struct ResolvedNotify {
+    channel: String,
+    endpoint: Option<serde_json::Value>,
+    diagnostics: Vec<crate::proto::NotifyProbe>,
+}
+
+fn resolve_notify(notify: &str, agent_name: Option<&str>) -> Result<ResolvedNotify, CliError> {
     let notify = notify.trim();
     if notify.eq_ignore_ascii_case("none") {
-        return Ok(("none".to_string(), None));
+        return Ok(ResolvedNotify {
+            channel: "none".to_string(),
+            endpoint: None,
+            diagnostics: Vec::new(),
+        });
     }
     if notify.eq_ignore_ascii_case("auto") {
+        let mut diagnostics = Vec::new();
         for candidate in ["zellij", "tmux"] {
             let channel_name = format!("plugin:{}", candidate);
-            if let Ok(channel) = crate::notify::plugin::PluginChannel::new(candidate) {
-                match channel.discover_with_name(agent_name) {
+            match crate::notify::plugin::PluginChannel::new(candidate) {
+                Ok(channel) => match channel.discover_with_name(agent_name) {
                     Ok(endpoint) if endpoint.ready => {
-                        return Ok((channel_name, Some(endpoint.endpoint)));
+                        return Ok(ResolvedNotify {
+                            channel: channel_name,
+                            endpoint: Some(endpoint.endpoint),
+                            diagnostics: Vec::new(),
+                        });
                     }
-                    _ => continue,
-                }
+                    Ok(endpoint) => diagnostics.push(crate::proto::NotifyProbe {
+                        name: channel_name,
+                        status: "not_ready".to_string(),
+                        message: endpoint.message,
+                    }),
+                    Err(error) => diagnostics.push(crate::proto::NotifyProbe {
+                        name: channel_name,
+                        status: "error".to_string(),
+                        message: error.to_string(),
+                    }),
+                },
+                Err(error) => diagnostics.push(crate::proto::NotifyProbe {
+                    name: channel_name,
+                    status: "error".to_string(),
+                    message: error.to_string(),
+                }),
             }
         }
-        return Ok(("none".to_string(), None));
+        return Ok(ResolvedNotify {
+            channel: "none".to_string(),
+            endpoint: None,
+            diagnostics,
+        });
     }
     if let Some(plugin_name) = notify.strip_prefix("plugin:") {
         let channel = crate::notify::plugin::PluginChannel::new(plugin_name)
             .map_err(|e| CliError::new("notify_plugin_invalid", e.to_string()))?;
         match channel.discover_with_name(agent_name) {
-            Ok(endpoint) if endpoint.ready => Ok((notify.to_string(), Some(endpoint.endpoint))),
+            Ok(endpoint) if endpoint.ready => Ok(ResolvedNotify {
+                channel: notify.to_string(),
+                endpoint: Some(endpoint.endpoint),
+                diagnostics: Vec::new(),
+            }),
             Ok(endpoint) => Err(CliError::new(
                 "notify_plugin_not_ready",
                 format!(
@@ -576,7 +610,11 @@ fn resolve_notify(
         }
     } else {
         // 未知通道保持原样，由 daemon 决定如何处理。
-        Ok((notify.to_string(), None))
+        Ok(ResolvedNotify {
+            channel: notify.to_string(),
+            endpoint: None,
+            diagnostics: Vec::new(),
+        })
     }
 }
 
@@ -608,8 +646,16 @@ fn run(cli: Cli, json: bool) -> Result<(), CliError> {
                 } => {
                     let ctx = Context::pre_join().map_err(CliError::from)?;
                     let notify_input = notify.as_deref().unwrap_or("auto");
-                    let (notify, notify_endpoint) = resolve_notify(notify_input, name.as_deref())?;
-                    client::id::join(ctx, name, intro, notify, notify_endpoint, json)
+                    let resolved = resolve_notify(notify_input, name.as_deref())?;
+                    client::id::join(
+                        ctx,
+                        name,
+                        intro,
+                        resolved.channel,
+                        resolved.endpoint,
+                        resolved.diagnostics,
+                        json,
+                    )
                 }
                 IdCmd::Show => {
                     let ctx = Context::current(as_name).map_err(CliError::from)?;

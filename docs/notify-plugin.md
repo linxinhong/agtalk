@@ -28,6 +28,8 @@ agtalk id join coder --notify plugin:macos      # 自定义插件
 agtalk id join coder --notify auto              # 自动尝试 plugin:zellij -> plugin:tmux -> none
 ```
 
+`--notify auto` 未找到可用插件时仍会完成注册并降级为 `none`。文本输出会逐项显示每个候选插件的 `not_ready` / `error` 原因；`--json` 在 join 响应中返回 `notify_diagnostics`，便于 agent 判断是插件缺失、环境变量缺失还是 zellij/tmux session 不可达。
+
 **注意**：v2 已移除 core 内置 `zellij` / `tmux` 通道。要使用终端通知，必须把对应 plugin 安装到 `<config_dir>/plugins/`（通常为 `~/.config/agtalk2/plugins/`），或在 PATH 中提供 `agtalk-notify-<name>`。
 
 ---

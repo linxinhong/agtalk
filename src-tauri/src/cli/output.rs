@@ -326,6 +326,7 @@ fn print_text_server_msg(msg: &ServerMsg) {
             notify_channel,
             notify_ready,
             workspace_root,
+            notify_diagnostics,
         } => {
             println!("address   : {}", address);
             println!("name      : {}", name);
@@ -336,6 +337,12 @@ fn print_text_server_msg(msg: &ServerMsg) {
                 println!("notify    : {} ready", notify_channel);
             } else {
                 println!("notify    : {}", notify_channel);
+                for probe in notify_diagnostics {
+                    println!(
+                        "probe     : {} {} - {}",
+                        probe.name, probe.status, probe.message
+                    );
+                }
                 println!(
                     "hint      : rejoin inside zellij/tmux or install a notify plugin to enable notifications"
                 );
@@ -838,6 +845,41 @@ mod tests {
             purge: true,
         };
         print_text_server_msg(&msg);
+    }
+
+    #[test]
+    fn identity_json_includes_auto_notify_diagnostics() {
+        let msg = ServerMsg::Identity {
+            address: "550e8400-e29b-41d4-a716-446655440000".into(),
+            name: "nora".into(),
+            intro: "reviewer".into(),
+            notify_channel: "none".into(),
+            notify_ready: false,
+            workspace_root: "/tmp/project/.agtalk".into(),
+            notify_diagnostics: vec![crate::proto::NotifyProbe {
+                name: "plugin:zellij".into(),
+                status: "not_ready".into(),
+                message: "zellij action not reachable from current context".into(),
+            }],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("notify_diagnostics"), "{}", json);
+        assert!(json.contains("plugin:zellij"), "{}", json);
+    }
+
+    #[test]
+    fn identity_json_omits_empty_notify_diagnostics() {
+        let msg = ServerMsg::Identity {
+            address: "550e8400-e29b-41d4-a716-446655440000".into(),
+            name: "nora".into(),
+            intro: "reviewer".into(),
+            notify_channel: "none".into(),
+            notify_ready: false,
+            workspace_root: "/tmp/project/.agtalk".into(),
+            notify_diagnostics: Vec::new(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("notify_diagnostics"), "{}", json);
     }
 
     #[test]

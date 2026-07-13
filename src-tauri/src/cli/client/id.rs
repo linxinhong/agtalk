@@ -3,6 +3,7 @@
 use crate::cli::client::{encode_query, get, post};
 use crate::cli::context::Context;
 use crate::cli::output::{print_server_msg, CliError};
+use crate::proto::{NotifyProbe, ServerMsg};
 
 pub fn join(
     ctx: Context,
@@ -10,6 +11,7 @@ pub fn join(
     intro: Option<String>,
     notify: String,
     notify_endpoint: Option<serde_json::Value>,
+    notify_diagnostics: Vec<NotifyProbe>,
     json: bool,
 ) -> Result<(), CliError> {
     let resp = post(
@@ -24,6 +26,14 @@ pub fn join(
             "start_time": ctx.start_time,
         }),
     )?;
+    let mut resp = resp;
+    if let ServerMsg::Identity {
+        notify_diagnostics: response_diagnostics,
+        ..
+    } = &mut resp
+    {
+        *response_diagnostics = notify_diagnostics;
+    }
     print_server_msg(json, &resp);
     Ok(())
 }
