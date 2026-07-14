@@ -12,7 +12,6 @@ use crate::identity::session_file::NotifyTarget;
 use crate::notify::{NotifyChannel, NotifyError, NotifyHint};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -161,11 +160,15 @@ impl PluginChannel {
                 path.display()
             )));
         }
-        if metadata.permissions().mode() & 0o111 == 0 {
-            return Err(NotifyError::Other(format!(
-                "插件文件不可执行: {}",
-                path.display()
-            )));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o111 == 0 {
+                return Err(NotifyError::Other(format!(
+                    "插件文件不可执行: {}",
+                    path.display()
+                )));
+            }
         }
         Ok(())
     }
@@ -345,7 +348,7 @@ impl NotifyChannel for PluginChannel {
 }
 
 /// 等待子进程，带超时。超时后 kill 进程。
-#[cfg(unix)]
+/// 使用 `try_wait` 轮询，跨平台可用。
 fn wait_with_timeout(
     mut child: std::process::Child,
     timeout: Duration,

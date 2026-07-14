@@ -47,7 +47,6 @@ axum = "0.7"
 sysinfo = "0.30"
 tokio-stream = { version = "0.1", features = ["sync"] }
 async-stream = "0.3"
-nix = { version = "0.29", features = ["signal"] }
 # gzip/brotli/deflate：飞书 OpenAPI 按 Accept-Encoding 压缩响应（实测会选 br），
 # 缺解码特性时 .json() 报 error decoding response body
 reqwest = { version = "0.12", features = ["blocking", "json", "stream", "gzip", "brotli", "deflate"] }
@@ -64,6 +63,9 @@ prost = "0.13"
 base64 = "0.22"
 flate2 = "1"
 futures-util = { version = "0.3", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["signal"] }
 
 # macOS 裸二进制运行时设置 Dock/Cmd+Tab 图标（bundle.active=false，无 .app 包图标来源）；
 # 版本锁定与 tao/wry 依赖树一致，避免重复编译两份 objc2。
