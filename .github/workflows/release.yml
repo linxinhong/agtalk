@@ -30,11 +30,18 @@ jobs:
       - name: Build release binary
         run: cargo build -p agtalk --release --features custom-protocol
 
+      - name: Package macOS binary
+        run: |
+          mkdir -p dist
+          cp target/release/agtalk dist/agtalk
+          chmod +x dist/agtalk
+          cd dist && zip -r ../agtalk-macos.zip agtalk
+
       - name: Upload macOS binary
         uses: actions/upload-artifact@v4
         with:
           name: agtalk-macos
-          path: target/release/agtalk
+          path: agtalk-macos.zip
           if-no-files-found: error
 
   build-windows:
@@ -60,9 +67,42 @@ jobs:
       - name: Build release binary
         run: cargo build -p agtalk --release --features custom-protocol
 
+      - name: Package Windows binary
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item target/release/agtalk.exe dist/agtalk.exe
+          Compress-Archive -Path dist/agtalk.exe -DestinationPath agtalk-windows.zip
+
       - name: Upload Windows binary
         uses: actions/upload-artifact@v4
         with:
           name: agtalk-windows
-          path: target/release/agtalk.exe
+          path: agtalk-windows.zip
           if-no-files-found: error
+
+  release:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: agtalk-macos
+          path: ./release-assets
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: agtalk-windows
+          path: ./release-assets
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./release-assets/*.zip
+          generate_release_notes: true
