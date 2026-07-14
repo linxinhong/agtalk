@@ -1,0 +1,68 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+      - run: pnpm install
+      - run: pnpm build
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: 'src-tauri'
+
+      - name: Build release binary
+        run: cargo build -p agtalk --release --features custom-protocol
+
+      - name: Upload macOS binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: agtalk-macos
+          path: target/release/agtalk
+          if-no-files-found: error
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+      - run: pnpm install
+      - run: pnpm build
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: 'src-tauri'
+
+      - name: Build release binary
+        run: cargo build -p agtalk --release --features custom-protocol
+
+      - name: Upload Windows binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: agtalk-windows
+          path: target/release/agtalk.exe
+          if-no-files-found: error
