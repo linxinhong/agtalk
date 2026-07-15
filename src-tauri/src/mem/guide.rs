@@ -20,5 +20,6 @@ mod tests {
         assert!(!guide.is_empty());
         assert!(guide.contains("agtalk --agent-guide"));
         assert!(guide.contains("inbox_empty"));
+        assert!(guide.contains("agent-interaction-protocol.md"));
     }
 }

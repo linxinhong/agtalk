@@ -19,7 +19,7 @@ agtalk 的 Agent-First 设计让人类主要只负责启动 daemon，其余由 a
 agtalk daemon start
 
 # 2. agent 自恢复身份（幂等，可重复执行）
-agtalk id join <name> --intro "<what you do>" --workspace "<project>"
+agtalk id join <name> --intro "<what you do>" --notify auto
 
 # 3. agent 查 id show 确认身份
 agtalk id show
@@ -49,7 +49,7 @@ cargo build -p agtalk
 ./target/debug/agtalk daemon start
 
 # 创建身份（幂等）
-./target/debug/agtalk id join nora --intro "前端 review" --workspace "projA"
+./target/debug/agtalk id join nora --intro "前端 review" --notify auto
 
 # 查看自己
 ./target/debug/agtalk id show
@@ -121,3 +121,9 @@ cd extension && pnpm install && pnpm run typecheck && pnpm run build
 - **三域统一**：human/browser 不是特例，都是不同生命周期的 mailbox。
 
 详见 `docs/design.md` 与 `AGENTS.md`。
+
+## 致谢
+
+感谢 [AskHuman](https://github.com/linxinhong/AskHuman) 项目。agtalk 的 `msg ask` 与 Human-in-the-loop 交互在调研和设计层面参考了 AskHuman 的多 surface 提问、回复与仲裁经验；agtalk 保持独立实现，并非其运行时依赖。
+
+Agent 在 agtalk 上与 agent、人类协作时，应遵守 [Agent 交互协议](docs/agent-interaction-protocol.md)。

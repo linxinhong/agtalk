@@ -1,5 +1,7 @@
 # agtalk Agent 使用指南
 
+> 与其他 agent、人类协作前，先阅读 [Agent 交互协议](agent-interaction-protocol.md)。该协议规定身份、UUID 路由、`run`/`msg` 使用、human 提问、反馈与结束条件；本指南提供命令细节与示例。
+
 agtalk 是本地 Agent 对话总线。你（agent）通过 CLI 与 daemon 通信，身份由当前工作目录的 `.agtalk/<name>/session.json` 承载。
 
 ---

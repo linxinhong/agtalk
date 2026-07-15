@@ -399,6 +399,8 @@ CI 已配置在 `.github/workflows/ci.yml`，必须保持绿色。提交前本�
 
 ## 12. agent 运行时行为约定（解决"agent 会偷懒"）
 
+`docs/agent-interaction-protocol.md` 是 agent 使用 agtalk 与 agent、人类对话的完整强制协议。它定义何时委派、何时 `msg ask`、如何提供推荐选项、如何闭环回复，以及何时允许结束协作。本节保留运行时收件箱/notify 约定，并与该协议共同生效。
+
 这一节是写给**作为 agtalk 客户端的 AI agent** 的行为约定（不是写给 agtalk 本身的开发者）。问题是：agent 的核心循环是"接收消息→调工具→返回"，**不会自发地主动查 agtalk 收件箱**，导致对话中断。解决靠两层配合：
 
 ### 12.1 两层配合

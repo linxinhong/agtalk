@@ -457,6 +457,8 @@ mod tests {
     use crate::notify::NotifyHint;
     use crate::paths::CONFIG_DIR_ENV;
     use std::collections::HashMap;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
     fn hint() -> NotifyHint {
