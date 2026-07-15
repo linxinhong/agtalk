@@ -91,6 +91,18 @@ jobs:
           path: agtalk-windows.zip
           if-no-files-found: error
 
+      - name: Dump Windows build logs on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $logs = @('pnpm-install.log', 'pnpm-build.log', 'cargo-build.log')
+          foreach ($log in $logs) {
+            if (Test-Path $log) {
+              Write-Output "===== $log ====="
+              Get-Content $log -Tail 200
+            }
+          }
+
       - name: Upload Windows build logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
