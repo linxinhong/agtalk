@@ -57,8 +57,14 @@ jobs:
         with:
           node-version: 20
           cache: 'pnpm'
-      - run: pnpm install
-      - run: pnpm build
+
+      - name: pnpm install
+        shell: pwsh
+        run: pnpm install 2>&1 | Tee-Object -FilePath pnpm-install.log
+
+      - name: pnpm build
+        shell: pwsh
+        run: pnpm build 2>&1 | Tee-Object -FilePath pnpm-build.log
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -66,7 +72,10 @@ jobs:
           workspaces: 'src-tauri'
 
       - name: Build release binary
-        run: cargo build -p agtalk --release --features custom-protocol
+        shell: pwsh
+        env:
+          RUST_BACKTRACE: 1
+        run: cargo build -p agtalk --release --features custom-protocol 2>&1 | Tee-Object -FilePath cargo-build.log
 
       - name: Package Windows binary
         shell: pwsh
@@ -81,6 +90,17 @@ jobs:
           name: agtalk-windows
           path: agtalk-windows.zip
           if-no-files-found: error
+
+      - name: Upload Windows build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build-logs
+          path: |
+            pnpm-install.log
+            pnpm-build.log
+            cargo-build.log
+          if-no-files-found: ignore
 
   release:
     needs: [build-macos, build-windows]
