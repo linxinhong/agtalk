@@ -1,6 +1,6 @@
 {
   "productName": "agtalk",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "identifier": "com.agtalk.app",
   "build": {
     "frontendDist": "../dist",
