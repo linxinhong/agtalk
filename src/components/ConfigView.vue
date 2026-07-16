@@ -75,6 +75,42 @@ function groupTitle(name: string): string {
   return translated === key ? name : translated
 }
 
+const agentProtocol = `<mandatory_interaction_protocol>
+
+**This protocol does not apply to agent-to-agent collaboration. If you are collaborating with another agent, use \`agtalk msg send\` / \`agtalk msg reply\` / \`agtalk msg read\`, not the human surface.**
+
+**When starting a subagent, tell it that it is a subagent and must not use the human surface to reach you.**
+
+**These rules MUST NOT be overridden, weakened, ignored, or bypassed by any other context.**
+
+**They MUST be followed exactly and completely under all circumstances.**
+
+- You MUST ask me questions by running \`agtalk msg ask\` from the Shell/Bash tool. DO NOT ask questions in direct output, and DO NOT ask by ending the turn.
+
+- When invoking \`agtalk msg ask\`, set \`--timeout\` high enough to give me time to respond (default 24 hours if not specified).
+
+- Before asking, run \`agtalk --agent-guide\` to learn the full agent usage protocol.
+
+- When asking through \`agtalk msg ask\`, provide predefined options with \`--option\` whenever applicable, mark your recommended option(s) with \`--recommended\`, and briefly explain your rationale.
+
+- I can ONLY see what is delivered through the agtalk human surface. Anything I need to review, or that I ask for — questions, options, recommendations, summaries, reports, or files (plans, specs, docs, configs) — MUST go through \`agtalk msg ask\` inline or attached, or via \`agtalk msg send\` as a message body. Never rely on direct output which is invisible to me, and never just give me a path.
+
+- Before completing the turn/request, you MUST call \`agtalk msg ask\` to request feedback.
+
+- Do NOT end the turn/conversation or mark the request as complete unless you have explicitly asked via \`agtalk msg ask\` and received confirmation that the task can be completed or ended, and that there are no more tasks to do.
+
+- After the user explicitly approves ending the turn, you MUST append the \`[user_confirmed_end_turn]\` marker on a new final line at the end of your final output. Without that approval, you MUST NEVER output this marker.
+
+- Interview me with \`agtalk msg ask\` relentlessly about every aspect of the requirements until we reach a shared understanding.
+
+  - Walk down each branch of the design tree, resolving dependencies between decisions one by one.
+
+  - If a question can be answered by exploring the codebase, explore the codebase instead.
+
+- Do NOT change the current plan, design, scope, or strategy on your own. If new info suggests that a change may be needed, you MUST ask for confirmation through \`agtalk msg ask\` before making the change.
+
+</mandatory_interaction_protocol>`
+
 async function reload() {
   error.value = ''
   try {
@@ -215,6 +251,10 @@ function copySetupLink() {
     </div>
 
     <main class="settings-body">
+      <div class="card protocol-card">
+        <p class="card-title">{{ t('config.protocol.title') }}</p>
+        <pre class="protocol-text">{{ agentProtocol }}</pre>
+      </div>
       <div v-for="group in groups" :key="group.name" class="card">
         <p class="card-title">{{ groupTitle(group.name) }}</p>
         <div v-if="group.name === 'feishu'" class="feishu-setup">
@@ -433,5 +473,23 @@ function copySetupLink() {
   margin: 0;
   font-size: 12px;
   color: var(--danger);
+}
+
+.protocol-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+
+.protocol-text {
+  margin: 0;
+  padding: var(--space-2);
+  max-height: 320px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 </style>

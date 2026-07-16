@@ -37,6 +37,9 @@
       "notify": "打扰层",
       "feishu": "飞书"
     },
+    "protocol": {
+      "title": "Agent 交互协议"
+    },
     "feishuSetup": {
       "label": "快速接入",
       "button": "一键创建应用",

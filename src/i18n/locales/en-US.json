@@ -37,6 +37,9 @@
       "notify": "Notify",
       "feishu": "Feishu"
     },
+    "protocol": {
+      "title": "Agent Interaction Protocol"
+    },
     "feishuSetup": {
       "label": "Quick setup",
       "button": "One-click app setup",
