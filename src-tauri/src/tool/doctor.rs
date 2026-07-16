@@ -1293,6 +1293,10 @@ fn wait_checks(ctx: &DoctorContext, identity: &Option<ResolvedIdentity>) -> Vec<
         let headers = vec![
             ("X-AgTalk-Address", id.address.clone()),
             ("X-AgTalk-Pid", std::process::id().to_string()),
+            (
+                "X-AgTalk-Workspace-Root",
+                ctx.dot_agtalk.to_string_lossy().to_string(),
+            ),
         ];
         let sse_ok = http_get_stream_head(&sse_url, &headers).is_ok();
         checks.push(check(
