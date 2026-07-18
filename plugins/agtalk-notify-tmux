@@ -65,10 +65,16 @@ kv("SEND_ENTER", "1" if p.get("send_enter",True) in (True,"True","true",1) else 
     fi
 
     # Inject the pre-assembled text. The payload has no body/secret.
+    tmux send-keys -t "$PANE" -R "$TEXT"
+
+    # Send Enter only when requested, so the injected command executes.
     if [ "$SEND_ENTER" = "1" ]; then
-        tmux send-keys -t "$PANE" -R "$TEXT" Enter
-    else
-        tmux send-keys -t "$PANE" -R "$TEXT"
+        # TUI（如 Kimi Code）对高速连续输入有粘贴检测：Enter 与文本同次到达会被
+        # 当成粘贴内容的换行而非提交。留 0.5s 间隔让 TUI 脱离"粘贴态"。
+        # 注意整体耗时受 daemon 插件 timeout（默认 1000ms）限制，超时需调大
+        # notify.plugins.tmux.timeout_ms。
+        sleep 0.5
+        tmux send-keys -t "$PANE" Enter
     fi
     exit 0
 fi

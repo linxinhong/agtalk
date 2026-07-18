@@ -208,6 +208,8 @@ chmod +x ~/.config/agtalk2/plugins/agtalk-notify-tmux
 agtalk id join coder --notify plugin:tmux
 ```
 
+> 备注：TUI（如 Kimi Code）有粘贴检测，Enter 与文本同次 `send-keys` 到达会被当成换行而非提交，插件在两者间留 0.5s 间隔；若 daemon 报 send 超时，调大 `notify.plugins.tmux.timeout_ms`（如 3000）。
+
 ### 6.3 cmux 安装
 
 ```bash

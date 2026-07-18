@@ -120,6 +120,7 @@ RC=$?
 assert_contains "$LOG" 'send-keys -t %2 -R' 'send send-keys'
 assert_contains "$LOG" "$TEXT"              'send text'
 assert_contains "$LOG" 'Enter'              'send enter'
+assert_contains "$LOG" "send-keys -t %2 Enter" 'send enter as separate call'
 
 : > "$LOG"
 printf '{"version":1,"endpoint":{"pane":"%%2"},"text":"%s","send_enter":false}' "$TEXT" \
