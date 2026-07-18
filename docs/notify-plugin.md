@@ -180,10 +180,11 @@ chmod +x ~/.local/bin/agtalk-notify-zellij
 
 ## 6. 参考实现
 
-项目提供两个参考插件，均为 shell 脚本：
+项目提供三个参考插件，均为 shell 脚本：
 
 - `plugins/agtalk-notify-zellij`
 - `plugins/agtalk-notify-tmux`
+- `plugins/agtalk-notify-cmux`
 
 插件不限语言，只要实现 `discover` / `send [--dry-run]` 协议即可。
 
@@ -206,6 +207,24 @@ cp plugins/agtalk-notify-tmux ~/.config/agtalk2/plugins/
 chmod +x ~/.config/agtalk2/plugins/agtalk-notify-tmux
 agtalk id join coder --notify plugin:tmux
 ```
+
+### 6.3 cmux 安装
+
+```bash
+mkdir -p ~/.config/agtalk2/plugins
+cp plugins/agtalk-notify-cmux ~/.config/agtalk2/plugins/
+chmod +x ~/.config/agtalk2/plugins/agtalk-notify-cmux
+agtalk id join coder --notify plugin:cmux
+```
+
+> 备注：cmux 插件通过 `CMUX_SURFACE_ID` 定位当前终端 surface，注入用 `cmux send --surface <uuid>` + `cmux send-key enter`；`--notify auto` 的探测顺序目前不含 cmux，需显式指定 `plugin:cmux`。
+>
+> endpoint 除 `surface` 外还会固化两个字段，均为 daemon 侧执行所需：
+>
+> - `cmux_bin`：cmux CLI 的绝对路径（daemon 的 PATH 不一定包含 cmux）。
+> - `capability`：`CMUX_SOCKET_CAPABILITY` 的值。cmux socket 默认只允许 cmux 后代进程连接（`Access denied — only processes started inside cmux can connect`），daemon 不是 cmux 后代，必须凭 capability 鉴权。该值存于 `session.json` 与 daemon DB（均 0600），等同于本机 cmux 控制凭据，勿外泄；cmux 重启后若 capability 轮换，重新 `id join --notify plugin:cmux` 刷新即可。
+>
+> 另注意：TUI（如 Kimi Code）有粘贴检测，enter 紧跟注入文本到达会被当成换行而非提交，插件在文本与 enter 之间留 0.5s 间隔；若 daemon 报 send 超时，调大 `notify.plugins.cmux.timeout_ms`（如 3000）。
 
 ---
 

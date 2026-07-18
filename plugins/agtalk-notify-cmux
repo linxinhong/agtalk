@@ -1,0 +1,100 @@
+#!/bin/sh
+# agtalk notify plugin for cmux
+# Protocol: discover / send [--dry-run]
+
+set -e
+
+CMD="$1"
+
+if [ "$CMD" = "discover" ]; then
+    SURFACE="${CMUX_SURFACE_ID:-}"
+    WORKSPACE="${CMUX_WORKSPACE_ID:-}"
+    CAPABILITY="${CMUX_SOCKET_CAPABILITY:-}"
+
+    # 固化 cmux 二进制绝对路径：daemon 的 PATH 不一定包含 cmux，
+    # send 阶段（daemon 侧）依赖 endpoint 里的 cmux_bin 执行。
+    CMUX_BIN=$(command -v cmux 2>/dev/null || true)
+    if [ -z "$CMUX_BIN" ] && [ -n "${CMUX_BUNDLED_CLI_PATH:-}" ]; then
+        CMUX_BIN="$CMUX_BUNDLED_CLI_PATH"
+    fi
+
+    if [ -z "$SURFACE" ] || [ -z "$CMUX_BIN" ]; then
+        printf '{"version":1,"type":"notify_endpoint","channel":"cmux","ready":false,"endpoint":{},"message":"not in a cmux session"}\n'
+        exit 0
+    fi
+
+    # Verify the surface is reachable from this shell.
+    if ! "$CMUX_BIN" read-screen --surface "$SURFACE" >/dev/null 2>&1; then
+        printf '{"version":1,"type":"notify_endpoint","channel":"cmux","ready":false,"endpoint":{"surface":"%s"},"message":"cmux surface not reachable from current context"}\n' "$SURFACE"
+        exit 0
+    fi
+
+    # 固化 socket capability：cmux socket 默认只允许 cmux 后代进程连接，
+    # daemon 不是 cmux 后代，send 阶段要靠 endpoint 里的 capability 鉴权。
+    # capability 存于 session.json / daemon DB（均 0600），不进日志。
+    printf '{"version":1,"type":"notify_endpoint","channel":"cmux","ready":true,"endpoint":{"surface":"%s","workspace":"%s","cmux_bin":"%s","capability":"%s"},"message":"cmux surface %s"}\n' "$SURFACE" "$WORKSPACE" "$CMUX_BIN" "$CAPABILITY" "$SURFACE"
+    exit 0
+fi
+
+if [ "$CMD" = "send" ]; then
+    DRY_RUN=false
+    if [ "$2" = "--dry-run" ]; then
+        DRY_RUN=true
+    fi
+
+    # Parse the JSON payload from stdin and validate its version. The python
+    # helper emits shell-safe KEY=VALUE lines; capturing into FIELDS first and
+    # eval'ing afterwards lets a parse failure propagate under `set -e`
+    # (eval "$(...)" would hide the inner failure).
+    PAYLOAD=$(cat)
+    FIELDS=$(printf '%s' "$PAYLOAD" | python3 -c '
+import sys,json,shlex
+p=json.load(sys.stdin)
+if p.get("version")!=1:
+    sys.stderr.write("unsupported payload version\n"); sys.exit(2)
+ep=p.get("endpoint",{}) or {}
+def kv(k,v): print("%s=%s" % (k, shlex.quote(str(v))))
+kv("SURFACE", ep.get("surface",""))
+kv("CMUX_BIN", ep.get("cmux_bin","") or "cmux")
+kv("CAPABILITY", ep.get("capability",""))
+kv("TEXT", p.get("text","[agtalk] 新消息"))
+kv("SEND_ENTER", "1" if p.get("send_enter",True) in (True,"True","true",1) else "0")
+') || { echo "cmux plugin: payload 解析失败" >&2; exit 1; }
+    eval "$FIELDS"
+
+    if [ -z "$SURFACE" ]; then
+        echo "cmux plugin: missing endpoint.surface" >&2
+        exit 1
+    fi
+
+    # daemon 不是 cmux 后代进程，靠 capability 通过 socket 鉴权。
+    if [ -n "$CAPABILITY" ]; then
+        CMUX_SOCKET_CAPABILITY="$CAPABILITY"
+        export CMUX_SOCKET_CAPABILITY
+    fi
+
+    if [ "$DRY_RUN" = true ]; then
+        if "$CMUX_BIN" read-screen --surface "$SURFACE" >/dev/null 2>&1; then
+            exit 0
+        fi
+        echo "cmux plugin: surface $SURFACE not reachable" >&2
+        exit 1
+    fi
+
+    # Inject the pre-assembled text. The payload has no body/secret.
+    "$CMUX_BIN" send --surface "$SURFACE" "$TEXT"
+
+    # Send Enter only when requested, so the injected command executes.
+    if [ "$SEND_ENTER" = "1" ]; then
+        # TUI（如 Kimi Code）对高速连续输入有粘贴检测：enter 紧跟文本到达会被
+        # 当成粘贴内容的换行而非提交。留 0.5s 间隔让 TUI 脱离"粘贴态"。
+        # 注意整体耗时受 daemon 插件 timeout（默认 1000ms）限制，超时需调大
+        # notify.plugins.cmux.timeout_ms。
+        sleep 0.5
+        "$CMUX_BIN" send-key --surface "$SURFACE" enter
+    fi
+    exit 0
+fi
+
+echo "usage: $0 discover | send [--dry-run]" >&2
+exit 1

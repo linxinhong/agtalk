@@ -46,11 +46,22 @@ esac
 EOF
 chmod +x "$FAKE/tmux"
 
+# Fake cmux: logs every call (and the socket capability seen); every action succeeds.
+cat > "$FAKE/cmux" <<'EOF'
+#!/bin/sh
+echo "$0 $* cap=${CMUX_SOCKET_CAPABILITY:-}" >> "$AGTALK_TEST_LOG"
+exit 0
+EOF
+chmod +x "$FAKE/cmux"
+
 export PATH="$FAKE:$PATH"
 export ZELLIJ_SESSION_NAME=s
 export ZELLIJ_PANE_ID=1
 export TMUX_PANE=%2
 export TMUX=/tmp/tmux-501/default,12345,0
+export CMUX_SURFACE_ID=449812E3-B071-4F09-92CB-60DAE9FB35DB
+export CMUX_WORKSPACE_ID=6F164C22-1DFB-4F6F-A268-F9BFBE753A58
+export CMUX_SOCKET_CAPABILITY=test-cap
 export AGTALK_TEST_LOG="$LOG"
 
 TEXT='[agtalk:abcdef12] | from nora | exec: agtalk --as x msg read'
@@ -126,6 +137,50 @@ assert_not_contains "$LOG" 'send-keys' 'dry-run no send-keys'
 : > "$LOG"
 if printf '{"version":2,"endpoint":{"pane":"%%2"}}' \
     | "$TMUX_PLUGIN" send >/dev/null 2>&1; then
+    bad 'version=2 should fail'
+else
+    ok 'version=2 rejected'
+fi
+
+printf '\n== cmux ==\n'
+
+CMUX_PLUGIN="$PLUGIN_DIR/agtalk-notify-cmux"
+
+: > "$LOG"
+"$CMUX_PLUGIN" discover > "$OUT"
+assert_contains "$OUT" '"ready":true'                                          'discover ready'
+assert_contains "$OUT" '"surface":"449812E3-B071-4F09-92CB-60DAE9FB35DB"'      'discover surface'
+assert_contains "$OUT" "\"cmux_bin\":\"$FAKE/cmux\""                            'discover cmux_bin pinned'
+assert_contains "$OUT" '"capability":"test-cap"'                                'discover capability pinned'
+
+: > "$LOG"
+printf '{"version":1,"endpoint":{"surface":"449812E3-B071-4F09-92CB-60DAE9FB35DB","cmux_bin":"%s","capability":"test-cap-endpoint"},"text":"%s","send_enter":true}' "$FAKE/cmux" "$TEXT" \
+    | "$CMUX_PLUGIN" send
+RC=$?
+[ "$RC" -eq 0 ] && ok 'send exit 0' || bad "send exit $RC"
+assert_contains "$LOG" "$FAKE/cmux send --surface 449812E3-B071-4F09-92CB-60DAE9FB35DB" 'send uses pinned cmux_bin'
+assert_contains "$LOG" "$TEXT"                                                   'send text'
+assert_contains "$LOG" 'send-key --surface 449812E3-B071-4F09-92CB-60DAE9FB35DB enter' 'send enter'
+assert_contains "$LOG" 'cap=test-cap-endpoint'                                   'send exports endpoint capability'
+
+: > "$LOG"
+printf '{"version":1,"endpoint":{"surface":"449812E3-B071-4F09-92CB-60DAE9FB35DB"},"text":"%s","send_enter":false}' "$TEXT" \
+    | "$CMUX_PLUGIN" send
+assert_contains    "$LOG" 'send --surface' 'send no-enter send'
+assert_not_contains "$LOG" 'send-key'      'send no-enter no send-key'
+
+: > "$LOG"
+printf '{"version":1,"endpoint":{"surface":"449812E3-B071-4F09-92CB-60DAE9FB35DB"},"text":"%s"}' "$TEXT" \
+    | "$CMUX_PLUGIN" send --dry-run
+RC=$?
+[ "$RC" -eq 0 ] && ok 'dry-run exit 0' || bad "dry-run exit $RC"
+assert_contains    "$LOG" 'read-screen'   'dry-run reachability check'
+assert_not_contains "$LOG" 'send --surface' 'dry-run no send'
+assert_not_contains "$LOG" 'send-key'       'dry-run no send-key'
+
+: > "$LOG"
+if printf '{"version":2,"endpoint":{"surface":"449812E3-B071-4F09-92CB-60DAE9FB35DB"}}' \
+    | "$CMUX_PLUGIN" send >/dev/null 2>&1; then
     bad 'version=2 should fail'
 else
     ok 'version=2 rejected'
