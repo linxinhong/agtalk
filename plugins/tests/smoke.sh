@@ -153,6 +153,11 @@ assert_contains "$OUT" '"ready":true'                                          '
 assert_contains "$OUT" '"surface":"449812E3-B071-4F09-92CB-60DAE9FB35DB"'      'discover surface'
 assert_contains "$OUT" "\"cmux_bin\":\"$FAKE/cmux\""                            'discover cmux_bin pinned'
 assert_contains "$OUT" '"capability":"test-cap"'                                'discover capability pinned'
+assert_not_contains "$LOG" 'rename-tab'                                         'discover no rename without agent name'
+
+: > "$LOG"
+AGTALK_NOTIFY_NAME=star "$CMUX_PLUGIN" discover > "$OUT"
+assert_contains "$LOG" 'rename-tab --surface 449812E3-B071-4F09-92CB-60DAE9FB35DB star' 'discover renames tab to agent name'
 
 : > "$LOG"
 printf '{"version":1,"endpoint":{"surface":"449812E3-B071-4F09-92CB-60DAE9FB35DB","cmux_bin":"%s","capability":"test-cap-endpoint"},"text":"%s","send_enter":true}' "$FAKE/cmux" "$TEXT" \

@@ -29,6 +29,12 @@ if [ "$CMD" = "discover" ]; then
         exit 0
     fi
 
+    # If join passed an agent name, rename the target tab to it.
+    AGENT_NAME="${AGTALK_NOTIFY_NAME:-}"
+    if [ -n "$AGENT_NAME" ]; then
+        "$CMUX_BIN" rename-tab --surface "$SURFACE" "$AGENT_NAME" >/dev/null 2>&1 || true
+    fi
+
     # 固化 socket capability：cmux socket 默认只允许 cmux 后代进程连接，
     # daemon 不是 cmux 后代，send 阶段要靠 endpoint 里的 capability 鉴权。
     # capability 存于 session.json / daemon DB（均 0600），不进日志。

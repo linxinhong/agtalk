@@ -221,6 +221,8 @@ agtalk id join coder --notify plugin:cmux
 
 > 备注：cmux 插件通过 `CMUX_SURFACE_ID` 定位当前终端 surface，注入用 `cmux send --surface <uuid>` + `cmux send-key enter`；`--notify auto` 的探测顺序目前不含 cmux，需显式指定 `plugin:cmux`。
 >
+> 与 zellij 插件一样，`id join` 时 core 传入的 `AGTALK_NOTIFY_NAME` 非空时，插件会把当前 tab 重命名为 agent 名（`cmux rename-tab`），方便在多 tab 中识别身份；`send` 阶段不会改名。
+>
 > endpoint 除 `surface` 外还会固化两个字段，均为 daemon 侧执行所需：
 >
 > - `cmux_bin`：cmux CLI 的绝对路径（daemon 的 PATH 不一定包含 cmux）。
