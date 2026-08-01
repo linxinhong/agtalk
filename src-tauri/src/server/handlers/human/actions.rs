@@ -39,6 +39,8 @@ pub fn handle_reply(
             // 重复事件回放：消息未重复创建，也不再触发 SSE/notify 与抢答收尾
             if !out.deduplicated {
                 after_human_reply(state, &out.reply);
+                // 图工程 Approval Node：审批解决后推进图节点（非图消息内部忽略）
+                let _ = crate::graph::approval::notify_human_reply(state, &resolved);
                 // 抢答收尾：他端 surface 的展示同步收敛
                 // - 本端非 popup：关闭该消息的桌面弹窗（feishu/GUI/API 胜出）
                 if surface != crate::human::popup::POPUP_SURFACE {
@@ -146,6 +148,8 @@ pub fn handle_cancel(
             // 重复事件回放：消息未重复创建，也不再触发 SSE/notify 与抢答收尾
             if !deduplicated {
                 after_human_reply(state, &reply);
+                // 图工程 Approval Node：取消 → 节点 failed(approval_rejected)
+                let _ = crate::graph::approval::notify_human_reply(state, &resolved);
                 // 抢答收尾（与 reply 同构）：他端 surface 的展示同步收敛
                 if surface != crate::human::popup::POPUP_SURFACE {
                     state.popup.settle(&resolved);

@@ -150,6 +150,7 @@ pub fn can_transition(from: NodeRunStatus, to: NodeRunStatus) -> bool {
             | (Leased, TimedOut)
             | (Leased, Cancelled)
             | (Dispatched, Running)
+            | (Dispatched, WaitingApproval)
             | (Dispatched, TimedOut)
             | (Dispatched, Cancelled)
             | (Running, Verifying)
@@ -158,6 +159,7 @@ pub fn can_transition(from: NodeRunStatus, to: NodeRunStatus) -> bool {
             | (Running, WaitingApproval)
             | (Running, Cancelled)
             | (WaitingApproval, Running)
+            | (WaitingApproval, Succeeded)
             | (WaitingApproval, Failed)
             | (WaitingApproval, Cancelled)
             | (Verifying, Succeeded)
@@ -444,10 +446,12 @@ pub fn converge_graph_run(
     if runs.is_empty() {
         return Ok(None);
     }
-    // pending/ready = 尚未执行（等调度）；active = 已被占用/执行中。
+    // pending/ready = 尚未执行（等调度）；active = 真正在执行/验证。
     // 只要还有未终态节点，图就不应收敛为 completed。
     let has_unfinished = runs.iter().any(|r| !r.status.is_terminal());
-    let has_active = runs.iter().any(|r| r.status.is_active());
+    let has_active = runs
+        .iter()
+        .any(|r| matches!(r.status, NodeRunStatus::Running | NodeRunStatus::Verifying));
     let has_waiting = runs
         .iter()
         .any(|r| r.status == NodeRunStatus::WaitingApproval);

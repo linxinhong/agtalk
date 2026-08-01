@@ -23,6 +23,10 @@ pub(crate) fn dispatch_one(
     item: &DispatchItem,
 ) -> Result<(), ServerMsg> {
     let Some(participant) = &item.participant_id else {
+        // approval 节点不找 participant：复用 human approval 仲裁（design_graph.md §5.2 取舍 3）
+        if item.node_type == crate::graph::spec::NodeType::Approval {
+            return crate::graph::approval::dispatch_approval(state, from, compiled, item);
+        }
         block_node(
             state,
             item,
