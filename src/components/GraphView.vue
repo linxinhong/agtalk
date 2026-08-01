@@ -3,7 +3,6 @@
 // 数据：daemon REST（经 Tauri 命令桥，human token 在 Rust 侧）；实时：Rust 侧 SSE → Tauri event。
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { VueFlow } from '@vue-flow/core'
-import GraphNode from './GraphNode.vue'
 import dagre from '@dagrejs/dagre'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
@@ -64,6 +63,15 @@ const nodeStatusLabel: Record<string, string> = {
   blocked: '阻塞',
   timed_out: '超时',
   cancelled: '已取消',
+}
+
+/** 类型 emoji（label 前置，替代形状/头像做类型辨识） */
+const TYPE_EMOJI: Record<string, string> = {
+  executor: '🤖',
+  deterministic: '⚙️',
+  join: '🔀',
+  gate: '🧭',
+  approval: '🛡️',
 }
 
 const triggerLabel: Record<string, string> = {
@@ -151,18 +159,16 @@ function nodeTitle(n: GraphRunDetail['nodes'][number]): string {
 function buildGraph(d: GraphRunDetail) {
   const flowNodes: any[] = d.nodes.map((n) => ({
     id: n.node_key,
-    type: 'agtalk',
+    type: 'default',
     position: { x: 0, y: 0 },
     data: {
-      nodeKey: n.node_key,
-      statusText: nodeStatusLabel[n.status] ?? n.status,
-      claimText: claimLabel(n),
-      nodeType: n.node_type,
-      participantId: n.participant_id ?? null,
+      label: `${TYPE_EMOJI[n.node_type] ?? ''} ${n.node_key}\n[${nodeStatusLabel[n.status] ?? n.status} · ${claimLabel(n)}]`,
       participantOnline: n.participant_online,
+      participantId: n.participant_id ?? null,
+      nodeType: n.node_type,
     },
     title: nodeTitle(n),
-    class: `agtalk-node agtalk-node-${n.status} ${claimClass(n)} agtalk-shape-${n.node_type}`,
+    class: `agtalk-node agtalk-node-${n.status} ${claimClass(n)}`,
   }))
   const flowEdges: any[] = d.edges.map((e, i) => ({
     id: `e-${i}`,
@@ -183,12 +189,12 @@ function layout(
   const g = new dagre.graphlib.Graph()
   g.setDefaultEdgeLabel(() => ({}))
   g.setGraph({ rankdir: 'LR', nodesep: 50, ranksep: 80, marginx: 20, marginy: 20 })
-  ns.forEach((n) => g.setNode(n.id, { width: 230, height: 64 }))
+  ns.forEach((n) => g.setNode(n.id, { width: 200, height: 56 }))
   es.forEach((e) => g.setEdge(e.source, e.target))
   dagre.layout(g)
   const laid = ns.map((n) => {
     const p = g.node(n.id)
-    return { ...n, position: { x: p.x - 115, y: p.y - 32 } }
+    return { ...n, position: { x: p.x - 100, y: p.y - 28 } }
   })
   return { nodes: laid, edges: es }
 }
@@ -228,21 +234,17 @@ function applyEvent(evt: GraphEventDto) {
         participantOnline?: boolean
         participantId?: string | null
         nodeType?: string
-        statusText?: string
-        claimText?: string
       }
       const claimCls = claimClass({
         participant_id: data.participantId,
         participant_online: data.participantOnline,
       })
-      n.class = `agtalk-node agtalk-node-${status} ${claimCls} agtalk-shape-${data.nodeType ?? ''}`
-      // 结构化字段（响应式）：GraphNode.vue 渲染，不重拼 label
-      data.statusText = nodeStatusLabel[status] ?? status
-      data.claimText = claimLabel({
+      n.class = `agtalk-node agtalk-node-${status} ${claimCls}`
+      ;(n.data as { label: string }).label = `${TYPE_EMOJI[data.nodeType ?? ''] ?? ''} ${evt.node_key}\n[${nodeStatusLabel[status] ?? status} · ${claimLabel({
         participant_id: data.participantId,
         participant_online: data.participantOnline,
         status,
-      })
+      })}]`
     }
     const d = detail.value?.nodes.find((x) => x.node_key === evt.node_key)
     if (d) d.status = status
@@ -351,9 +353,6 @@ onUnmounted(() => {
           :max-zoom="2"
           @node-click="onNodeClick"
         >
-          <template #node-agtalk="props">
-            <GraphNode v-bind="props" />
-          </template>
         </VueFlow>
         <div v-if="nodes.length" class="gv-legend">
           <div class="gv-legend-title">状态（背景色）</div>
@@ -362,10 +361,8 @@ onUnmounted(() => {
           <div><span class="gv-legend-dot gv-legend-failed"></span>失败/超时</div>
           <div><span class="gv-legend-dot gv-legend-blocked"></span>阻塞</div>
           <div><span class="gv-legend-dot gv-legend-approval"></span>待审批</div>
-          <div class="gv-legend-title">类型（形状）</div>
-          <div>◇ gate 分叉 · ▬ join 汇聚 · ⬡ approval 审批</div>
-          <div class="gv-legend-title">执行者（头像）</div>
-          <div>彩色=在线 · 灰化虚线=离线/未认领 · 符号=结构节点</div>
+          <div class="gv-legend-title">类型（emoji）</div>
+          <div>🤖执行 · ⚙️命令 · 🔀汇聚 · 🧭分叉 · 🛡️审批</div>
           <div class="gv-legend-title">认领（边框/角标）</div>
           <div class="gv-legend-claimed"><span class="gv-legend-dot"></span>已认领（实线绿）</div>
           <div class="gv-legend-unclaimed"><span class="gv-legend-dot"></span>未认领（灰虚线+!）</div>
@@ -699,20 +696,6 @@ onUnmounted(() => {
 .agtalk-node.agtalk-struct {
   --vf-node-border: #94a3b8;
 }
-/* ---- 类型形状（Tim 评审：形状=类型语义，零依赖） ----
- * gate → 菱形（decision 惯例）；join → 竖向胶囊（与 gate 对偶：分叉/汇聚）；
- * approval → 六边形（manual/preparation 惯例）；executor/deterministic 保持圆角矩形。
- * 形状仅用于 struct 节点（join/gate/approval 恒无 '!' 角标），clip-path 不误裁认领角标。 */
-.agtalk-node.agtalk-shape-gate {
-  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
-}
-.agtalk-node.agtalk-shape-join {
-  border-radius: 999px;
-}
-.agtalk-node.agtalk-shape-approval {
-  clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
-}
-
 /* 未认领角标（'!' 提示可能卡住） */
 .agtalk-node.agtalk-unclaimed::after {
   content: '!';
