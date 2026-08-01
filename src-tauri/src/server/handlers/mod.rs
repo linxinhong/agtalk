@@ -4,6 +4,7 @@ use crate::identity::auth::{self, AuthenticatedSession};
 use crate::proto::ServerMsg;
 use crate::server::state::AppState;
 use axum::http::{HeaderMap, StatusCode};
+use axum::response::Json;
 use std::path::PathBuf;
 
 pub mod config;
@@ -13,6 +14,11 @@ pub mod graph_dispatch;
 #[cfg(test)]
 pub mod graph_tests;
 pub mod graph_verify;
+pub mod http_human;
+pub mod http_id;
+pub mod http_mem;
+pub mod http_msg;
+pub mod http_tool;
 pub mod human;
 pub mod id;
 pub mod mem;
@@ -151,4 +157,10 @@ mod tests {
             PathBuf::from("/tmp/project/.agtalk")
         );
     }
+}
+
+/// HTTP JSON 响应包装（axum handler 层共享）。
+pub(crate) fn json_response(resp: ServerMsg) -> (StatusCode, Json<ServerMsg>) {
+    let status = status_for(&resp);
+    (status, Json(resp))
 }
