@@ -166,9 +166,10 @@ function buildGraph(d: GraphRunDetail) {
       label: `${n.node_key}\n${statusLine(n)}`,
       participantOnline: n.participant_online,
       participantId: n.participant_id ?? null,
+      nodeType: n.node_type,
     },
     title: nodeTitle(n),
-    class: `agtalk-node agtalk-node-${n.status} ${claimClass(n)}`,
+    class: `agtalk-node agtalk-node-${n.status} ${claimClass(n)} agtalk-shape-${n.node_type}`,
   }))
   const flowEdges: any[] = d.edges.map((e, i) => ({
     id: `e-${i}`,
@@ -230,12 +231,16 @@ function applyEvent(evt: GraphEventDto) {
     const status = evt.event_type.slice('node_'.length)
     const n = nodes.value.find((x) => x.id === evt.node_key)
     if (n) {
-      const data = n.data as { participantOnline?: boolean; participantId?: string | null }
+      const data = n.data as {
+        participantOnline?: boolean
+        participantId?: string | null
+        nodeType?: string
+      }
       const claimCls = claimClass({
         participant_id: data.participantId,
         participant_online: data.participantOnline,
       })
-      n.class = `agtalk-node agtalk-node-${status} ${claimCls}`
+      n.class = `agtalk-node agtalk-node-${status} ${claimCls} agtalk-shape-${data.nodeType ?? ''}`
       ;(n.data as { label: string }).label = `${evt.node_key}\n${statusLine({
         participant_id: data.participantId,
         participant_online: data.participantOnline,
@@ -356,6 +361,8 @@ onUnmounted(() => {
           <div><span class="gv-legend-dot gv-legend-failed"></span>失败/超时</div>
           <div><span class="gv-legend-dot gv-legend-blocked"></span>阻塞</div>
           <div><span class="gv-legend-dot gv-legend-approval"></span>待审批</div>
+          <div class="gv-legend-title">类型（形状）</div>
+          <div>◇ gate 分叉 · ▬ join 汇聚 · ⬡ approval 审批</div>
           <div class="gv-legend-title">认领（边框/角标）</div>
           <div class="gv-legend-claimed"><span class="gv-legend-dot"></span>已认领（实线绿）</div>
           <div class="gv-legend-unclaimed"><span class="gv-legend-dot"></span>未认领（灰虚线+!）</div>
@@ -689,6 +696,20 @@ onUnmounted(() => {
 .agtalk-node.agtalk-struct {
   --vf-node-border: #94a3b8;
 }
+/* ---- 类型形状（Tim 评审：形状=类型语义，零依赖） ----
+ * gate → 菱形（decision 惯例）；join → 竖向胶囊（与 gate 对偶：分叉/汇聚）；
+ * approval → 六边形（manual/preparation 惯例）；executor/deterministic 保持圆角矩形。
+ * 形状仅用于 struct 节点（join/gate/approval 恒无 '!' 角标），clip-path 不误裁认领角标。 */
+.agtalk-node.agtalk-shape-gate {
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+.agtalk-node.agtalk-shape-join {
+  border-radius: 999px;
+}
+.agtalk-node.agtalk-shape-approval {
+  clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
+}
+
 /* 未认领角标（'!' 提示可能卡住） */
 .agtalk-node.agtalk-unclaimed::after {
   content: '!';
