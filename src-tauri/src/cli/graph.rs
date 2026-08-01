@@ -66,7 +66,7 @@ fn resolve_spec(ctx: &Context, spec: &Path) -> Result<PathBuf, CliError> {
 
 /// 提交 spec。repository/base_revision 由 CLI 侧探测当前目录 git（design_graph.md §7），
 /// 存入 spec 顶层字段后随请求发送（daemon 侧优先 spec 内值）。
-pub fn submit(ctx: &Context, spec_file: &PathBuf, json: bool) -> Result<(), CliError> {
+pub fn submit(ctx: &Context, spec_file: &Path, json: bool) -> Result<(), CliError> {
     // spec 解析：显式路径直接用；否则约定 <cwd>/.agtalk/graph/<name>.yaml
     let resolved = resolve_spec(ctx, spec_file)?;
     let raw = std::fs::read_to_string(&resolved)
