@@ -3,6 +3,7 @@
 // 数据：daemon REST（经 Tauri 命令桥，human token 在 Rust 侧）；实时：Rust 侧 SSE → Tauri event。
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { VueFlow } from '@vue-flow/core'
+import GraphNode from './GraphNode.vue'
 import dagre from '@dagrejs/dagre'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
@@ -132,16 +133,6 @@ function claimLabel(n: {
   return n.participant_online ? '已认领' : '未认领'
 }
 
-/** 节点 label 第二行：状态 + 认领（颜色提示词文字化） */
-function statusLine(n: {
-  participant_id?: string | null
-  participant_online?: boolean
-  status?: string
-}): string {
-  const st = nodeStatusLabel[n.status ?? ''] ?? n.status ?? ''
-  return `[${st} · ${claimLabel(n)}]`
-}
-
 /** 节点 title 完整状态描述（hover 显示） */
 function nodeTitle(n: GraphRunDetail['nodes'][number]): string {
   const lines = [`节点 ${n.node_key}`, `状态: ${nodeStatusLabel[n.status] ?? n.status}`]
@@ -160,13 +151,15 @@ function nodeTitle(n: GraphRunDetail['nodes'][number]): string {
 function buildGraph(d: GraphRunDetail) {
   const flowNodes: any[] = d.nodes.map((n) => ({
     id: n.node_key,
-    type: 'default',
+    type: 'agtalk',
     position: { x: 0, y: 0 },
     data: {
-      label: `${n.node_key}\n${statusLine(n)}`,
-      participantOnline: n.participant_online,
-      participantId: n.participant_id ?? null,
+      nodeKey: n.node_key,
+      statusText: nodeStatusLabel[n.status] ?? n.status,
+      claimText: claimLabel(n),
       nodeType: n.node_type,
+      participantId: n.participant_id ?? null,
+      participantOnline: n.participant_online,
     },
     title: nodeTitle(n),
     class: `agtalk-node agtalk-node-${n.status} ${claimClass(n)} agtalk-shape-${n.node_type}`,
@@ -190,12 +183,12 @@ function layout(
   const g = new dagre.graphlib.Graph()
   g.setDefaultEdgeLabel(() => ({}))
   g.setGraph({ rankdir: 'LR', nodesep: 50, ranksep: 80, marginx: 20, marginy: 20 })
-  ns.forEach((n) => g.setNode(n.id, { width: 200, height: 56 }))
+  ns.forEach((n) => g.setNode(n.id, { width: 230, height: 64 }))
   es.forEach((e) => g.setEdge(e.source, e.target))
   dagre.layout(g)
   const laid = ns.map((n) => {
     const p = g.node(n.id)
-    return { ...n, position: { x: p.x - 100, y: p.y - 28 } }
+    return { ...n, position: { x: p.x - 115, y: p.y - 32 } }
   })
   return { nodes: laid, edges: es }
 }
@@ -235,17 +228,21 @@ function applyEvent(evt: GraphEventDto) {
         participantOnline?: boolean
         participantId?: string | null
         nodeType?: string
+        statusText?: string
+        claimText?: string
       }
       const claimCls = claimClass({
         participant_id: data.participantId,
         participant_online: data.participantOnline,
       })
       n.class = `agtalk-node agtalk-node-${status} ${claimCls} agtalk-shape-${data.nodeType ?? ''}`
-      ;(n.data as { label: string }).label = `${evt.node_key}\n${statusLine({
+      // 结构化字段（响应式）：GraphNode.vue 渲染，不重拼 label
+      data.statusText = nodeStatusLabel[status] ?? status
+      data.claimText = claimLabel({
         participant_id: data.participantId,
         participant_online: data.participantOnline,
         status,
-      })}`
+      })
     }
     const d = detail.value?.nodes.find((x) => x.node_key === evt.node_key)
     if (d) d.status = status
@@ -353,7 +350,11 @@ onUnmounted(() => {
           :min-zoom="0.2"
           :max-zoom="2"
           @node-click="onNodeClick"
-        />
+        >
+          <template #node-agtalk="props">
+            <GraphNode v-bind="props" />
+          </template>
+        </VueFlow>
         <div v-if="nodes.length" class="gv-legend">
           <div class="gv-legend-title">状态（背景色）</div>
           <div><span class="gv-legend-dot gv-legend-running"></span>进行中（执行/验证）</div>
@@ -363,6 +364,8 @@ onUnmounted(() => {
           <div><span class="gv-legend-dot gv-legend-approval"></span>待审批</div>
           <div class="gv-legend-title">类型（形状）</div>
           <div>◇ gate 分叉 · ▬ join 汇聚 · ⬡ approval 审批</div>
+          <div class="gv-legend-title">执行者（头像）</div>
+          <div>彩色=在线 · 灰化虚线=离线/未认领 · 符号=结构节点</div>
           <div class="gv-legend-title">认领（边框/角标）</div>
           <div class="gv-legend-claimed"><span class="gv-legend-dot"></span>已认领（实线绿）</div>
           <div class="gv-legend-unclaimed"><span class="gv-legend-dot"></span>未认领（灰虚线+!）</div>
