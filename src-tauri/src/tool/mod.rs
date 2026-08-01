@@ -1,6 +1,9 @@
 //! 工具/诊断领域模块。
 
 pub mod doctor;
+pub mod doctor_checks;
+pub mod doctor_identity;
+pub mod doctor_message;
 
 use crate::config::AgConfig;
 use crate::storage::Storage;
