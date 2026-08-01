@@ -87,6 +87,9 @@ async function loadRuns() {
     } else if (msg.type === 'error') {
       error.value = msg.message
     }
+  } catch (e) {
+    // invoke 失败（如 human session 不可读）→ 显式报错，不静默成"暂无 GraphRun"
+    error.value = String(e)
   } finally {
     loading.value = false
   }
