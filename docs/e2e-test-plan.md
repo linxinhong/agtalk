@@ -79,8 +79,8 @@ git log --oneline main -3    # 预期该提交已 merge 进 main（场景 B 全�
 ## 3. 场景 C：审批门禁（human approval 节点）（5 分钟）
 
 ```bash
-# ① 提交含 approval 节点的 spec（自建，结构见 .agtalk/graph/demo2.yaml 风格）
-agtalk --as alan graph submit <approval-spec>
+# ① 提交审批 spec（已备好 .agtalk/graph/approval-demo.yaml）
+agtalk --as alan graph submit approval-demo
 
 # ② 等节点到达审批点
 agtalk --as alan graph status <run-id>
@@ -102,8 +102,9 @@ agtalk --as alan graph status <run-id>
 验证 lease 过期后的"探测 → grace → timed_out"机制（Tim 评审修复项）：
 
 ```bash
-# ① 提交一张 1 节点的图（participant 指定一个"不存在的身份"，保证没人执行）
-agtalk --as alan graph submit <simple-spec>    # 节点 timeout_seconds 用默认
+# ① 提交探测 spec（已备好 .agtalk/graph/probe-demo.yaml；participant=alan 在线但不执行，
+#    故意不上报 → lease 过期触发探测机制）
+agtalk --as alan graph submit probe-demo
 
 # ② 等 lease 过期（DEFAULT_LEASE_SECONDS = 300s）
 sleep 300
@@ -140,8 +141,8 @@ agtalk graph gui            # 或 GUI 内"图工程"入口（需 0.2.7 daemon）
 ## 6. 场景 F：analyze 成本决策（2 分钟）
 
 ```bash
-agtalk --as alan graph analyze demo2      # 预期：✅ 值得上图（验证可自动化）
-# 自建单节点简单 spec → 预期：⚠️ 不值得上图
+agtalk --as alan graph analyze demo2         # 预期：✅ 值得上图（验证可自动化）
+agtalk --as alan graph analyze tiny-demo      # 已备好：单节点简单 spec → 预期：⚠️ 不值得上图
 ```
 
 ## 7. 回归与收尾
