@@ -67,3 +67,5 @@ jobs:
         run: cargo build -p agtalk
       - name: run browser e2e
         run: ./scripts/e2e-browser.sh
+      - name: run graph e2e
+        run: ./scripts/e2e-graph.sh

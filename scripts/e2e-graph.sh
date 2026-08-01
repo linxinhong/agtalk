@@ -122,7 +122,8 @@ for NODE in impl-backend test-backend verify; do
   "blockers": []
 }
 EOF
-      sed -i '' "s|REPLACE_IMPL|file://$WS/out/impl.txt|" "$WS/result.json"
+      # 跨平台 sed（macOS -i 需参数；GNU 直接 -i）：用 .bak 后缀兼容
+      sed -i.bak "s|REPLACE_IMPL|file://$WS/out/impl.txt|" "$WS/result.json" && rm -f "$WS/result.json.bak"
       ;;
     test-backend)
       cat > "$WS/result.json" <<'EOF'
@@ -136,7 +137,7 @@ EOF
   "blockers": []
 }
 EOF
-      sed -i '' "s|REPLACE_TEST|file://$WS/out/test.txt|" "$WS/result.json"
+      sed -i.bak "s|REPLACE_TEST|file://$WS/out/test.txt|" "$WS/result.json" && rm -f "$WS/result.json.bak"
       ;;
     verify)
       cat > "$WS/result.json" <<'EOF'
