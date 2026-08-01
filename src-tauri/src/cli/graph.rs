@@ -7,7 +7,7 @@ use crate::cli::client;
 use crate::cli::context::Context;
 use crate::cli::output::{print_server_msg, CliError};
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::GraphCmd;
 
@@ -48,7 +48,7 @@ pub(crate) fn dispatch(ctx: Context, cmd: GraphCmd, json: bool) -> Result<(), Cl
 
 /// 解析 spec 路径：显式路径（存在/绝对/含分隔符/带扩展名）直接用；
 /// 否则视为名字，从 `<cwd>/.agtalk/graph/<name>.yaml` 读取（自动补 .yaml 后缀）。
-fn resolve_spec(ctx: &Context, spec: &PathBuf) -> Result<PathBuf, CliError> {
+fn resolve_spec(ctx: &Context, spec: &Path) -> Result<PathBuf, CliError> {
     if spec.exists()
         || spec.is_absolute()
         || spec.components().count() > 1
