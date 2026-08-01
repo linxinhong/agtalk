@@ -148,6 +148,11 @@ function claimStatusOf(n: {
   return n.participant_online ? 'claimed' : 'unclaimed'
 }
 
+/** 认领状态中文（进节点第二行，自解释不依赖图例） */
+function claimTextOf(c: 'claimed' | 'unclaimed' | 'struct'): string {
+  return c === 'claimed' ? '已认领' : c === 'unclaimed' ? '未认领' : '结构'
+}
+
 /** 节点 title 完整状态描述（hover 显示） */
 function nodeTitle(n: GraphRunDetail['nodes'][number]): string {
   const lines = [`节点 ${n.node_key}`, `状态: ${nodeStatusLabel[n.status] ?? n.status}`]
@@ -174,6 +179,7 @@ function buildGraph(d: GraphRunDetail) {
       statusGroup: statusGroup(n.status),
       statusText: nodeStatusLabel[n.status] ?? n.status,
       claimStatus: claimStatusOf(n),
+      claimText: claimTextOf(claimStatusOf(n)),
       participantOnline: n.participant_online,
     },
     title: nodeTitle(n),

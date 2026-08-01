@@ -36,6 +36,7 @@ interface SegmentedNodeData {
   statusGroup: StatusGroup
   statusText: string
   claimStatus: 'claimed' | 'unclaimed' | 'struct'
+  claimText: string
   participantOnline?: boolean
 }
 
@@ -113,7 +114,7 @@ const nodeClass = computed(() => [
     <!-- 右侧分段：文字区 -->
     <div class="seg-right">
       <span class="node-name">{{ props.data.nodeName }}</span>
-      <span class="node-status">{{ props.data.statusText }}</span>
+      <span class="node-status">{{ props.data.statusText }} · {{ props.data.claimText }}</span>
     </div>
   </div>
 </template>
