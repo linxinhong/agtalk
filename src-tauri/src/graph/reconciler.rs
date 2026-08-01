@@ -75,10 +75,16 @@ pub fn reconcile_all(storage: &Storage) -> Result<usize, crate::graph::Error> {
                     |r| r.get::<_, i64>(0),
                 )? > 0
             };
-            if let Some((node_key, _)) = &node_id_opt {
+            if let Some((node_key, attempt)) = &node_id_opt {
                 if !probed_before {
                     // 无锁态调用（外层无 conn guard；send_probe 内部自己拿锁）
-                    if send_probe(storage, &graph_run_id, node_key, PROBE_GRACE_SECONDS)? {
+                    if send_probe(
+                        storage,
+                        &graph_run_id,
+                        node_key,
+                        *attempt,
+                        PROBE_GRACE_SECONDS,
+                    )? {
                         handled += 1;
                         continue; // grace 中，等待 agent 心跳续活
                     }
@@ -183,6 +189,7 @@ fn send_probe(
     storage: &Storage,
     graph_run_id: &str,
     node_key: &str,
+    attempt: u32,
     grace_seconds: f64,
 ) -> Result<bool, crate::graph::Error> {
     let participant: Option<String> = {
@@ -217,7 +224,11 @@ fn send_probe(
         to_name: &target.name,
         from: &human_addr,
         from_name: "agtalk",
-        body: "图节点租约已过期。若你仍在执行此节点，请立即上报 heartbeat（agtalk graph node heartbeat --run <id> --node <key> --attempt <n>）以续活。",
+        body: &format!(
+            "图节点租约已过期。若你仍在执行此节点，请立即上报 heartbeat 续活：\
+             agtalk graph node heartbeat --run {} --node {} --attempt {}",
+            graph_run_id, node_key, attempt
+        ),
         content_type: "graph_probe",
         reply_to_id: None,
         subject: Some("[graph] 节点租约探测"),
