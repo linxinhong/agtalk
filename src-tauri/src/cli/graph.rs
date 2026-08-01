@@ -54,7 +54,7 @@ fn resolve_spec(ctx: &Context, spec: &Path) -> Result<PathBuf, CliError> {
         || spec.components().count() > 1
         || spec.extension().is_some()
     {
-        return Ok(spec.clone());
+        return Ok(spec.to_path_buf());
     }
     let mut name = spec.to_string_lossy().into_owned();
     name.push_str(".yaml");
