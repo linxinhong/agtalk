@@ -121,22 +121,26 @@ pub(crate) fn dispatch_one(
                 send(&state.storage, req).map_err(|e| err("graph_dispatch_send", e.to_string()))?;
             // 派发提醒（Tim 评审偏差②：设计要求派发 + notify 打扰 participant）
             {
-                let limiter = state.notify_limiter.clone();
-                let storage = state.storage.clone();
-                let to = target.address.clone();
-                let from_name = from.name.clone();
-                let message_id = msg.id.clone();
-                tokio::spawn(async move {
-                    let _ = crate::notify::trigger(
-                        &storage,
-                        &to,
-                        &from_name,
-                        &message_id,
-                        &limiter,
-                        Some(true),
-                    )
-                    .await;
-                });
+                // 派发提醒：有 tokio runtime（HTTP handler 上下文）才触发；
+                // 同步/测试上下文跳过（notify 是打扰增强，非投递必需）
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    let limiter = state.notify_limiter.clone();
+                    let storage = state.storage.clone();
+                    let to = target.address.clone();
+                    let from_name = from.name.clone();
+                    let message_id = msg.id.clone();
+                    handle.spawn(async move {
+                        let _ = crate::notify::trigger(
+                            &storage,
+                            &to,
+                            &from_name,
+                            &message_id,
+                            &limiter,
+                            Some(true),
+                        )
+                        .await;
+                    });
+                }
             }
             let conn = state.storage.conn();
             // lease：派发即记租约（reconciler 按此判定超时）

@@ -62,22 +62,25 @@ pub fn dispatch_approval(
     let msg = send(&state.storage, req).map_err(|e| err("graph_dispatch_send", e.to_string()))?;
     // 审批提醒（Tim 评审偏差②：人类审批也应有 notify 打扰）
     {
-        let limiter = state.notify_limiter.clone();
-        let storage = state.storage.clone();
-        let to = human_addr.clone();
-        let from_name = from.name.clone();
-        let message_id = msg.id.clone();
-        tokio::spawn(async move {
-            let _ = crate::notify::trigger(
-                &storage,
-                &to,
-                &from_name,
-                &message_id,
-                &limiter,
-                Some(true),
-            )
-            .await;
-        });
+        // 审批提醒（同 dispatch：有 runtime 才触发）
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let limiter = state.notify_limiter.clone();
+            let storage = state.storage.clone();
+            let to = human_addr.clone();
+            let from_name = from.name.clone();
+            let message_id = msg.id.clone();
+            handle.spawn(async move {
+                let _ = crate::notify::trigger(
+                    &storage,
+                    &to,
+                    &from_name,
+                    &message_id,
+                    &limiter,
+                    Some(true),
+                )
+                .await;
+            });
+        }
     }
 
     // 锁内：节点 → waiting_approval + assignment
