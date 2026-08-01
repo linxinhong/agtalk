@@ -365,63 +365,48 @@ fn advance_to_dispatched(
     run: &NodeRunRow,
     goal: &str,
 ) -> Result<Option<DispatchItem>, super::Error> {
-    let from = if run.status == NodeRunStatus::Pending {
-        NodeRunStatus::Pending
-    } else {
-        NodeRunStatus::Ready
-    };
-    let out = transition(
-        conn,
-        &run.id,
-        run.version,
-        from,
-        NodeRunStatus::Ready,
-        None,
-        None,
-        None,
-    )?;
-    if out != super::state::TransitionOutcome::Applied {
-        return Ok(None);
+    // Pending → Ready（Ready 节点跳过：修复 Tim 评审风险①——Ready 不再执行非法的 Ready→Ready）
+    let mut current = run.clone();
+    if current.status == NodeRunStatus::Pending {
+        let out = transition(
+            conn,
+            &current.id,
+            current.version,
+            NodeRunStatus::Pending,
+            NodeRunStatus::Ready,
+            None,
+            None,
+            None,
+        )?;
+        if out != super::state::TransitionOutcome::Applied {
+            return Ok(None);
+        }
+        let Some(r2) = get_node_run(conn, &current.id)? else {
+            return Ok(None);
+        };
+        current = r2;
     }
-    let run2 = match get_node_run(conn, &run.id)? {
-        Some(r) => r,
-        None => return Ok(None),
-    };
-    let out = transition(
-        conn,
-        &run.id,
-        run2.version,
-        NodeRunStatus::Ready,
-        NodeRunStatus::Leased,
-        None,
-        None,
-        None,
-    )?;
-    if out != super::state::TransitionOutcome::Applied {
-        return Ok(None);
+    // Ready → Leased → Dispatched（每步重读 version，乐观锁推进）
+    for to in [NodeRunStatus::Leased, NodeRunStatus::Dispatched] {
+        let out = transition(
+            conn,
+            &current.id,
+            current.version,
+            current.status,
+            to,
+            None,
+            None,
+            None,
+        )?;
+        if out != super::state::TransitionOutcome::Applied {
+            return Ok(None);
+        }
+        let Some(r2) = get_node_run(conn, &current.id)? else {
+            return Ok(None);
+        };
+        current = r2;
     }
-    let run3 = match get_node_run(conn, &run.id)? {
-        Some(r) => r,
-        None => return Ok(None),
-    };
-    let out = transition(
-        conn,
-        &run.id,
-        run3.version,
-        NodeRunStatus::Leased,
-        NodeRunStatus::Dispatched,
-        None,
-        None,
-        None,
-    )?;
-    if out != super::state::TransitionOutcome::Applied {
-        return Ok(None);
-    }
-    let final_run = match get_node_run(conn, &run.id)? {
-        Some(r) => r,
-        None => return Ok(None),
-    };
-    finish_dispatch(&final_run, goal)
+    finish_dispatch(&current, goal)
 }
 
 /// 组装 DispatchItem。

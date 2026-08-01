@@ -156,9 +156,16 @@ pub fn commit_worktree(
     if dirty.trim().is_empty() {
         return Ok(String::new()); // 无改动，跳过 commit
     }
-    // add 白名单路径（相对 worktree 根）
+    // add 白名单路径（相对 worktree 根；单个失败跳过——文件可能已被 agent 删除，
+    // 但全部失败则明确报错，避免静默吞掉后提交空改动）
+    let mut added_any = false;
     for p in allowed_paths {
-        let _ = git(wt, &["add", "--", p]);
+        if git(wt, &["add", "--", p]).is_ok() {
+            added_any = true;
+        }
+    }
+    if !added_any {
+        return Err("无法 add 任何 changed_files（路径不存在或不可访问）".into());
     }
     // 提交（作者信息用 git 环境兜底，无则本地配置）
     git(
@@ -422,5 +429,36 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ws1.id, ws2.id, "同节点 worktree 应幂等复用");
+    }
+
+    #[test]
+    fn commit_fails_when_no_staged_files() {
+        // Tim 评审风险②：allowed_paths 全部不可 add（文件不存在）→ 明确报错而非静默空提交
+        let repo = init_repo();
+        let storage = Storage::open_in_memory().unwrap();
+        let conn = storage.conn();
+        conn.execute(
+            "INSERT INTO graph_runs (id, goal, spec_snapshot, compiled_graph, status) \
+             VALUES ('g-cf', 'g', '{}', '{}', 'ready')",
+            [],
+        )
+        .unwrap();
+        crate::graph::state::create_node_run(
+            &conn,
+            "g-cf",
+            "a",
+            crate::graph::spec::NodeType::Executor,
+            1,
+            Some("p1"),
+            Some("w1"),
+        )
+        .unwrap();
+        let ws =
+            ensure_worktree(&conn, "g-cf", "a", repo.path().to_str().unwrap(), "main").unwrap();
+        // worktree 内写文件（产生 dirty）但 allowed_paths 指向不存在的文件
+        let wt = std::path::Path::new(ws.path.as_ref().unwrap());
+        std::fs::write(wt.join("src_a.rs"), "x").unwrap();
+        let err = commit_worktree(&conn, &ws, &["ghost/file.rs".to_string()], "msg").unwrap_err();
+        assert!(err.contains("无法 add"), "应明确报 add 失败: {err}");
     }
 }

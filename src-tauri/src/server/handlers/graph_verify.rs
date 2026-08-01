@@ -115,6 +115,54 @@ pub(crate) fn verify_and_advance(
         }
 
         if v.passed {
+            // ① 写节点先 commit worktree（进入 succeeded 前；失败 → 节点回滚 failed，不悬挂。
+            //    修复 Tim 评审风险②：commit 失败不再让节点卡在 succeeded 且图不收敛）
+            if !spec_node.write_paths.is_empty() {
+                if let Ok(Some(ws)) =
+                    crate::graph::workspace::get_by_node(&conn, &body.run_id, &body.node_key)
+                {
+                    let allowed: Vec<String> = body
+                        .changed_files
+                        .iter()
+                        .filter(|f| {
+                            spec_node
+                                .write_paths
+                                .iter()
+                                .any(|w| crate::graph::paths::paths_overlap(w, f))
+                        })
+                        .cloned()
+                        .collect();
+                    if let Err(e) = crate::graph::workspace::commit_worktree(
+                        &conn,
+                        &ws,
+                        &allowed,
+                        &format!("graph {} {}", body.run_id, body.node_key),
+                    ) {
+                        // commit 失败 → verifying → failed（workspace_failure）
+                        let run2 = get_node_run(&conn, &run.id)
+                            .map_err(graph_err)?
+                            .ok_or_else(|| err("graph_node_not_found", "节点不存在"))?;
+                        let _ = transition(
+                            &conn,
+                            &run.id,
+                            run2.version,
+                            NodeRunStatus::Verifying,
+                            NodeRunStatus::Failed,
+                            Some("workspace_failure"),
+                            Some(&e),
+                            None,
+                        )
+                        .map_err(graph_err)?;
+                        let _ = converge_graph_run(&conn, &body.run_id).map_err(graph_err)?;
+                        return Ok(AdvanceOutcome {
+                            cg,
+                            items: Vec::new(),
+                            node_status: "failed".into(),
+                            message: format!("worktree commit 失败，节点回滚 failed: {e}"),
+                        });
+                    }
+                }
+            }
             // verifying → succeeded
             let run2 = get_node_run(&conn, &run.id)
                 .map_err(graph_err)?
@@ -185,31 +233,6 @@ pub(crate) fn verify_and_advance(
                             }
                         }
                     }
-                }
-            }
-            // P1-2：写节点成功后 commit worktree（白名单路径 = changed_files ∩ write_paths）
-            if !spec_node.write_paths.is_empty() {
-                if let Ok(Some(ws)) =
-                    crate::graph::workspace::get_by_node(&conn, &body.run_id, &body.node_key)
-                {
-                    let allowed: Vec<String> = body
-                        .changed_files
-                        .iter()
-                        .filter(|f| {
-                            spec_node
-                                .write_paths
-                                .iter()
-                                .any(|w| crate::graph::paths::paths_overlap(w, f))
-                        })
-                        .cloned()
-                        .collect();
-                    let _ = crate::graph::workspace::commit_worktree(
-                        &conn,
-                        &ws,
-                        &allowed,
-                        &format!("graph {} {}", body.run_id, body.node_key),
-                    )
-                    .map_err(|e| err("graph_workspace_commit_failed", e))?;
                 }
             }
             let _ = converge_graph_run(&conn, &body.run_id).map_err(graph_err)?;

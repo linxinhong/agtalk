@@ -606,3 +606,39 @@ nodes:
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].node_key, "b", "关键路径（长分支 b→c）应优先派发");
 }
+
+#[test]
+fn ready_node_progresses_on_next_tick() {
+    // Tim 评审风险①：节点停在 ready 时，下轮 tick 应继续推进（Ready→Leased→Dispatched）
+    let storage = Storage::open_in_memory().unwrap();
+    let yaml = r#"
+version: 1
+goal: "ready progress"
+nodes:
+  - id: a
+    type: executor
+    outputs: { schema: s }
+    executor_requirements: { participant: p1 }
+    workspace: w1
+    write_paths: [src/a]
+    acceptance: [{ type: path }]
+    timeout_seconds: 300
+"#;
+    let compiled = setup_graph(&storage, yaml, "g-ready");
+    {
+        let conn = storage.conn();
+        // 手动把节点置为 ready（模拟上轮 tick 推进到 ready 后中断）
+        conn.execute(
+            "UPDATE node_runs SET status='ready' WHERE graph_run_id='g-ready' AND node_key='a'",
+            [],
+        )
+        .unwrap();
+    }
+    let conn = storage.conn();
+    let items = tick(&conn, "g-ready", &compiled).unwrap();
+    assert_eq!(items.len(), 1, "ready 节点应继续推进到 dispatched");
+    let a = crate::graph::state::get_node_run_by_key(&conn, "g-ready", "a", 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(a.status, NodeRunStatus::Dispatched, "不应再卡在 ready");
+}

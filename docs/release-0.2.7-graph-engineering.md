@@ -50,15 +50,29 @@ agtalk 是本地 Agent 对话总线（daemon 唯一真相源 + 三域统一 mail
 
 ## 5. 验证状态
 
-- **477 个测试**（内存 SQLite + tempfile 隔离），`cargo clippy -D warnings` 零警告，fmt 通过
-- 端到端真实闭环（非模拟）：三节点并行图 → git worktree 写文件 → 验证 → commit → merge 进 main
-- e2e-graph.sh（隔离 daemon 0.2.7）+ CI 已配置
+- **477+ 个测试**（内存 SQLite + tempfile 隔离），`cargo clippy -D warnings` 零警告，fmt 通过
+- **worktree 全链路由单元测试验证**（`graph/workspace.rs`：临时 git 仓库 → worktree 创建 → 写文件 → commit → merge 后 main 含改动）
+- **e2e-graph.sh** 验证主链路（submit → 派发 → heartbeat → result → completed）；脚本运行在非 git 隔离目录，写节点走 `workspace_skipped` 降级（无 worktree），真实 worktree 闭环以单元测试为准
+- 手工实测（隔离 daemon 0.2.7）：三节点并行图 → worktree 写文件 → 验证 → commit → merge 进 main 的完整流程已跑通
 - GUI 画布：`agtalk graph gui`（custom-protocol 构建）实测可见
 
 ## 6. 已知局限（诚实标注）
 
 - deterministic 节点无 participant 时降级 blocked（未做 Runtime 自执行）
-- 路径验证为字符串级（symlink canonicalize 防护随 worktree 落地后仍未做）
+- 路径验证为字符串级（symlink canonicalize 防护未做；`..` 已拒但链接逃逸未防）
 - Gate 条件表达式未评估（gate 只做汇聚/分叉控制）
 - Graph Patch 为完整 spec 替换（非增量 patch）
+- spec 的 `capabilities` 能力匹配未实现（仅在线性检查）；`priority` 字段未被调度消费（调度用下游权重）
+- e2e-graph.sh 无 git 仓库时写节点走降级（不建 worktree）
 - P3 剩余优化项未做（历史耗时/负载均衡/结果缓存/动态并发）
+
+## 7. Tim 评审修复记录（评审后已处理）
+
+| 评审项 | 状态 |
+|---|---|
+| 风险① Ready 状态节点卡死（Ready→Ready 非法迁移） | ✅ 已修复（advance_to_dispatched 跳过 Ready 推进） |
+| 风险② commit 时序悬挂（先 succeeded 后 commit 失败） | ✅ 已修复（commit 移到 succeeded 前，失败回滚节点 failed） |
+| 偏差② 派发未触发 notify | ✅ 已补（派发/审批后 notify 打扰 participant/human） |
+| 偏差③ Reconciler 无探测/grace | ✅ 已补（lease 过期发探测 + 60s grace 续活，避免误判长任务） |
+| 偏差① e2e 文档表述夸大 | ✅ 本文件 §5 已收敛 |
+| 风险⑤ symlink 逃逸 / 风险⑥ merge 冲突无指引 | ⏳ 待处理（symlink canonicalize、冲突事件） |
