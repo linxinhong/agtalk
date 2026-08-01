@@ -58,7 +58,8 @@ fn build_gui_app(url: String, title: String, width: f64, height: f64, resizable:
             commands::gui_graph_submit,
             commands::gui_graph_cancel,
             commands::gui_graph_stream_start,
-            commands::gui_graph_stream_stop
+            commands::gui_graph_stream_stop,
+            commands::gui_node_prompt
         ])
         .setup(move |app| {
             // 裸二进制无 .app 包图标来源，运行时设置 Dock/Cmd+Tab 图标
