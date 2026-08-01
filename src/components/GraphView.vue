@@ -221,29 +221,22 @@ function applyEvent(evt: GraphEventDto) {
 // ---- 操作 ----
 const promptBusy = ref(false)
 const promptCopied = ref(false)
+const promptError = ref('')
 let promptTimer: ReturnType<typeof setTimeout> | null = null
 
 /** 复制接管提示词（Tim 设计稿方案二）：invoke gui_node_prompt → 剪贴板 */
 async function copyPrompt(node: GraphRunDetail['nodes'][number]) {
   if (!selectedRunId.value) return
   promptBusy.value = true
+  promptError.value = ''
   try {
-    const text = await nodePrompt(selectedRunId.value, node.node_key)
-    try {
-      await navigator.clipboard.writeText(text)
-    } catch {
-      // 回退：textarea + execCommand（非 secure context）
-      const ta = document.createElement('textarea')
-      ta.value = text
-      document.body.appendChild(ta)
-      ta.select()
-      document.execCommand('copy')
-      document.body.removeChild(ta)
-    }
+    // Rust 侧已写入剪贴板（arboard），invoke 返回文本仅作反馈
+    await nodePrompt(selectedRunId.value, node.node_key)
     promptCopied.value = true
     if (promptTimer) clearTimeout(promptTimer)
     promptTimer = setTimeout(() => (promptCopied.value = false), 2000)
   } catch (e) {
+    promptError.value = String(e)
     console.error('复制接管提示词失败', e)
   } finally {
     promptBusy.value = false
@@ -375,6 +368,7 @@ onUnmounted(() => {
               >
                 {{ promptCopied ? '已复制 ✓' : '复制接管提示词' }}
               </button>
+              <span v-if="promptError" class="gv-prompt-err">{{ promptError }}</span>
             </div>
             <div v-if="selectedNode.started_at && selectedNode.completed_at" class="gv-kv">
               <span>耗时</span><b>{{ ((selectedNode.completed_at - selectedNode.started_at)).toFixed(1) }}s</b>
@@ -551,6 +545,12 @@ onUnmounted(() => {
 .gv-prompt-btn:disabled {
   opacity: 0.6;
   cursor: default;
+}
+.gv-prompt-err {
+  color: #dc2626;
+  font-size: 11px;
+  margin-left: 8px;
+  word-break: break-all;
 }
 .gv-fail {
   margin-top: 6px;

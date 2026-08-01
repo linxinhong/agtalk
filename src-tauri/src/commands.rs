@@ -262,7 +262,14 @@ pub fn gui_node_prompt(run_id: String, node_key: String) -> Result<String, Strin
                 ctx.dot_agtalk.display()
             )
         })?;
-    Ok(crate::identity::prompt::render_onboarding_prompt(&session))
+    let text = crate::identity::prompt::render_onboarding_prompt(&session);
+    // 剪贴板写入走 Rust 侧（arboard/NSPasteboard）：WKWebView 的 navigator.clipboard
+    // 可能受限（焦点/secure context），且不新增 capability——自定义命令即可。
+    let mut cb = arboard::Clipboard::new()
+        .map_err(|e| format!("剪贴板不可用: {e}（应用需在前台有焦点）"))?;
+    cb.set_text(text.clone())
+        .map_err(|e| format!("写入剪贴板失败: {e}（应用可能失焦）"))?;
+    Ok(text)
 }
 
 /// 取消运行。
