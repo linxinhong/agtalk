@@ -13,7 +13,6 @@ import {
   graphShow,
   graphStreamStart,
   graphStreamStop,
-  graphSubmit,
   onGraphEvent,
   type GraphEventDto,
   type GraphRunDetail,
@@ -31,11 +30,7 @@ const error = ref('')
 const statusFilter = ref('')
 const loading = ref(false)
 
-// 新建 spec
-const showSubmit = ref(false)
-const specText = ref('')
-const submitting = ref(false)
-
+// 图由 Agent 生成并提交（agtalk graph run <spec.yaml>），GUI 只做加载/查看管理
 // 画布（宽松类型：Vue Flow 泛型过深会触发 TS2589；运行时结构固定）
 const nodes = ref<any[]>([])
 const edges = ref<any[]>([])
@@ -207,28 +202,6 @@ async function doCancel() {
   }
 }
 
-async function doSubmit() {
-  if (!specText.value.trim()) return
-  submitting.value = true
-  error.value = ''
-  try {
-    const msg = await graphSubmit(specText.value)
-    if (msg.type === 'graph_run_created' && msg.run_id) {
-      showSubmit.value = false
-      specText.value = ''
-      await loadRuns()
-      selectedRunId.value = msg.run_id
-      await loadDetail(msg.run_id)
-    } else if (msg.type === 'error') {
-      error.value = msg.message
-    }
-  } catch (e) {
-    error.value = String(e)
-  } finally {
-    submitting.value = false
-  }
-}
-
 // ---- 生命周期 ----
 watch(selectedRunId, (id) => {
   if (!id) return
@@ -274,27 +247,13 @@ onUnmounted(() => {
       <button class="gv-btn gv-btn-danger" :disabled="!selectedRunId" @click="doCancel">
         取消运行
       </button>
-      <button class="gv-btn gv-btn-primary" @click="showSubmit = !showSubmit">新建图</button>
+      <span class="gv-hint">图由 Agent 生成并提交（agtalk graph run &lt;spec.yaml&gt;），本界面只做加载与查看</span>
     </header>
 
     <div v-if="error" class="gv-error">{{ error }}</div>
 
-    <div v-if="showSubmit" class="gv-submit">
-      <textarea
-        v-model="specText"
-        rows="8"
-        placeholder="粘贴 Graph Spec YAML（version/goal/nodes，见 docs/design_graph.md）"
-      ></textarea>
-      <div class="gv-submit-actions">
-        <button class="gv-btn gv-btn-primary" :disabled="submitting" @click="doSubmit">
-          提交
-        </button>
-        <button class="gv-btn" @click="showSubmit = false">取消</button>
-      </div>
-    </div>
-
     <div v-if="!selectedRunId && !loading" class="gv-empty">
-      暂无 GraphRun。提交一个图工程 spec 开始。
+      暂无 GraphRun。用 agtalk graph run &lt;spec.yaml&gt; 提交一个图开始。
     </div>
 
     <main v-else class="gv-main">

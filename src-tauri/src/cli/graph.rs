@@ -14,6 +14,7 @@ use super::GraphCmd;
 pub(crate) fn dispatch(ctx: Context, cmd: GraphCmd, json: bool) -> Result<(), CliError> {
     match cmd {
         GraphCmd::Submit { spec } => submit(&ctx, &spec, json),
+        GraphCmd::Run { spec } => submit(&ctx, &spec, json),
         GraphCmd::List { status } => list(&ctx, status, json),
         GraphCmd::Status { run_id } => status(&ctx, &run_id, json),
         GraphCmd::Logs { run_id, since } => logs(&ctx, &run_id, since, json),
@@ -45,26 +46,48 @@ pub(crate) fn dispatch(ctx: Context, cmd: GraphCmd, json: bool) -> Result<(), Cl
     }
 }
 
+/// 解析 spec 路径：显式路径（存在/绝对/含分隔符/带扩展名）直接用；
+/// 否则视为名字，从 `<cwd>/.agtalk/graph/<name>.yaml` 读取（自动补 .yaml 后缀）。
+fn resolve_spec(ctx: &Context, spec: &PathBuf) -> Result<PathBuf, CliError> {
+    if spec.exists()
+        || spec.is_absolute()
+        || spec.components().count() > 1
+        || spec.extension().is_some()
+    {
+        return Ok(spec.clone());
+    }
+    let mut name = spec.to_string_lossy().into_owned();
+    name.push_str(".yaml");
+    let dir = ctx.dot_agtalk.join("graph");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| CliError::from(format!("创建 .agtalk/graph 失败: {e}")))?;
+    Ok(dir.join(name))
+}
+
 /// 提交 spec。repository/base_revision 由 CLI 侧探测当前目录 git（design_graph.md §7），
 /// 存入 spec 顶层字段后随请求发送（daemon 侧优先 spec 内值）。
 pub fn submit(ctx: &Context, spec_file: &PathBuf, json: bool) -> Result<(), CliError> {
-    let raw = std::fs::read_to_string(spec_file)
-        .map_err(|e| CliError::from(format!("读取 spec 失败 {}: {}", spec_file.display(), e)))?;
-    // 探测当前目录 git（失败不阻塞，daemon 用空值）
-    let mut value: serde_json::Value =
-        serde_json::from_str(&raw).unwrap_or(serde_json::Value::String(raw.clone()));
+    // spec 解析：显式路径直接用；否则约定 <cwd>/.agtalk/graph/<name>.yaml
+    let resolved = resolve_spec(ctx, spec_file)?;
+    let raw = std::fs::read_to_string(&resolved)
+        .map_err(|e| CliError::from(format!("读取 spec 失败 {}: {}", resolved.display(), e)))?;
+    // 探测当前目录 git（失败不阻塞，daemon 用空值）；spec 为 YAML，用 serde_yaml 解析填充
+    let mut value: serde_yaml::Value =
+        serde_yaml::from_str(&raw).unwrap_or(serde_yaml::Value::String(raw.clone()));
     let detect = detect_git();
     if let Some(v) = detect {
-        for (k, val) in [("repository", v.0), ("base_revision", v.1)] {
-            if value.get(k).map(|x| x.is_null()).unwrap_or(true) {
-                value[k] = json!(val);
+        if let serde_yaml::Value::Mapping(map) = &mut value {
+            for (k, val) in [("repository", v.0), ("base_revision", v.1)] {
+                let key = serde_yaml::Value::String(k.to_string());
+                if !map.contains_key(&key) {
+                    map.insert(key, serde_yaml::Value::String(val));
+                }
             }
         }
     }
-    let spec_text = if let serde_json::Value::String(s) = &value {
-        s.clone()
-    } else {
-        value.to_string()
+    let spec_text = match &value {
+        serde_yaml::Value::String(s) => s.clone(),
+        _ => serde_yaml::to_string(&value).map_err(|e| CliError::from(e.to_string()))?,
     };
     let msg = client::post(ctx, "/api/v1/graph/submit", json!({ "spec": spec_text }))?;
     print_server_msg(json, &msg);

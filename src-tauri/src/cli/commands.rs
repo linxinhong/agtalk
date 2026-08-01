@@ -55,6 +55,11 @@ pub(crate) enum GraphCmd {
         /// spec YAML 文件路径
         spec: PathBuf,
     },
+    /// 加载并运行图工程 spec（= submit；Agent 生成 spec 后以此加载）
+    Run {
+        /// spec YAML 文件路径
+        spec: PathBuf,
+    },
     /// 列出 GraphRun
     List {
         #[arg(long)]
