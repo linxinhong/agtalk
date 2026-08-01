@@ -38,10 +38,9 @@ pub(crate) fn dispatch(ctx: Context, cmd: GraphCmd, json: bool) -> Result<(), Cl
             } => report_blocker(&ctx, &run_id, &node_key, attempt, &blocker, json),
         },
         GraphCmd::Gui { run_id } => {
-            let _ = run_id;
-            Err(CliError::from(
-                "graph gui 尚未实现（M4 里程碑，Tauri 画布）".to_string(),
-            ))
+            let _ = run_id; // M4：启动图工程管理界面（?view=graph），run 选择在 GUI 内进行
+            crate::run_graph_gui();
+            Ok(())
         }
     }
 }

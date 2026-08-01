@@ -8,6 +8,7 @@ use crate::human::popup::POPUP_SURFACE;
 use crate::proto::ServerMsg;
 use crate::routing::Message;
 use serde::Serialize;
+use tauri::Emitter;
 
 /// popup 窗口状态：本窗口对应的消息 id（由 `agtalk __popup <msg-id>` 传入）。
 pub struct PopupState {
@@ -137,6 +138,106 @@ fn set_config_value_to(base: &str, key: &str, value: &str) -> Result<(), String>
         ServerMsg::Error { code, message } => Err(format!("{}: {}", code, message)),
         other => Err(format!("unexpected_response: {:?}", other)),
     }
+}
+
+/// 图工程命令桥：daemon 认证用 human token（X-AgTalk-Human-Token，design_graph.md §1.2）。
+/// token 只在本进程内使用，绝不下发前端。
+fn graph_request(
+    method: reqwest::Method,
+    base: &str,
+    endpoint: &str,
+    body: Option<serde_json::Value>,
+) -> Result<ServerMsg, String> {
+    let session =
+        crate::identity::human_session::load().map_err(|e| format!("human session 不可用: {e}"))?;
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .build()
+        .map_err(|e| e.to_string())?;
+    let url = format!("{}{}", base, endpoint);
+    let mut builder = client
+        .request(method, &url)
+        .header(reqwest::header::AUTHORIZATION.as_str(), "");
+    builder = builder.header("X-AgTalk-Human-Token", session.token);
+    if let Some(b) = body {
+        builder = builder.json(&b);
+    }
+    let resp = builder
+        .send()
+        .map_err(|e| format!("daemon_unreachable: {}（请先 agtalk daemon start）", e))?;
+    let status = resp.status();
+    let text = resp.text().map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        if let Ok(ServerMsg::Error { code, message }) = serde_json::from_str(&text) {
+            return Err(format!("{}: {}", code, message));
+        }
+        return Err(format!("http_error: HTTP {}: {}", status, text));
+    }
+    serde_json::from_str(&text).map_err(|e| format!("parse_error: {}", e))
+}
+
+/// GraphRun 列表（图工程管理界面顶部）。
+#[tauri::command]
+pub fn gui_graph_list(status: Option<String>) -> Result<serde_json::Value, String> {
+    let base = gui_base_url()?;
+    let endpoint = match status {
+        Some(s) => format!("/api/v1/graph/runs?status={}", s),
+        None => "/api/v1/graph/runs".to_string(),
+    };
+    let msg = graph_request(reqwest::Method::GET, &base, &endpoint, None)?;
+    serde_json::to_value(msg).map_err(|e| e.to_string())
+}
+
+/// GraphRun 详情（画布数据）。
+#[tauri::command]
+pub fn gui_graph_show(run_id: String) -> Result<serde_json::Value, String> {
+    let base = gui_base_url()?;
+    let msg = graph_request(
+        reqwest::Method::GET,
+        &base,
+        &format!("/api/v1/graph/runs/{}", run_id),
+        None,
+    )?;
+    serde_json::to_value(msg).map_err(|e| e.to_string())
+}
+
+/// GraphRun 事件日志（since 之后）。
+#[tauri::command]
+pub fn gui_graph_events(run_id: String, since: Option<i64>) -> Result<serde_json::Value, String> {
+    let base = gui_base_url()?;
+    let endpoint = format!(
+        "/api/v1/graph/runs/{}/events{}",
+        run_id,
+        since.map(|s| format!("?since={}", s)).unwrap_or_default()
+    );
+    let msg = graph_request(reqwest::Method::GET, &base, &endpoint, None)?;
+    serde_json::to_value(msg).map_err(|e| e.to_string())
+}
+
+/// 提交图 spec（human 允许，design_graph.md §6）。
+#[tauri::command]
+pub fn gui_graph_submit(spec: String) -> Result<serde_json::Value, String> {
+    let base = gui_base_url()?;
+    let msg = graph_request(
+        reqwest::Method::POST,
+        &base,
+        "/api/v1/graph/submit",
+        Some(serde_json::json!({ "spec": spec })),
+    )?;
+    serde_json::to_value(msg).map_err(|e| e.to_string())
+}
+
+/// 取消运行。
+#[tauri::command]
+pub fn gui_graph_cancel(run_id: String) -> Result<serde_json::Value, String> {
+    let base = gui_base_url()?;
+    let msg = graph_request(
+        reqwest::Method::POST,
+        &base,
+        &format!("/api/v1/graph/runs/{}/control", run_id),
+        Some(serde_json::json!({ "action": "cancel" })),
+    )?;
+    serde_json::to_value(msg).map_err(|e| e.to_string())
 }
 
 fn gui_request(
@@ -364,4 +465,96 @@ mod tests {
         assert!(rx.recv().unwrap().contains("action=poll"));
         handle.join().unwrap();
     }
+}
+
+// ---- 图工程 SSE 订阅（M4）：Rust 侧保持长连接，事件经 Tauri emit 推给前端 ----
+// 前端不直接访问 daemon（token 不下发），SSE 在进程内解析后 emit。
+
+/// 各 run 的停止标记（前端切换 run / 卸载时置位）。
+#[derive(Default)]
+pub struct GraphStreamState {
+    stops: std::sync::Mutex<
+        std::collections::HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    >,
+}
+
+#[tauri::command]
+pub fn gui_graph_stream_start(
+    handle: tauri::AppHandle,
+    state: tauri::State<'_, GraphStreamState>,
+    run_id: String,
+) -> Result<(), String> {
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    state
+        .stops
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(run_id.clone(), stop.clone());
+    std::thread::spawn(move || {
+        let _ = stream_graph_events(handle, run_id, stop);
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub fn gui_graph_stream_stop(state: tauri::State<'_, GraphStreamState>, run_id: String) {
+    if let Some(stop) = state
+        .stops
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&run_id)
+    {
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+fn stream_graph_events(
+    handle: tauri::AppHandle,
+    run_id: String,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), String> {
+    use std::io::BufRead;
+    let base = gui_base_url()?;
+    let session =
+        crate::identity::human_session::load().map_err(|e| format!("human session 不可用: {e}"))?;
+    let url = format!("{}/api/v1/graph/events/stream?run_id={}", base, run_id);
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .get(&url)
+        .header("X-AgTalk-Human-Token", session.token)
+        .send()
+        .map_err(|e| format!("daemon_unreachable: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("http_error: HTTP {}", resp.status()));
+    }
+    let reader = std::io::BufReader::new(resp);
+    let mut event_id = String::new();
+    let mut data = String::new();
+    for line in reader.lines() {
+        if stop.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+        let line = line.map_err(|e| e.to_string())?;
+        let l = line.trim();
+        if l.is_empty() {
+            if !data.is_empty() {
+                let _ = handle.emit(
+                    "graph-event",
+                    serde_json::json!({ "run_id": run_id, "id": event_id, "data": data }),
+                );
+            }
+            event_id.clear();
+            data.clear();
+            continue;
+        }
+        if let Some(v) = l.strip_prefix("id:") {
+            event_id = v.trim().to_string();
+        } else if let Some(v) = l.strip_prefix("data:") {
+            data = v.trim().to_string();
+        }
+    }
+    Ok(())
 }

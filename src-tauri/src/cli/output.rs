@@ -548,6 +548,7 @@ fn print_text_server_msg(msg: &ServerMsg) {
         ServerMsg::GraphRunDetail {
             run,
             nodes,
+            edges,
             required_approvals,
             resource_conflicts,
         } => {
@@ -570,6 +571,7 @@ fn print_text_server_msg(msg: &ServerMsg) {
                     println!("          failure: {}", f);
                 }
             }
+            println!("edges     : {}", edges.len());
             if !required_approvals.is_empty() {
                 println!("approvals : {}", required_approvals.join(", "));
             }

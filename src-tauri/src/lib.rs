@@ -28,27 +28,47 @@ fn app_context() -> tauri::Context {
 pub fn run_gui() {
     // GUI 主窗口（配置界面）：窗口在 setup 显式创建——tauri.conf.json 不配 windows，
     // 否则 __popup 进程启动时也会自动创建配置窗口；配置读写经 Tauri 命令桥 → daemon HTTP API（薄客户端）。
+    build_gui_app("index.html".into(), "agtalk".into(), 900.0, 700.0, true)
+}
+
+/// 图工程管理界面（M4）：`agtalk graph gui` 加载 `index.html?view=graph`。
+/// 与配置 GUI 共用命令桥（含 graph 命令与 SSE 订阅），窗口 1100×760 可调。
+pub fn run_graph_gui() {
+    build_gui_app(
+        "index.html?view=graph".into(),
+        "agtalk - 图工程".into(),
+        1100.0,
+        760.0,
+        true,
+    )
+}
+
+fn build_gui_app(url: String, title: String, width: f64, height: f64, resizable: bool) {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .manage(commands::GraphStreamState::default())
         .invoke_handler(tauri::generate_handler![
             commands::gui_load_config,
             commands::gui_set_config,
             commands::gui_feishu_setup_begin,
-            commands::gui_feishu_setup_poll
+            commands::gui_feishu_setup_poll,
+            commands::gui_graph_list,
+            commands::gui_graph_show,
+            commands::gui_graph_events,
+            commands::gui_graph_submit,
+            commands::gui_graph_cancel,
+            commands::gui_graph_stream_start,
+            commands::gui_graph_stream_stop
         ])
-        .setup(|app| {
+        .setup(move |app| {
             // 裸二进制无 .app 包图标来源，运行时设置 Dock/Cmd+Tab 图标
             #[cfg(target_os = "macos")]
             macos_dock::set_dock_icon();
-            tauri::WebviewWindowBuilder::new(
-                app,
-                "main",
-                tauri::WebviewUrl::App("index.html".into()),
-            )
-            .title("agtalk")
-            .inner_size(900.0, 700.0)
-            .resizable(true)
-            .build()?;
+            tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App(url.into()))
+                .title(title)
+                .inner_size(width, height)
+                .resizable(resizable)
+                .build()?;
             Ok(())
         })
         .build(app_context())

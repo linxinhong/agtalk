@@ -481,9 +481,20 @@ pub fn show_run(state: &AppState, run_id: &str) -> Result<ServerMsg, ServerMsg> 
         .map_err(sqlite_err)?;
     let cg: CompiledGraph = serde_json::from_str(&cg_json).map_err(json_err)?;
 
+    let edges = cg
+        .edges
+        .iter()
+        .map(|e| crate::graph::dto::GraphEdgeDto {
+            from: e.from.clone(),
+            to: e.to.clone(),
+            trigger: e.trigger.as_str().to_string(),
+        })
+        .collect();
+
     Ok(ServerMsg::GraphRunDetail {
         run: summary,
         nodes,
+        edges,
         required_approvals: cg.required_approvals,
         resource_conflicts: cg.resource_conflicts,
     })

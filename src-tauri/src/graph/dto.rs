@@ -77,6 +77,14 @@ pub struct GraphNodeDetail {
     pub failure_detail: Option<String>,
 }
 
+/// 边协议视图（画布布局用）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphEdgeDto {
+    pub from: String,
+    pub to: String,
+    pub trigger: String,
+}
+
 /// GraphEvent 协议视图（SSE/events 端点）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphEventDto {

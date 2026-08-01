@@ -552,6 +552,7 @@ pub enum ServerMsg {
     GraphRunDetail {
         run: crate::graph::dto::GraphRunSummary,
         nodes: Vec<crate::graph::dto::GraphNodeDetail>,
+        edges: Vec<crate::graph::dto::GraphEdgeDto>,
         required_approvals: Vec<String>,
         resource_conflicts: Vec<String>,
     },
