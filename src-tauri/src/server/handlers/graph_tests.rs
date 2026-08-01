@@ -182,6 +182,11 @@ nodes:
             _ => panic!(),
         };
 
+        // M2 验证需要真实存在的 artifact 文件（checksum 校验）
+        let dir = tempfile::tempdir().unwrap();
+        let artifact_path = dir.path().join("report.json");
+        std::fs::write(&artifact_path, "{}").unwrap();
+
         // heartbeat：dispatched → running
         let hb = apply_heartbeat(
             &state,
@@ -212,8 +217,8 @@ nodes:
                 output_artifacts: vec![crate::graph::dto::GraphArtifactRef {
                     artifact_type: "source-diff".into(),
                     schema_version: "v1".into(),
-                    uri: "file:///tmp/x".into(),
-                    checksum: "sha256:abc".into(),
+                    uri: format!("file://{}", artifact_path.display()),
+                    checksum: String::new(),
                 }],
                 verification_claims: vec![crate::graph::dto::GraphClaim {
                     command: "cargo test".into(),
@@ -246,7 +251,7 @@ nodes:
             conn.query_row("SELECT COUNT(*) FROM verifications", [], |r| r.get(0))
                 .unwrap()
         };
-        assert_eq!(v, 1);
+        assert!(v >= 1, "claims 已落库");
     }
 
     #[test]
@@ -312,5 +317,100 @@ nodes:
         )
         .unwrap();
         assert!(matches!(res, ServerMsg::GraphNodeReportOk { status, .. } if status == "blocked"));
+    }
+    #[test]
+    fn failed_node_retries_with_new_attempt() {
+        // M2 验收：验证失败且 retryable → 新建 attempt（不覆盖失败记录）
+        let state = test_state();
+        let yaml = r#"
+version: 1
+goal: "retry"
+nodes:
+  - id: only
+    type: executor
+    outputs: { schema: s }
+    executor_requirements: { participant: agent-x }
+    workspace: w
+    write_paths: [x]
+    acceptance: [{ type: path }]
+    timeout_seconds: 300
+    retry_policy: { max_attempts: 2, retryable: [contract_violation] }
+"#;
+        {
+            let conn = state.storage.conn();
+            conn.execute(
+                "INSERT INTO mailboxes (address, name) VALUES ('x-addr', 'agent-x')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO event_sequences (address) VALUES ('x-addr')",
+                [],
+            )
+            .unwrap();
+        }
+        let run_id = match submit_and_start(&state, &fake_session(), yaml).unwrap() {
+            ServerMsg::GraphRunCreated { run_id, .. } => run_id,
+            _ => panic!(),
+        };
+        apply_heartbeat(
+            &state,
+            &NodeBody {
+                run_id: run_id.clone(),
+                node_key: "only".into(),
+                attempt: 1,
+                result: String::new(),
+                changed_files: vec![],
+                output_artifacts: vec![],
+                verification_claims: vec![],
+                blockers: vec![],
+            },
+        )
+        .unwrap();
+
+        // result 为空 → contract_violation → 重试 attempt 2
+        let res = apply_result(
+            &state,
+            &fake_session(),
+            &NodeBody {
+                run_id: run_id.clone(),
+                node_key: "only".into(),
+                attempt: 1,
+                result: String::new(), // 空 result = contract_violation
+                changed_files: vec![],
+                output_artifacts: vec![],
+                verification_claims: vec![],
+                blockers: vec![],
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(res, ServerMsg::GraphNodeReportOk { status, .. } if status == "retrying"),
+            "contract_violation 且 retryable 应触发重试"
+        );
+
+        let conn = state.storage.conn();
+        let a1 = get_node_run_by_key(&conn, &run_id, "only", 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(a1.status, NodeRunStatus::Failed, "attempt 1 保留失败记录");
+        assert_eq!(a1.failure_type.as_deref(), Some("contract_violation"));
+        let a2 = get_node_run_by_key(&conn, &run_id, "only", 2)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            a2.status,
+            NodeRunStatus::Dispatched,
+            "attempt 2 已建并自动重新派发（重试后 tick）"
+        );
+        // 验证结果落库
+        let v: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM verifications WHERE node_run_id=?1",
+                params![a1.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(v >= 1, "验证记录应落库");
     }
 }

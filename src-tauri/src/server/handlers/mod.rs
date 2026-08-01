@@ -12,6 +12,7 @@ pub mod graph;
 pub mod graph_dispatch;
 #[cfg(test)]
 pub mod graph_tests;
+pub mod graph_verify;
 pub mod human;
 pub mod id;
 pub mod mem;

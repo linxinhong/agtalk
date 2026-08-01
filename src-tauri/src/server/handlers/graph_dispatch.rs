@@ -64,6 +64,15 @@ pub(crate) fn dispatch_one(
             let msg =
                 send(&state.storage, req).map_err(|e| err("graph_dispatch_send", e.to_string()))?;
             let conn = state.storage.conn();
+            // lease：派发即记租约（reconciler 按此判定超时）
+            conn.execute(
+                "UPDATE node_runs SET lease_expires_at=?1 WHERE id=?2",
+                params![
+                    unix_now() + crate::graph::reconciler::DEFAULT_LEASE_SECONDS,
+                    item.node_run_id
+                ],
+            )
+            .map_err(sqlite_err)?;
             conn.execute(
                 "INSERT INTO graph_node_assignments (id, node_run_id, message_id, kind) \
                  VALUES (?1,?2,?3,'dispatch')",
@@ -162,4 +171,11 @@ fn graph_err(e: crate::graph::Error) -> ServerMsg {
 
 fn json_err(e: serde_json::Error) -> ServerMsg {
     err("graph_json_error", e.to_string())
+}
+
+fn unix_now() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }

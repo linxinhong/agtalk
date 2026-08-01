@@ -129,6 +129,13 @@ pub async fn start(dot_agtalk: PathBuf) -> Result<(), DaemonError> {
         Err(e) => error!("创建 human mailbox 失败: {}", e),
     }
 
+    // 图工程运行现场恢复（design_graph.md §5.7）：lease 过期 → timed_out，图收敛
+    match crate::graph::reconciler::reconcile_all(&storage) {
+        Ok(n) if n > 0 => info!("graph reconciler 处理 {} 个过期节点", n),
+        Ok(_) => {}
+        Err(e) => error!("graph reconciler 失败: {}", e),
+    }
+
     write_pid_file()?;
 
     let mut state = AppState::new(storage, config.clone(), dot_agtalk);

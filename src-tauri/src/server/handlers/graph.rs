@@ -11,8 +11,7 @@ use crate::graph::events;
 use crate::graph::scheduler::tick;
 use crate::graph::spec::GraphSpec;
 use crate::graph::state::{
-    converge_graph_run, get_node_run, get_node_run_by_key, list_node_runs, transition,
-    NodeRunStatus,
+    converge_graph_run, get_node_run_by_key, list_node_runs, transition, NodeRunStatus,
 };
 use crate::identity::auth::AuthenticatedSession;
 use crate::proto::ServerMsg;
@@ -294,9 +293,14 @@ pub fn apply_heartbeat(state: &AppState, body: &NodeBody) -> Result<ServerMsg, S
             .map_err(graph_err)?;
         }
         NodeRunStatus::Running => {
+            // 心跳续租：更新 heartbeat_at + lease_expires_at
             conn.execute(
-                "UPDATE node_runs SET heartbeat_at=?1 WHERE id=?2",
-                params![now, run.id],
+                "UPDATE node_runs SET heartbeat_at=?1, lease_expires_at=?2 WHERE id=?3",
+                params![
+                    now,
+                    now + crate::graph::reconciler::DEFAULT_LEASE_SECONDS,
+                    run.id
+                ],
             )
             .map_err(sqlite_err)?;
         }
@@ -324,9 +328,7 @@ pub fn apply_result(
     from: &AuthenticatedSession,
     body: &NodeBody,
 ) -> Result<ServerMsg, ServerMsg> {
-    let now = unix_now();
-
-    // blockers 非空 → blocked（独立作用域）
+    // blockers 非空 → blocked（独立作用域，design_graph.md §八 semantic_blocker）
     if !body.blockers.is_empty() {
         let conn = state.storage.conn();
         let run = get_node_run_by_key(&conn, &body.run_id, &body.node_key, body.attempt)
@@ -359,87 +361,11 @@ pub fn apply_result(
         });
     }
 
-    // 状态推进（running→verifying→succeeded）+ 下游候选计算（作用域内持锁）
-    let (cg, items) = {
-        let conn = state.storage.conn();
-        let run = get_node_run_by_key(&conn, &body.run_id, &body.node_key, body.attempt)
-            .map_err(graph_err)?
-            .ok_or_else(|| err("graph_node_not_found", "节点不存在"))?;
-        if run.status != NodeRunStatus::Running {
-            return Err(err(
-                "graph_invalid_node_state",
-                format!("节点状态 {} 不能提交结果", run.status.as_str()),
-            ));
-        }
-        // running → verifying
-        transition(
-            &conn,
-            &run.id,
-            run.version,
-            NodeRunStatus::Running,
-            NodeRunStatus::Verifying,
-            None,
-            None,
-            None,
-        )
-        .map_err(graph_err)?;
-        // claims 落库（verifications 表，M2 抽查留证）
-        for claim in &body.verification_claims {
-            conn.execute(
-                "INSERT INTO verifications (id, node_run_id, verifier_type, rule, expected, \
-                 actual, status, completed_at) VALUES (?1,?2,'claim',?3,'0',?4,'recorded',?5)",
-                params![
-                    uuid::Uuid::new_v4().to_string(),
-                    run.id,
-                    claim.command,
-                    claim.exit_code,
-                    now
-                ],
-            )
-            .map_err(sqlite_err)?;
-        }
-        // 产出物引用（output_artifact_ids JSON）
-        if !body.output_artifacts.is_empty() {
-            conn.execute(
-                "UPDATE node_runs SET output_artifact_ids=?1 WHERE id=?2",
-                params![
-                    serde_json::to_string(&body.output_artifacts).map_err(json_err)?,
-                    run.id
-                ],
-            )
-            .map_err(sqlite_err)?;
-        }
-        // M1 无独立验证：verifying → succeeded
-        let run2 = get_node_run(&conn, &run.id)
-            .map_err(graph_err)?
-            .ok_or_else(|| err("graph_node_not_found", "节点不存在"))?;
-        transition(
-            &conn,
-            &run.id,
-            run2.version,
-            NodeRunStatus::Verifying,
-            NodeRunStatus::Succeeded,
-            None,
-            None,
-            None,
-        )
-        .map_err(graph_err)?;
-        // 收敛 + 下游候选
-        let _ = converge_graph_run(&conn, &body.run_id).map_err(graph_err)?;
-        let compiled_json: String = conn
-            .query_row(
-                "SELECT compiled_graph FROM graph_runs WHERE id=?1",
-                params![body.run_id],
-                |r| r.get(0),
-            )
-            .map_err(sqlite_err)?;
-        let cg: CompiledGraph = serde_json::from_str(&compiled_json).map_err(json_err)?;
-        let items = tick(&conn, &body.run_id, &cg).map_err(graph_err)?;
-        (cg, items)
-    };
-    // 派发下游（无锁态）
-    for item in &items {
-        graph_dispatch::dispatch_one(state, from, &cg, item).map_err(server_err)?;
+    // M2 验证 + 状态推进（锁内）
+    let outcome = crate::server::handlers::graph_verify::verify_and_advance(state, body)?;
+    // 派发下游/重试候选（无锁态：dispatch_one 内部自取锁）
+    for item in &outcome.items {
+        graph_dispatch::dispatch_one(state, from, &outcome.cg, item).map_err(server_err)?;
     }
     {
         let conn = state.storage.conn();
@@ -450,8 +376,8 @@ pub fn apply_result(
         run_id: body.run_id.clone(),
         node_key: body.node_key.clone(),
         attempt: body.attempt,
-        status: "succeeded".into(),
-        message: "节点结果已验收（M1 信任自证）".into(),
+        status: outcome.node_status,
+        message: outcome.message,
     })
 }
 
