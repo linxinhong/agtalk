@@ -151,6 +151,7 @@ pub fn can_transition(from: NodeRunStatus, to: NodeRunStatus) -> bool {
             | (Leased, Cancelled)
             | (Dispatched, Running)
             | (Dispatched, WaitingApproval)
+            | (Dispatched, Succeeded)
             | (Dispatched, TimedOut)
             | (Dispatched, Cancelled)
             | (Running, Verifying)

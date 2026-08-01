@@ -64,6 +64,8 @@ pub struct CompiledGraph {
     pub required_approvals: Vec<String>,
     /// 检测到的资源冲突描述（M1 并行调度时参考；M0 串行不阻塞）。
     pub resource_conflicts: Vec<String>,
+    /// 结构化冲突对（节点 key 对；并行调度时同轮内不得同时派发）。
+    pub conflict_pairs: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -223,7 +225,7 @@ pub fn compile(spec: &GraphSpec) -> CompileResult {
     // ---- 7. 拓扑排序（Kahn，基于 on_success 依赖） ----
     let order = topo_order(&spec.nodes);
     let parallel_groups = topo_levels(&spec.nodes);
-    let (conflicts, mut extra_warnings) = parallel_conflicts(spec);
+    let (conflict_pairs, conflicts, mut extra_warnings) = parallel_conflicts(spec);
     warnings.append(&mut extra_warnings);
     let required_approvals: Vec<String> = spec
         .nodes
@@ -260,6 +262,7 @@ pub fn compile(spec: &GraphSpec) -> CompileResult {
         parallel_groups,
         required_approvals,
         resource_conflicts: conflicts,
+        conflict_pairs,
     };
 
     finish(spec, errors, warnings).map_valid(compiled)
@@ -527,12 +530,13 @@ fn topo_levels(nodes: &[NodeSpec]) -> Vec<Vec<String>> {
 
 /// 并行冲突校验：write_paths 相交 / 共享契约文件 / 同一 workspace key 的写节点互斥。
 /// 返回 (冲突描述, 额外 warning)。冲突只影响并行调度（M1），不阻塞编译（M0 串行）。
-fn parallel_conflicts(spec: &GraphSpec) -> (Vec<String>, Vec<CompileIssue>) {
+fn parallel_conflicts(spec: &GraphSpec) -> (Vec<(String, String)>, Vec<String>, Vec<CompileIssue>) {
     let writers: Vec<&NodeSpec> = spec
         .nodes
         .iter()
         .filter(|n| !n.write_paths.is_empty())
         .collect();
+    let mut conflict_pairs: Vec<(String, String)> = Vec::new();
     let mut conflicts = Vec::new();
     let mut warnings = Vec::new();
 
@@ -544,6 +548,7 @@ fn parallel_conflicts(spec: &GraphSpec) -> (Vec<String>, Vec<CompileIssue>) {
                 .iter()
                 .any(|pa| b_paths.iter().any(|pb| paths_overlap(pa, pb)));
             if overlap {
+                conflict_pairs.push((a.id.clone(), b.id.clone()));
                 conflicts.push(format!(
                     "写节点 '{}' 与 '{}' 的 write_paths 重叠，不能并行",
                     a.id, b.id
@@ -555,6 +560,7 @@ fn parallel_conflicts(spec: &GraphSpec) -> (Vec<String>, Vec<CompileIssue>) {
                     .any(|pb| touches_shared_contract(pa) || touches_shared_contract(pb))
             });
             if shared {
+                conflict_pairs.push((a.id.clone(), b.id.clone()));
                 conflicts.push(format!(
                     "写节点 '{}' 与 '{}' 触碰共享契约文件（锁文件/迁移），不能并行",
                     a.id, b.id
@@ -562,6 +568,7 @@ fn parallel_conflicts(spec: &GraphSpec) -> (Vec<String>, Vec<CompileIssue>) {
             }
             if let (Some(wa), Some(wb)) = (&a.workspace, &b.workspace) {
                 if wa == wb {
+                    conflict_pairs.push((a.id.clone(), b.id.clone()));
                     conflicts.push(format!(
                         "写节点 '{}' 与 '{}' 使用同一 workspace '{}'，不能并行",
                         a.id, b.id, wa
@@ -589,5 +596,5 @@ fn parallel_conflicts(spec: &GraphSpec) -> (Vec<String>, Vec<CompileIssue>) {
         ));
     }
 
-    (conflicts, warnings)
+    (conflict_pairs, conflicts, warnings)
 }
