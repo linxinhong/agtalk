@@ -294,6 +294,9 @@ onUnmounted(() => {
             <div class="gv-kv">
               <span>执行者</span><b>{{ selectedNode.participant_id ?? '-' }}</b>
             </div>
+            <div v-if="selectedNode.started_at && selectedNode.completed_at" class="gv-kv">
+              <span>耗时</span><b>{{ ((selectedNode.completed_at - selectedNode.started_at)).toFixed(1) }}s</b>
+            </div>
             <div v-if="selectedNode.failure_detail" class="gv-fail">
               {{ selectedNode.failure_type }}: {{ selectedNode.failure_detail }}
             </div>

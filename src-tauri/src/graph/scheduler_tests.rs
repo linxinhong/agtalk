@@ -265,6 +265,16 @@ fn setup_graph(
     compiled
 }
 
+fn conn_insert_run(storage: &Storage, run_id: &str) {
+    let conn = storage.conn();
+    conn.execute(
+        "INSERT INTO graph_runs (id, goal, spec_snapshot, compiled_graph, status) \
+         VALUES (?1, 'g', '{}', '{}', 'ready')",
+        rusqlite::params![run_id],
+    )
+    .unwrap();
+}
+
 fn mark_failed(storage: &Storage, run_id: &str, key: &str, failure_type: &str) {
     // 失败必须经 verifying（状态机 Dispatched→Running→Verifying→Failed）
     let conn = storage.conn();
@@ -537,4 +547,62 @@ nodes:
         .unwrap()
         .unwrap();
     assert_eq!(b.status, NodeRunStatus::Dispatched);
+}
+
+// ---- P3：关键路径调度 ----
+
+#[test]
+fn critical_path_dispatches_longer_branch_first() {
+    // b 有下游 c（权重 2），a 无下游（权重 1）；max_concurrency=1 时应先派发 b
+    let storage = Storage::open_in_memory().unwrap();
+    let yaml = r#"
+version: 1
+goal: "critical path"
+max_concurrency: 1
+nodes:
+  - id: a
+    type: executor
+    outputs: { schema: s }
+    executor_requirements: { participant: p1 }
+    workspace: w1
+    write_paths: [src/a]
+    acceptance: [{ type: path }]
+    timeout_seconds: 300
+  - id: b
+    type: executor
+    outputs: { schema: s }
+    executor_requirements: { participant: p1 }
+    workspace: w2
+    write_paths: [src/b]
+    acceptance: [{ type: path }]
+    timeout_seconds: 300
+  - id: c
+    type: executor
+    dependencies: [b]
+    outputs: { schema: s }
+    executor_requirements: { participant: p1 }
+    workspace: w3
+    write_paths: [src/c]
+    acceptance: [{ type: path }]
+    timeout_seconds: 300
+"#;
+    let spec = crate::graph::spec::GraphSpec::parse(yaml).unwrap();
+    let compiled = crate::graph::compiler::compile(&spec).compiled.unwrap();
+    conn_insert_run(&storage, "gcp");
+    for n in &compiled.nodes {
+        crate::graph::state::create_node_run(
+            &storage.conn(),
+            "gcp",
+            &n.id,
+            n.node_type,
+            1,
+            n.executor_requirements.participant.as_deref(),
+            n.workspace.as_deref(),
+        )
+        .unwrap();
+    }
+    let conn = storage.conn();
+    let items = tick(&conn, "gcp", &compiled).unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].node_key, "b", "关键路径（长分支 b→c）应优先派发");
 }

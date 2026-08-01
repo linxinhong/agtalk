@@ -69,12 +69,12 @@ pub fn tick(
         }
     }
     // 派发循环内每轮刷新依赖快照（控制节点可能在上一迭代推进成功）
-    let mut dispatched = Vec::new();
-    let mut dispatched_keys: Vec<&str> = Vec::new();
+    // P3 关键路径：下游权重（沿 on_success 依赖链的最大深度），权重高者优先派发
+    let weights = downstream_weights(compiled);
+
+    // 1. 收集本轮全部可派发候选（控制节点推进等副作用在 try_dispatch 内发生）
+    let mut candidates: Vec<(String, DispatchItem, u32)> = Vec::new();
     for node in &compiled.execution_order {
-        if dispatched.len() as u32 >= compiled.max_concurrency {
-            break;
-        }
         // 每轮刷新依赖快照：控制节点（join/gate）可能在上一迭代已推进成功
         let runs = list_node_runs(conn, graph_run_id)?;
         let latest = build_latest(&runs);
@@ -84,23 +84,72 @@ pub fn tick(
         let Some(run) = latest.get(node.as_str()) else {
             continue;
         };
-        // 冲突感知（P1-1）：与本轮已派发节点有写冲突（write_paths/共享契约/同 workspace）→ 跳过等下一轮
+        if let Some(item) = try_dispatch(conn, run, spec_node, &latest, &compiled.goal)? {
+            let w = weights.get(node.as_str()).copied().unwrap_or(1);
+            candidates.push((node.clone(), item, w));
+        }
+    }
+
+    // 2. 关键路径优先（权重降序）
+    candidates.sort_by(|a, b| b.2.cmp(&a.2));
+
+    // 3. 冲突感知（P1-1）+ 并发配额：同轮冲突写节点跳过等下一轮
+    let mut dispatched = Vec::new();
+    let mut dispatched_keys: Vec<String> = Vec::new();
+    for (node, item, _w) in candidates {
+        if dispatched.len() as u32 >= compiled.max_concurrency {
+            break;
+        }
         let conflicts_with_dispatched = dispatched_keys.iter().any(|d| {
             compiled
                 .conflict_pairs
                 .iter()
-                .any(|(a, b)| (a == *d && b == node) || (a == node && b == *d))
+                .any(|(a, b)| (a == d && b == &node) || (a == &node && b == d))
         });
         if conflicts_with_dispatched {
             continue;
         }
-        let Some(item) = try_dispatch(conn, run, spec_node, &latest, &compiled.goal)? else {
-            continue;
-        };
         dispatched.push(item);
-        dispatched_keys.push(node.as_str());
+        dispatched_keys.push(node.clone());
     }
     Ok(dispatched)
+}
+
+/// P3 关键路径权重：沿 on_success 依赖链（dependencies）的下游最大深度。
+/// 权重高 = 后续链更长，优先派发以减少整体串行等待。
+fn downstream_weights(cg: &CompiledGraph) -> BTreeMap<String, u32> {
+    fn depth(
+        node: &str,
+        dependents: &BTreeMap<&str, Vec<&str>>,
+        memo: &mut BTreeMap<String, u32>,
+    ) -> u32 {
+        if let Some(&w) = memo.get(node) {
+            return w;
+        }
+        let mut w = 1;
+        if let Some(ds) = dependents.get(node) {
+            for d in ds {
+                w = w.max(1 + depth(d, dependents, memo));
+            }
+        }
+        memo.insert(node.to_string(), w);
+        w
+    }
+    let mut dependents: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for n in &cg.nodes {
+        for d in &n.dependencies {
+            dependents
+                .entry(d.as_str())
+                .or_default()
+                .push(n.id.as_str());
+        }
+    }
+    let mut memo: BTreeMap<String, u32> = BTreeMap::new();
+    let mut out: BTreeMap<String, u32> = BTreeMap::new();
+    for n in &cg.nodes {
+        out.insert(n.id.clone(), depth(&n.id, &dependents, &mut memo));
+    }
+    out
 }
 
 /// 组装 node_key → 最新 attempt run 的索引。
