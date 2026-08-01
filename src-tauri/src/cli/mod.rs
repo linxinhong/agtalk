@@ -120,14 +120,18 @@ pub(crate) enum GraphCmd {
 pub(crate) enum GraphNodeCmd {
     /// 心跳续租（长任务周期上报）
     Heartbeat {
+        #[arg(long = "run")]
         run_id: String,
+        #[arg(long = "node")]
         node_key: String,
         #[arg(long)]
         attempt: u32,
     },
     /// 提交候选结果（result.json 见 protocol §6）
     Result {
+        #[arg(long = "run")]
         run_id: String,
+        #[arg(long = "node")]
         node_key: String,
         #[arg(long)]
         attempt: u32,
@@ -136,7 +140,9 @@ pub(crate) enum GraphNodeCmd {
     },
     /// 上报阻塞
     Blocker {
+        #[arg(long = "run")]
         run_id: String,
+        #[arg(long = "node")]
         node_key: String,
         #[arg(long)]
         attempt: u32,
