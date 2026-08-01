@@ -364,19 +364,6 @@ onUnmounted(() => {
             <SegmentedNode v-bind="props" />
           </template>
         </VueFlow>
-        <div v-if="nodes.length" class="gv-legend">
-          <div class="gv-legend-title">状态（背景色）</div>
-          <div><span class="gv-legend-dot gv-legend-running"></span>进行中（执行/验证）</div>
-          <div><span class="gv-legend-dot gv-legend-succeeded"></span>成功</div>
-          <div><span class="gv-legend-dot gv-legend-failed"></span>失败/超时</div>
-          <div><span class="gv-legend-dot gv-legend-blocked"></span>阻塞</div>
-          <div><span class="gv-legend-dot gv-legend-approval"></span>待审批</div>
-          <div class="gv-legend-title">类型（图标）</div>
-          <div>👤执行 · &gt;_命令 · 汇聚 · ◇分叉 · 盾审批</div>
-          <div class="gv-legend-title">认领（边框/角标）</div>
-          <div class="gv-legend-claimed"><span class="gv-legend-dot"></span>已认领（实线绿）</div>
-          <div class="gv-legend-unclaimed"><span class="gv-legend-dot"></span>未认领（灰虚线+!）</div>
-        </div>
         <div v-if="detail" class="gv-run-meta">
           {{ detail.run.id }} · {{ statusLabel[detail.run.status] ?? detail.run.status }} ·
           {{ detail.run.repository ?? '' }}
@@ -667,37 +654,7 @@ onUnmounted(() => {
   color: #6b7280;
 }
 
-/* 画布图例 */
-.gv-legend {
-  position: absolute;
-  bottom: 8px;
-  right: 8px;
-  z-index: 5;
-  font-size: 11px;
-  background: var(--bg-elevated, rgba(0, 0, 0, 0.03));
-  padding: 6px 10px;
-  border-radius: 6px;
-  line-height: 1.8;
-}
-.gv-legend-dot {
-  display: inline-block;
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
-  margin-right: 6px;
-  vertical-align: -1px;
-}
-.gv-legend-unclaimed .gv-legend-dot { background: #9ca3af; }
-.gv-legend-claimed .gv-legend-dot { background: #34d399; }
-.gv-legend-running .gv-legend-dot { background: #2563eb; }
-.gv-legend-succeeded .gv-legend-dot { background: #16a34a; }
-.gv-legend-failed .gv-legend-dot { background: #dc2626; }
-.gv-legend-blocked .gv-legend-dot { background: #ea580c; }
-.gv-legend-approval .gv-legend-dot { background: #ca8a04; }
-.gv-legend-title {
-  font-weight: 600;
-  margin-top: 2px;
-}
+
 .agtalk-edge-on_failure {
   stroke: #dc2626;
   stroke-dasharray: 5 3;
