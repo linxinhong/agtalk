@@ -106,7 +106,7 @@ for NODE in impl-backend test-backend verify; do
   fi
 
   # heartbeat（dispatched → running）
-  "$AGTALK_BIN" --as executor graph node report heartbeat --run "$RUN_ID" --node "$NODE" --attempt 1 --json | jq .
+  "$AGTALK_BIN" --as executor graph node heartbeat --run "$RUN_ID" --node "$NODE" --attempt 1 --json | jq .
 
   # 按节点写 result.json（changed_files 必须 ⊆ write_paths；artifact 必须真实存在）
   case "$NODE" in
@@ -152,7 +152,7 @@ EOF
       ;;
   esac
 
-  REPORT=$("$AGTALK_BIN" --as executor graph node report result --run "$RUN_ID" --node "$NODE" --attempt 1 --file "$WS/result.json" --json)
+  REPORT=$("$AGTALK_BIN" --as executor graph node result --run "$RUN_ID" --node "$NODE" --attempt 1 --file "$WS/result.json" --json)
   echo "$REPORT" | jq .
   R_STATUS=$(echo "$REPORT" | jq -r '.status')
   if [ "$R_STATUS" != "succeeded" ]; then
