@@ -672,6 +672,8 @@ messages
 
 状态字段（如投递状态 pending→delivered→read→done）为 TEXT，**应用层强制状态机**（同 agtalk-office 的设计）。状态转移在 daemon 的 handler 里完成，DB 不加 CHECK（SQLite ALTER TABLE 加 CHECK 困难）。
 
+**图工程数据模型**（`graph_runs` / `node_runs` / `artifacts` / `workspaces` / `verifications` / `graph_events` / `graph_node_assignments`，迁移 V10，幂等键 `UNIQUE(graph_run_id, node_key, attempt)` + 乐观锁 version）见 `design_graph.md` §5.2。
+
 ---
 
 ## 7. 技术栈
@@ -687,6 +689,7 @@ messages
 | 序列化 | serde / serde_json / serde_yaml |
 | 前端 | Vue 3 + Vite |
 | 浏览器扩展 | WXT + Vue 3 + Pinia + Tailwind |
+| 图工程 GUI 画布（M4） | Vue Flow（`@vue-flow/core`）+ `@dagrejs/dagre` DAG 布局（P0 无新 Rust 依赖） |
 | 错误处理 | thiserror（领域错误） |
 | 日志 | tracing |
 | 单二进制 | 是（agtalk argv 分派 daemon/gui/cli/popup） |
@@ -759,6 +762,11 @@ agtalk/                             ← 本项目根
 │       │   ├── mod.rs
 │       │   ├── migrate.rs
 │       │   └── tests.rs
+│       ├── graph/                   ← 图工程运行时（M0 起）：spec/compiler/state/scheduler/workspace/artifact/verify/events/reconciler
+│       │   ├── mod.rs
+│       │   ├── spec.rs
+│       │   ├── compiler.rs
+│       │   └── ...（详见 design_graph.md §5.1）
 │       └── config.rs               ← AgConfig
 ├── extension/                      ← 浏览器扩展（WXT/Vue 3，独立）
 ├── android/                        ← Android Deck APK（Kotlin/Compose，待实现）
@@ -883,3 +891,37 @@ agtalk --json msg wait <sent-msg-id> --timeout 30
 ### 10.6 `msg read` 空 inbox 稳定错误
 
 `agtalk msg read` 在 inbox 为空时返回稳定错误码 `inbox_empty`（非 0 exit），便于 agent 判断"没有新消息"而不是解析泛化的 "not found"。
+
+---
+
+## 11. 图工程（Graph Engineering）
+
+> 落地细节见 `docs/design_graph.md`（工程落地架构基线）。本节只记录架构级决策，是 design.md 的一部分（架构真相源）。
+
+### 11.1 定位
+
+AGTALK 不负责决定项目应该如何设计，而负责将**已经定义好的任务图安全、并行、可恢复地执行完成**。任务图由人工、项目主 Agent 或外部系统生成，进入 AGTALK 后必须经过统一编译和校验。
+
+### 11.2 三个基础
+
+1. **Typed Node 契约与 Graph Compiler**：每个节点声明依赖/输入输出/写路径/验收规则/重试策略；任何图必须先编译（结构/契约/并行冲突/安全四类校验）才能运行，产出不可变快照。
+2. **NodeRun 状态机与确定性 Verification**：Node Definition 与 NodeRun 分离；节点不能由执行者自标成功，只能提交候选结果，由 daemon 验收。
+3. **基于依赖、写路径和 Workspace 的并行 Scheduler**：冲突检查（write_paths 重叠/共享契约/独占资源）决定并行安全。
+
+### 11.3 架构红线（图工程专属）
+
+1. **daemon 是图状态唯一真相源**：Agent 只能"上报"（heartbeat / result / blocker），**永远不能直接改 NodeRun 状态**；状态推进只在 daemon 内（Scheduler / Runtime / Verifier / Reconciler）。
+2. **消息状态 ≠ 节点状态**：`Message delivered` ≠ `Node running`，`Message done` ≠ `Node succeeded`。NodeRun 状态与消息通过 `graph_node_assignments` 关联，不合并。
+3. **P0 不 spawn**：Runtime 第一版不执行任何命令。验证 = agent 自报 `verification_claims` + daemon 进程内轻量抽查（git 只读路径检查含 symlink 防护 / artifact checksum / schema / claims 落库留证）。确定性命令执行（白名单 exec）P1 再引入。
+4. **Approval Node 复用 human approval 仲裁**（`human/approval.rs` 的 receipt 幂等 + 首胜），不建第二套审批。
+5. **认证沿用现有链**：所有 `graph/*` 端点走 `authenticate_req`（agent），图读取/管理端点额外接受 human token（管理界面用）；不新增免认证端点。
+6. **幂等与恢复**：幂等键 `graph_run_id:node_key:attempt` 落库为 UNIQUE 约束；NodeRun 带 `version` 乐观锁；GraphEvent 追加式、**先落库再推 SSE**；daemon 重启后 Reconciliation 收敛运行现场，避免重复执行/建 worktree/合并。
+7. **失败现场保留**：节点失败后 Workspace、未提交 Diff、测试日志、验证记录默认保留，不自动删除。
+
+### 11.4 运行模型（agent 手动拉起）
+
+agtalk 对 agent 只有 notify 打扰 + msg 消息两种影响力。图工程不假设 daemon 能控制 agent 进程：派发 = 消息，提醒 = notify，响应 = agent 主动上报，超时 = daemon 判定（timed_out → 重派或 blocked）。participant 侧契约见 `docs/graph-participant-protocol.md`。
+
+### 11.5 GUI
+
+图工程管理界面为独立视图（`?view=graph`，App.vue 分流），与提问（popup 审批）/ 配置 GUI 相互独立，不新建 Tauri 窗口。画布 = Vue Flow + dagre 自动布局，数据走 daemon REST + 现有 SSE（human token 分支），实时展示任务进入、数据返回、等待、提醒。
