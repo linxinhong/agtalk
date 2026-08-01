@@ -129,8 +129,6 @@ function claimLabel(n: {
   status?: string
 }): string {
   if (!n.participant_id) return '结构'
-  const active = ['dispatched', 'running', 'verifying'].includes(n.status ?? '')
-  if (active) return '激活'
   return n.participant_online ? '已认领' : '未认领'
 }
 
@@ -352,11 +350,15 @@ onUnmounted(() => {
           @node-click="onNodeClick"
         />
         <div v-if="nodes.length" class="gv-legend">
-          <div class="gv-legend-unclaimed"><span class="gv-legend-dot"></span>未认领（执行者离线/无）</div>
-          <div class="gv-legend-claimed"><span class="gv-legend-dot"></span>已认领（可执行）</div>
-          <div class="gv-legend-active"><span class="gv-legend-dot"></span>激活中</div>
-          <div class="gv-legend-struct"><span class="gv-legend-dot"></span>结构节点</div>
-          <div class="gv-legend-failed"><span class="gv-legend-dot"></span>失败/阻塞</div>
+          <div class="gv-legend-title">状态（背景色）</div>
+          <div><span class="gv-legend-dot gv-legend-running"></span>进行中（执行/验证）</div>
+          <div><span class="gv-legend-dot gv-legend-succeeded"></span>成功</div>
+          <div><span class="gv-legend-dot gv-legend-failed"></span>失败/超时</div>
+          <div><span class="gv-legend-dot gv-legend-blocked"></span>阻塞</div>
+          <div><span class="gv-legend-dot gv-legend-approval"></span>待审批</div>
+          <div class="gv-legend-title">认领（边框/角标）</div>
+          <div class="gv-legend-claimed"><span class="gv-legend-dot"></span>已认领（实线绿）</div>
+          <div class="gv-legend-unclaimed"><span class="gv-legend-dot"></span>未认领（灰虚线+!）</div>
         </div>
         <div v-if="detail" class="gv-run-meta">
           {{ detail.run.id }} · {{ statusLabel[detail.run.status] ?? detail.run.status }} ·
@@ -673,29 +675,52 @@ onUnmounted(() => {
   --vf-node-border: #6b7280;
 }
 
-/* ---- 认领状态着色（用户决策 C：两档深浅绿） ----
- * unclaimed：执行节点无在线执行者 → 灰（可能卡住）
- * claimed：有在线执行者（可认领）→ 浅绿
- * 激活中（dispatched/running/verifying）→ 深绿
- * struct：join/gate/approval 结构节点 → 中性蓝灰（不算未认领） */
+/* ---- 认领状态（Tim 评审 v2：一维度一通道） ----
+ * 背景色 = 生命周期状态（唯一主导维度）；
+ * 边框/角标 = 认领（在线=实线绿，离线/无=灰虚线 + '!' 角标）。
+ * 认领类只写 border，不写 --vf-node-bg——失败节点保持红底，认领信息走边框，两维度不互斥。 */
 .agtalk-node.agtalk-unclaimed {
-  --vf-node-bg: #e5e7eb;
   --vf-node-border: #9ca3af;
   --vf-node-border-style: dashed;
 }
 .agtalk-node.agtalk-claimed {
-  --vf-node-bg: #ecfdf5;
   --vf-node-border: #34d399;
 }
-.agtalk-node.agtalk-claimed.agtalk-node-dispatched,
-.agtalk-node.agtalk-claimed.agtalk-node-running,
-.agtalk-node.agtalk-claimed.agtalk-node-verifying {
-  --vf-node-bg: #a7f3d0;
-  --vf-node-border: #059669;
-}
 .agtalk-node.agtalk-struct {
-  --vf-node-bg: #eef2f7;
   --vf-node-border: #94a3b8;
+}
+/* 未认领角标（'!' 提示可能卡住） */
+.agtalk-node.agtalk-unclaimed::after {
+  content: '!';
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #dc2626;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+}
+
+/* 活性动画（Tim 意见 4）：running/verifying 呼吸；waiting_approval 更抢眼 */
+@keyframes agtalk-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.35); }
+  50% { box-shadow: 0 0 0 6px rgba(37, 99, 235, 0); }
+}
+.agtalk-node-running,
+.agtalk-node-verifying {
+  animation: agtalk-pulse 2s ease-in-out infinite;
+}
+@keyframes agtalk-pulse-wait {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(202, 138, 4, 0.45); }
+  50% { box-shadow: 0 0 0 6px rgba(202, 138, 4, 0); }
+}
+.agtalk-node-waiting_approval {
+  animation: agtalk-pulse-wait 1.6s ease-in-out infinite;
 }
 
 /* 详情面板执行者在线/离线徽标 */
@@ -736,9 +761,15 @@ onUnmounted(() => {
 }
 .gv-legend-unclaimed .gv-legend-dot { background: #9ca3af; }
 .gv-legend-claimed .gv-legend-dot { background: #34d399; }
-.gv-legend-active .gv-legend-dot { background: #059669; }
-.gv-legend-struct .gv-legend-dot { background: #94a3b8; }
+.gv-legend-running .gv-legend-dot { background: #2563eb; }
+.gv-legend-succeeded .gv-legend-dot { background: #16a34a; }
 .gv-legend-failed .gv-legend-dot { background: #dc2626; }
+.gv-legend-blocked .gv-legend-dot { background: #ea580c; }
+.gv-legend-approval .gv-legend-dot { background: #ca8a04; }
+.gv-legend-title {
+  font-weight: 600;
+  margin-top: 2px;
+}
 .agtalk-edge-on_failure {
   stroke: #dc2626;
   stroke-dasharray: 5 3;
