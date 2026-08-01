@@ -1,0 +1,4 @@
+# 开发便捷 alias：cargo bd = custom-protocol debug 构建（GUI 不白屏，见 scripts/build.sh）
+# 统一入口建议用 ./scripts/build.sh；alias 只是快捷键。
+[alias]
+bd = "build -p agtalk --features custom-protocol"

@@ -212,9 +212,10 @@ Tauri 2 是 agtalk 的桌面外壳。**GUI 是薄客户端**，所有逻辑走 d
 ### custom-protocol 特性（GUI 白屏陷阱）
 
 - 直接 `cargo build`（不经 tauri CLI）**必须**开 `--features custom-protocol`，否则二进制连 devUrl(localhost) 而非内嵌 dist，**GUI 白屏**。
-- `make release` / `make deploy` 必须带此特性。
+- **统一构建入口 `./scripts/build.sh`**（自动补 custom-protocol）：开发/交付一律走它，禁止裸 `cargo build -p agtalk` 交付。快捷键 `cargo bd`（.cargo/config.toml alias）。Makefile 的 `build`/`release`/`deploy` 均经 build.sh。
+- 注意：对源码做了任何修改后，都要重新 `./scripts/build.sh` 并重启 daemon，交付给用户前确认二进制是 custom-protocol 构建。
 - `pnpm tauri dev` 不开此特性（走 dev server 热重载）。
-- 这是 agtalk-office 踩过的坑，注释必须保留在 Cargo.toml。
+- 这是 agtalk-office 踩过的坑（本项目也踩过两次），注释必须保留在 Cargo.toml。
 
 ### 前端（Vue 3）
 

@@ -529,7 +529,9 @@ fn print_text_server_msg(msg: &ServerMsg) {
                 eprintln!("error     : {} - {}", e.code, e.message);
             }
             if !warnings.is_empty() {
-                println!("warnings  : {}", warnings.len());
+                for w in warnings {
+                    println!("warning   : {} - {}", w.code, w.message);
+                }
             }
         }
         ServerMsg::GraphRunList { runs } => {
