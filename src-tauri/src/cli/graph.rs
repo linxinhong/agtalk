@@ -121,7 +121,7 @@ pub fn logs(ctx: &Context, run_id: &str, since: Option<i64>, json: bool) -> Resu
 }
 
 /// 打补丁：读取 spec（resolve_spec 目录约定）后替换图定义。
-pub fn patch(ctx: &Context, run_id: &str, spec_file: &PathBuf, json: bool) -> Result<(), CliError> {
+pub fn patch(ctx: &Context, run_id: &str, spec_file: &Path, json: bool) -> Result<(), CliError> {
     let resolved = resolve_spec(ctx, spec_file)?;
     let raw = std::fs::read_to_string(&resolved)
         .map_err(|e| CliError::from(format!("读取 spec 失败 {}: {}", resolved.display(), e)))?;
