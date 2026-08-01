@@ -413,4 +413,29 @@ nodes:
             .unwrap();
         assert!(v >= 1, "验证记录应落库");
     }
+
+    #[test]
+    fn control_run_pushes_events_to_hub() {
+        // M3：GraphEvent 先落库后推送（hub flush 机制）
+        let state = test_state();
+        {
+            let conn = state.storage.conn();
+            conn.execute(
+                "INSERT INTO graph_runs (id, goal, spec_snapshot, compiled_graph, status) \
+             VALUES ('g-cancel', 'g', '{}', '{}', 'running')",
+                [],
+            )
+            .unwrap();
+        }
+        let mut rx = state.graph_events.subscribe("g-cancel");
+        let res =
+            crate::server::handlers::graph::control_run(&state, "g-cancel", "cancel").unwrap();
+        assert!(
+            matches!(res, ServerMsg::GraphRunControlOk { status, .. } if status == "cancelled")
+        );
+        // 推送应包含 graph_cancelled（先落库，flush 到 hub）
+        let evt = rx.try_recv().unwrap();
+        assert_eq!(evt.event_type, "graph_cancelled");
+        assert_eq!(evt.node_key, None);
+    }
 }

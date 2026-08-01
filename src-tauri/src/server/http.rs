@@ -77,6 +77,10 @@ pub fn routes(state: AppState) -> Router {
             post(graph::graph_run_control_handler),
         )
         .route(
+            "/api/v1/graph/events/stream",
+            get(graph_events_stream_handler),
+        )
+        .route(
             "/api/v1/graph/node/heartbeat",
             post(graph::graph_node_heartbeat_handler),
         )
@@ -708,6 +712,35 @@ async fn human_send_handler(
         body.surface,
         body.external_event_id,
     ))
+}
+
+// ---- graph events (SSE) ----
+
+#[derive(serde::Deserialize)]
+struct GraphEventsStreamQuery {
+    run_id: String,
+}
+
+/// GraphEvent SSE 订阅（docs/design_graph.md §7）：按 run_id，Last-Event-ID 断线重放。
+async fn graph_events_stream_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<GraphEventsStreamQuery>,
+) -> Result<Sse<impl Stream<Item = Result<axum::response::sse::Event, Infallible>>>, StatusCode> {
+    // 读取端点认证：human token（图管理界面）或 agent
+    graph::authenticate_read(&state, &headers).map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let last_event_id: Option<i64> = headers
+        .get("Last-Event-ID")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok());
+    let rx = state.graph_events.subscribe(&q.run_id);
+    let stream = crate::transport::graph_hub::graph_events_stream(
+        state.storage.clone(),
+        q.run_id,
+        last_event_id,
+        rx,
+    );
+    Ok(Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()))
 }
 
 // ---- events ----

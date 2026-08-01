@@ -6,6 +6,7 @@ use crate::feishu::router::LinkStatus;
 use crate::human::popup::PopupTransport;
 use crate::notify::NotifyLimiter;
 use crate::storage::Storage;
+use crate::transport::graph_hub::GraphEventHub;
 use crate::transport::wake::SubscriberRegistry;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,6 +24,8 @@ pub struct AppState {
     pub feishu: Arc<FeishuDispatcher>,
     /// 飞书长连接状态（doctor 可读；未启用 feishu 时恒 false）。
     pub feishu_link: LinkStatus,
+    /// 图事件推送中枢（M3，按 graph_run_id 订阅 GraphEvent SSE）。
+    pub graph_events: GraphEventHub,
 }
 
 impl AppState {
@@ -36,6 +39,7 @@ impl AppState {
             popup: Arc::new(PopupTransport::disabled()),
             feishu: Arc::new(FeishuDispatcher::disabled()),
             feishu_link: LinkStatus::default(),
+            graph_events: GraphEventHub::new(),
         }
     }
 }

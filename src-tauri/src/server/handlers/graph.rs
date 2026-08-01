@@ -156,11 +156,36 @@ fn respond(res: Result<ServerMsg, ServerMsg>) -> (StatusCode, Json<ServerMsg>) {
     json_response(res.unwrap_or_else(|e| e))
 }
 
+/// flush 新增 GraphEvent 到推送中枢（先落库后推送，design_graph.md §11 红线 6）。
+/// `since` 为函数开始时的 max_event_id；期间所有 append（含状态机内部事件）都会被推送。
+fn push_new_graph_events(state: &AppState, run_id: &str, since: i64) {
+    let events = {
+        let conn = state.storage.conn();
+        crate::graph::events::list_after(&conn, run_id, Some(since), 200).unwrap_or_default()
+    };
+    for e in events {
+        let dto = crate::graph::dto::GraphEventDto {
+            id: e.id,
+            event_type: e.event_type,
+            node_key: e.node_key,
+            payload: e.payload,
+            created_at: e.created_at,
+        };
+        state.graph_events.push(run_id, dto);
+    }
+}
+
+/// 当前 run 的最大事件 id（flush 起点）。
+fn graph_max_event_id(state: &AppState, run_id: &str) -> i64 {
+    let conn = state.storage.conn();
+    crate::graph::events::max_event_id(&conn, run_id).unwrap_or(0)
+}
+
 // ---- 领域逻辑 ----
 
 /// 读取端点认证：human token 或 agent（design_graph.md §6）。
 #[allow(clippy::result_large_err)]
-fn authenticate_read(state: &AppState, headers: &HeaderMap) -> Result<(), ServerMsg> {
+pub(crate) fn authenticate_read(state: &AppState, headers: &HeaderMap) -> Result<(), ServerMsg> {
     if let Some(token) = headers
         .get("X-AgTalk-Human-Token")
         .and_then(|v| v.to_str().ok())
@@ -194,6 +219,7 @@ pub fn submit_and_start(
     let cg = compiled.compiled.clone().expect("valid 编译必有 compiled");
     let run_id = uuid::Uuid::new_v4().to_string();
     let now = unix_now();
+    let since = graph_max_event_id(state, &run_id);
 
     {
         let mut conn = state.storage.conn();
@@ -262,6 +288,8 @@ pub fn submit_and_start(
         let _ = converge_graph_run(&conn, &run_id).map_err(graph_err)?;
     }
 
+    push_new_graph_events(state, &run_id, since);
+
     Ok(ServerMsg::GraphRunCreated {
         run_id,
         status: "ready".into(),
@@ -273,13 +301,17 @@ pub fn submit_and_start(
 /// heartbeat：dispatched → running（首次上报）；running → 更新心跳时间。
 #[allow(clippy::result_large_err)]
 pub fn apply_heartbeat(state: &AppState, body: &NodeBody) -> Result<ServerMsg, ServerMsg> {
-    let conn = state.storage.conn();
-    let run = get_node_run_by_key(&conn, &body.run_id, &body.node_key, body.attempt)
-        .map_err(graph_err)?
-        .ok_or_else(|| err("graph_node_not_found", "节点不存在"))?;
+    let since = graph_max_event_id(state, &body.run_id);
+    let run = {
+        let conn = state.storage.conn();
+        get_node_run_by_key(&conn, &body.run_id, &body.node_key, body.attempt)
+            .map_err(graph_err)?
+            .ok_or_else(|| err("graph_node_not_found", "节点不存在"))?
+    };
     let now = unix_now();
     match run.status {
         NodeRunStatus::Dispatched => {
+            let conn = state.storage.conn();
             transition(
                 &conn,
                 &run.id,
@@ -294,6 +326,7 @@ pub fn apply_heartbeat(state: &AppState, body: &NodeBody) -> Result<ServerMsg, S
         }
         NodeRunStatus::Running => {
             // 心跳续租：更新 heartbeat_at + lease_expires_at
+            let conn = state.storage.conn();
             conn.execute(
                 "UPDATE node_runs SET heartbeat_at=?1, lease_expires_at=?2 WHERE id=?3",
                 params![
@@ -311,6 +344,7 @@ pub fn apply_heartbeat(state: &AppState, body: &NodeBody) -> Result<ServerMsg, S
             ));
         }
     }
+    push_new_graph_events(state, &body.run_id, since);
     Ok(ServerMsg::GraphNodeReportOk {
         run_id: body.run_id.clone(),
         node_key: body.node_key.clone(),
@@ -328,30 +362,34 @@ pub fn apply_result(
     from: &AuthenticatedSession,
     body: &NodeBody,
 ) -> Result<ServerMsg, ServerMsg> {
+    let since = graph_max_event_id(state, &body.run_id);
     // blockers 非空 → blocked（独立作用域，design_graph.md §八 semantic_blocker）
     if !body.blockers.is_empty() {
-        let conn = state.storage.conn();
-        let run = get_node_run_by_key(&conn, &body.run_id, &body.node_key, body.attempt)
-            .map_err(graph_err)?
-            .ok_or_else(|| err("graph_node_not_found", "节点不存在"))?;
-        if run.status != NodeRunStatus::Running {
-            return Err(err(
-                "graph_invalid_node_state",
-                format!("节点状态 {} 不能提交结果", run.status.as_str()),
-            ));
+        {
+            let conn = state.storage.conn();
+            let run = get_node_run_by_key(&conn, &body.run_id, &body.node_key, body.attempt)
+                .map_err(graph_err)?
+                .ok_or_else(|| err("graph_node_not_found", "节点不存在"))?;
+            if run.status != NodeRunStatus::Running {
+                return Err(err(
+                    "graph_invalid_node_state",
+                    format!("节点状态 {} 不能提交结果", run.status.as_str()),
+                ));
+            }
+            transition(
+                &conn,
+                &run.id,
+                run.version,
+                NodeRunStatus::Running,
+                NodeRunStatus::Blocked,
+                Some("semantic_blocker"),
+                Some(&body.blockers.join("; ")),
+                None,
+            )
+            .map_err(graph_err)?;
+            let _ = converge_graph_run(&conn, &body.run_id).map_err(graph_err)?;
         }
-        transition(
-            &conn,
-            &run.id,
-            run.version,
-            NodeRunStatus::Running,
-            NodeRunStatus::Blocked,
-            Some("semantic_blocker"),
-            Some(&body.blockers.join("; ")),
-            None,
-        )
-        .map_err(graph_err)?;
-        let _ = converge_graph_run(&conn, &body.run_id).map_err(graph_err)?;
+        push_new_graph_events(state, &body.run_id, since);
         return Ok(ServerMsg::GraphNodeReportOk {
             run_id: body.run_id.clone(),
             node_key: body.node_key.clone(),
@@ -371,6 +409,7 @@ pub fn apply_result(
         let conn = state.storage.conn();
         let _ = converge_graph_run(&conn, &body.run_id).map_err(graph_err)?;
     }
+    push_new_graph_events(state, &body.run_id, since);
 
     Ok(ServerMsg::GraphNodeReportOk {
         run_id: body.run_id.clone(),
@@ -475,38 +514,42 @@ pub fn run_events(
 /// 运行控制：cancel / pause / resume。
 #[allow(clippy::result_large_err)]
 pub fn control_run(state: &AppState, run_id: &str, action: &str) -> Result<ServerMsg, ServerMsg> {
-    let conn = state.storage.conn();
+    let since = graph_max_event_id(state, run_id);
     match action {
         "cancel" => {
-            let runs = list_node_runs(&conn, run_id).map_err(graph_err)?;
-            for r in &runs {
-                if !r.status.is_terminal() {
-                    let _ = transition(
-                        &conn,
-                        &r.id,
-                        r.version,
-                        r.status,
-                        NodeRunStatus::Cancelled,
-                        None,
-                        None,
-                        None,
-                    )
-                    .map_err(graph_err)?;
+            {
+                let conn = state.storage.conn();
+                let runs = list_node_runs(&conn, run_id).map_err(graph_err)?;
+                for r in &runs {
+                    if !r.status.is_terminal() {
+                        let _ = transition(
+                            &conn,
+                            &r.id,
+                            r.version,
+                            r.status,
+                            NodeRunStatus::Cancelled,
+                            None,
+                            None,
+                            None,
+                        )
+                        .map_err(graph_err)?;
+                    }
                 }
+                conn.execute(
+                    "UPDATE graph_runs SET status='cancelled', completed_at=?1 WHERE id=?2",
+                    params![unix_now(), run_id],
+                )
+                .map_err(sqlite_err)?;
+                events::append(
+                    &conn,
+                    run_id,
+                    "graph_cancelled",
+                    None,
+                    &serde_json::json!({}),
+                )
+                .map_err(graph_err)?;
             }
-            conn.execute(
-                "UPDATE graph_runs SET status='cancelled', completed_at=?1 WHERE id=?2",
-                params![unix_now(), run_id],
-            )
-            .map_err(sqlite_err)?;
-            events::append(
-                &conn,
-                run_id,
-                "graph_cancelled",
-                None,
-                &serde_json::json!({}),
-            )
-            .map_err(graph_err)?;
+            push_new_graph_events(state, run_id, since);
             Ok(ServerMsg::GraphRunControlOk {
                 run_id: run_id.to_string(),
                 action: action.to_string(),
@@ -514,13 +557,17 @@ pub fn control_run(state: &AppState, run_id: &str, action: &str) -> Result<Serve
             })
         }
         "pause" => {
-            conn.execute(
-                "UPDATE graph_runs SET status='paused' WHERE id=?1",
-                params![run_id],
-            )
-            .map_err(sqlite_err)?;
-            events::append(&conn, run_id, "graph_paused", None, &serde_json::json!({}))
-                .map_err(graph_err)?;
+            {
+                let conn = state.storage.conn();
+                conn.execute(
+                    "UPDATE graph_runs SET status='paused' WHERE id=?1",
+                    params![run_id],
+                )
+                .map_err(sqlite_err)?;
+                events::append(&conn, run_id, "graph_paused", None, &serde_json::json!({}))
+                    .map_err(graph_err)?;
+            }
+            push_new_graph_events(state, run_id, since);
             Ok(ServerMsg::GraphRunControlOk {
                 run_id: run_id.to_string(),
                 action: action.to_string(),
@@ -528,13 +575,17 @@ pub fn control_run(state: &AppState, run_id: &str, action: &str) -> Result<Serve
             })
         }
         "resume" => {
-            conn.execute(
-                "UPDATE graph_runs SET status='running' WHERE id=?1 AND status='paused'",
-                params![run_id],
-            )
-            .map_err(sqlite_err)?;
-            events::append(&conn, run_id, "graph_resumed", None, &serde_json::json!({}))
-                .map_err(graph_err)?;
+            {
+                let conn = state.storage.conn();
+                conn.execute(
+                    "UPDATE graph_runs SET status='running' WHERE id=?1 AND status='paused'",
+                    params![run_id],
+                )
+                .map_err(sqlite_err)?;
+                events::append(&conn, run_id, "graph_resumed", None, &serde_json::json!({}))
+                    .map_err(graph_err)?;
+            }
+            push_new_graph_events(state, run_id, since);
             Ok(ServerMsg::GraphRunControlOk {
                 run_id: run_id.to_string(),
                 action: action.to_string(),
