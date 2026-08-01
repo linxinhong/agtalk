@@ -71,6 +71,11 @@ pub(crate) enum GraphCmd {
     },
     /// 取消运行
     Cancel { run_id: String },
+    /// 图成本分析（docs/graph-engineering-survey.md §5）：本地评估，不建图
+    Analyze {
+        /// spec 名字或 YAML 文件路径（同 submit 解析规则）
+        spec: PathBuf,
+    },
     /// 以新 spec 打补丁更新图定义（仅 paused/ready 图；spec 名字解析同 submit）
     Patch {
         run_id: String,

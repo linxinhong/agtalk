@@ -3,6 +3,7 @@
 //! M0：spec 解析（spec.rs）+ Graph Compiler（compiler.rs，路径工具 paths.rs）。
 //! M1：NodeRun/GraphRun 状态机（state.rs）+ GraphEvent（events.rs）。
 
+pub mod analyze;
 pub mod approval;
 pub mod compiler;
 pub mod dto;

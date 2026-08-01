@@ -38,6 +38,7 @@ pub(crate) fn dispatch(ctx: Context, cmd: GraphCmd, json: bool) -> Result<(), Cl
                 blocker,
             } => report_blocker(&ctx, &run_id, &node_key, attempt, &blocker, json),
         },
+        GraphCmd::Analyze { spec } => analyze(&ctx, &spec, json),
         GraphCmd::Gui { run_id } => {
             let _ = run_id; // M4：启动图工程管理界面（?view=graph），run 选择在 GUI 内进行
             crate::run_graph_gui();
@@ -121,6 +122,66 @@ pub fn logs(ctx: &Context, run_id: &str, since: Option<i64>, json: bool) -> Resu
 }
 
 /// 打补丁：读取 spec（resolve_spec 目录约定）后替换图定义。
+/// 图成本分析（不建图）：解析 + 编译 + 评估，输出"值得/不值得上图"建议。
+fn analyze(ctx: &Context, spec: &Path, json: bool) -> Result<(), CliError> {
+    let path = resolve_spec(ctx, spec)?;
+    let yaml = std::fs::read_to_string(&path).map_err(|e| {
+        CliError::new(
+            "graph_spec_read_failed",
+            format!("读取 spec 失败 {}: {}", path.display(), e),
+        )
+    })?;
+    let spec = crate::graph::spec::GraphSpec::parse(&yaml)
+        .map_err(|e| CliError::new("graph_spec_parse_error", format!("spec 解析失败: {e}")))?;
+    let compiled = crate::graph::compiler::compile(&spec);
+    if !compiled.valid {
+        let errs: Vec<String> = compiled.errors.iter().map(|i| i.message.clone()).collect();
+        return Err(CliError::new(
+            "graph_compile_error",
+            format!("spec 编译失败: {}", errs.join("; ")),
+        ));
+    }
+    let cg = compiled
+        .compiled
+        .as_ref()
+        .ok_or_else(|| CliError::new("graph_compile_error", "编译无结果"))?;
+    let a = crate::graph::analyze::analyze(cg);
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "spec": path.display().to_string(),
+                "node_count": a.node_count,
+                "longest_chain": a.longest_chain,
+                "parallel_factor": a.parallel_factor,
+                "writer_nodes": a.writer_nodes,
+                "verification_nodes": a.verification_nodes,
+                "approval_nodes": a.approval_nodes,
+                "est_duration_secs": a.est_duration_secs,
+                "verdict": if a.verdict == crate::graph::analyze::AnalysisVerdict::WorthIt { "worth_it" } else { "not_worth_it" },
+                "reasons": a.reasons,
+            })
+        );
+        return Ok(());
+    }
+    println!("spec       : {}", path.display());
+    println!("节点数     : {}", a.node_count);
+    println!(
+        "最长链     : {}（可并行度约 {}）",
+        a.longest_chain, a.parallel_factor
+    );
+    println!("写节点     : {}（worktree 隔离）", a.writer_nodes);
+    println!("验证节点   : {}（acceptance 门禁）", a.verification_nodes);
+    println!("审批节点   : {}", a.approval_nodes);
+    println!("预估时长   : {:.0} 秒（最长链下界）", a.est_duration_secs);
+    if a.verdict == crate::graph::analyze::AnalysisVerdict::WorthIt {
+        println!("建议       : ✅ 值得上图 —— {}", a.reasons.join("；"));
+    } else {
+        println!("建议       : ⚠️ 不值得上图（简单任务，走单 agent 更划算，见 docs/graph-engineering-survey.md §5）");
+    }
+    Ok(())
+}
+
 pub fn patch(ctx: &Context, run_id: &str, spec_file: &Path, json: bool) -> Result<(), CliError> {
     let resolved = resolve_spec(ctx, spec_file)?;
     let raw = std::fs::read_to_string(&resolved)
