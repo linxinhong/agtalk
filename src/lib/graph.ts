@@ -117,6 +117,10 @@ export const graphSubmit = (spec: string) =>
 export const graphCancel = (runId: string) =>
   invoke<GraphServerMsg>('gui_graph_cancel', { runId })
 
+/** 节点接管提示词（Tim 设计稿方案二：GUI 复制按钮） */
+export const nodePrompt = (runId: string, nodeKey: string) =>
+  invoke<string>('gui_node_prompt', { runId, nodeKey })
+
 export const graphStreamStart = (runId: string) =>
   invoke<void>('gui_graph_stream_start', { runId })
 

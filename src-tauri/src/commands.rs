@@ -227,6 +227,44 @@ pub fn gui_graph_submit(spec: String) -> Result<serde_json::Value, String> {
     serde_json::to_value(msg).map_err(|e| e.to_string())
 }
 
+/// 节点"复制接管提示词"（Tim 设计稿方案二）：查 participant → 读本地 session → 渲染接管文本。
+/// 薄桥：只做转发与组装，渲染逻辑在 identity/prompt.rs（与 CLI id prompt 单一事实来源）。
+#[tauri::command]
+pub fn gui_node_prompt(run_id: String, node_key: String) -> Result<String, String> {
+    let base = gui_base_url()?;
+    let msg = graph_request(
+        reqwest::Method::GET,
+        &base,
+        &format!("/api/v1/graph/runs/{}", run_id),
+        None,
+    )?;
+    let crate::proto::ServerMsg::GraphRunDetail { nodes, .. } = msg else {
+        return Err("无法读取图详情".into());
+    };
+    let node = nodes
+        .iter()
+        .find(|n| n.node_key == node_key)
+        .ok_or_else(|| format!("节点 {node_key} 不存在"))?;
+    let participant: &str = node
+        .participant_id
+        .as_deref()
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| {
+            String::from("该节点无外部执行者（deterministic/join/gate/approval 无需接管提示词）")
+        })?;
+    // 读 participant 的本地 session（GUI 启动目录的 .agtalk/<name>/session.json）
+    let ctx =
+        crate::cli::context::Context::pre_join().map_err(|e| format!("无法定位 workspace: {e}"))?;
+    let session =
+        crate::identity::session_file::read(&ctx.dot_agtalk, participant).map_err(|e| {
+            format!(
+                "participant '{participant}' 的 session 不在当前 workspace（{}）: {e}",
+                ctx.dot_agtalk.display()
+            )
+        })?;
+    Ok(crate::identity::prompt::render_onboarding_prompt(&session))
+}
+
 /// 取消运行。
 #[tauri::command]
 pub fn gui_graph_cancel(run_id: String) -> Result<serde_json::Value, String> {

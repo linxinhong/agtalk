@@ -395,6 +395,18 @@ fn run(cli: Cli, json: bool) -> Result<(), CliError> {
                     let ctx = Context::current(as_name).map_err(CliError::from)?;
                     client::id::show(ctx, json)
                 }
+                IdCmd::Prompt { name } => {
+                    // 身份解析：name 参数 > --as > AGTALK_NAME > 当前目录唯一 session
+                    // （Context::current 已实现后三层；缺身份报错引导 join，不自动 join）
+                    let as_name = name.as_deref().or(as_name);
+                    let ctx = Context::current(as_name).map_err(|e| {
+                        CliError::new(
+                            "identity_missing",
+                            format!("{e}（请先 agtalk id join <name> 注册身份）"),
+                        )
+                    })?;
+                    client::id::prompt(ctx, json)
+                }
                 IdCmd::Lookup { name } => {
                     // lookup 是“无身份命令”：不需要当前 session，只访问 daemon。
                     let ctx = Context::daemon_only().map_err(CliError::from)?;

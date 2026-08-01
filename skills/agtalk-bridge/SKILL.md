@@ -32,7 +32,9 @@ routing  = UUID only   (send to <address>, never to a name)
 receiving = pull by default (msg inbox / msg read), SSE only for short waits with timeout
 ```
 
-**You never hold a secret token.** Your identity is resolved at call time: `PID → .agtalk/agents.json → your name → session.json → your UUID`. After compaction, just run `agtalk id show` to recover — nothing to remember.
+**You never hold a secret token.** Your identity is resolved at call time: `PID → .agtalk/agents.json → your name → session.json -> your UUID`. After compaction, just run `agtalk id show` to recover — nothing to remember.
+
+> 移交任务给另一个 agent 时，可用 `agtalk id prompt <name>` 生成 3 行接管提示词（或 GUI 节点详情的"复制接管提示词"按钮），一次复制粘贴即可完成身份接管。
 
 ## Step 0: Check daemon is running
 

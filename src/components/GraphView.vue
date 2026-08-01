@@ -13,6 +13,7 @@ import {
   graphShow,
   graphStreamStart,
   graphStreamStop,
+  nodePrompt,
   onGraphEvent,
   type GraphEventDto,
   type GraphRunDetail,
@@ -191,6 +192,37 @@ function applyEvent(evt: GraphEventDto) {
 }
 
 // ---- 操作 ----
+const promptBusy = ref(false)
+const promptCopied = ref(false)
+let promptTimer: ReturnType<typeof setTimeout> | null = null
+
+/** 复制接管提示词（Tim 设计稿方案二）：invoke gui_node_prompt → 剪贴板 */
+async function copyPrompt(node: GraphRunDetail['nodes'][number]) {
+  if (!selectedRunId.value) return
+  promptBusy.value = true
+  try {
+    const text = await nodePrompt(selectedRunId.value, node.node_key)
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      // 回退：textarea + execCommand（非 secure context）
+      const ta = document.createElement('textarea')
+      ta.value = text
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    promptCopied.value = true
+    if (promptTimer) clearTimeout(promptTimer)
+    promptTimer = setTimeout(() => (promptCopied.value = false), 2000)
+  } catch (e) {
+    console.error('复制接管提示词失败', e)
+  } finally {
+    promptBusy.value = false
+  }
+}
+
 async function doCancel() {
   if (!selectedRunId.value) return
   try {
@@ -293,6 +325,15 @@ onUnmounted(() => {
             </div>
             <div class="gv-kv">
               <span>执行者</span><b>{{ selectedNode.participant_id ?? '-' }}</b>
+            </div>
+            <div v-if="selectedNode.participant_id" class="gv-kv">
+              <button
+                class="gv-prompt-btn"
+                :disabled="promptBusy"
+                @click="copyPrompt(selectedNode)"
+              >
+                {{ promptCopied ? '已复制 ✓' : '复制接管提示词' }}
+              </button>
             </div>
             <div v-if="selectedNode.started_at && selectedNode.completed_at" class="gv-kv">
               <span>耗时</span><b>{{ ((selectedNode.completed_at - selectedNode.started_at)).toFixed(1) }}s</b>
@@ -456,6 +497,19 @@ onUnmounted(() => {
 }
 .gv-kv span {
   color: var(--text-secondary, rgba(0,0,0,0.55));
+}
+.gv-prompt-btn {
+  background: var(--accent, #4f8cff);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.gv-prompt-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 .gv-fail {
   margin-top: 6px;

@@ -174,6 +174,18 @@ JSON 输出：
 }
 ```
 
+### 5.3 id prompt
+
+```bash
+agtalk id prompt [name]          # 输出 3 行接管提示词（纯文本，直接可复制）
+agtalk id prompt --json          # 结构化 {name, address, intro, prompt_text}
+```
+
+生成身份接管提示词（bootstrap 文本，供把任务移交给另一个 agent 时一次复制粘贴）。
+身份解析顺序：`name` 参数 > `--as` > `AGTALK_NAME` > 当前目录唯一 session；
+**缺身份不自动 join**，报错并提示先 `agtalk id join <name>`（join 保持幂等语义可见）。
+GUI 节点详情面板的"复制接管提示词"按钮复用同一渲染函数（`identity/prompt.rs` 单一事实来源）。
+
 ### 5.3 id lookup
 
 ```bash

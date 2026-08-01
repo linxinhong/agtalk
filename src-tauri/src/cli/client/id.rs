@@ -68,6 +68,22 @@ pub fn leave_by_address(
     Ok(())
 }
 
+pub fn prompt(ctx: Context, json: bool) -> Result<(), CliError> {
+    // 读取本地 session（身份已由 Context::current 解析保证存在）
+    let session = crate::identity::session_file::read(&ctx.dot_agtalk, &ctx.name)
+        .map_err(|e| CliError::new("session_read_failed", e.to_string()))?;
+    let p = crate::identity::prompt::onboarding_prompt(&session);
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&p).map_err(|e| CliError::new("json_error", e.to_string()))?
+        );
+    } else {
+        print!("{}", p.prompt_text);
+    }
+    Ok(())
+}
+
 pub fn show(ctx: Context, json: bool) -> Result<(), CliError> {
     let resp = get(&ctx, "/api/v1/id/me")?;
     print_server_msg(json, &resp);

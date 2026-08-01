@@ -147,6 +147,11 @@ pub(crate) enum IdCmd {
     },
     /// 当前身份
     Show,
+    /// 生成身份接管提示词（3 行可复制文本；缺身份不自动 join，报错引导）
+    Prompt {
+        /// 目标身份名（省略时按 --as > AGTALK_NAME > 当前目录唯一 session 解析）
+        name: Option<String>,
+    },
     /// 按 name 查找候选 mailbox
     Lookup { name: Option<String> },
     /// 离开网络
