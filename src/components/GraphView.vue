@@ -3,6 +3,7 @@
 // 数据：daemon REST（经 Tauri 命令桥，human token 在 Rust 侧）；实时：Rust 侧 SSE → Tauri event。
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { VueFlow } from '@vue-flow/core'
+import SegmentedNode from './SegmentedNode.vue'
 import dagre from '@dagrejs/dagre'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
@@ -65,15 +66,6 @@ const nodeStatusLabel: Record<string, string> = {
   cancelled: '已取消',
 }
 
-/** 类型 emoji（label 前置，替代形状/头像做类型辨识） */
-const TYPE_EMOJI: Record<string, string> = {
-  executor: '🤖',
-  deterministic: '⚙️',
-  join: '🔀',
-  gate: '🧭',
-  approval: '🛡️',
-}
-
 const triggerLabel: Record<string, string> = {
   on_success: '成功',
   on_failure: '失败',
@@ -123,22 +115,37 @@ async function loadDetail(runId: string) {
 
 // ---- 画布构建 ----
 
-/** 认领维度 class（用户决策 C：两档深浅绿）：
- *  执行节点（有 participant）+ 在线 → claimed（可认领）；
- *  离线/无执行者 → unclaimed（灰）；join/gate/approval 结构节点 → struct（中性） */
-function claimClass(n: { participant_id?: string | null; participant_online?: boolean }): string {
-  if (!n.participant_id) return 'agtalk-struct'
-  return n.participant_online ? 'agtalk-claimed' : 'agtalk-unclaimed'
+/** 12 状态 → 7 视觉组（SegmentedNode 状态色） */
+function statusGroup(status: string): string {
+  switch (status) {
+    case 'leased':
+    case 'dispatched':
+    case 'running':
+    case 'verifying':
+      return 'running'
+    case 'waiting_approval':
+      return 'waiting'
+    case 'blocked':
+      return 'blocked'
+    case 'succeeded':
+      return 'succeeded'
+    case 'failed':
+    case 'timed_out':
+      return 'failed'
+    case 'cancelled':
+      return 'cancelled'
+    default:
+      return 'idle' // pending/ready
+  }
 }
 
-/** 认领状态中文（颜色提示词，配合图例） */
-function claimLabel(n: {
+/** 认领维度：执行节点（有 participant）+ 在线 → claimed；离线 → unclaimed；无执行者 → struct */
+function claimStatusOf(n: {
   participant_id?: string | null
   participant_online?: boolean
-  status?: string
-}): string {
-  if (!n.participant_id) return '结构'
-  return n.participant_online ? '已认领' : '未认领'
+}): 'claimed' | 'unclaimed' | 'struct' {
+  if (!n.participant_id) return 'struct'
+  return n.participant_online ? 'claimed' : 'unclaimed'
 }
 
 /** 节点 title 完整状态描述（hover 显示） */
@@ -159,16 +166,18 @@ function nodeTitle(n: GraphRunDetail['nodes'][number]): string {
 function buildGraph(d: GraphRunDetail) {
   const flowNodes: any[] = d.nodes.map((n) => ({
     id: n.node_key,
-    type: 'default',
+    type: 'agtalk',
     position: { x: 0, y: 0 },
     data: {
-      label: `${TYPE_EMOJI[n.node_type] ?? ''} ${n.node_key}\n[${nodeStatusLabel[n.status] ?? n.status} · ${claimLabel(n)}]`,
-      participantOnline: n.participant_online,
-      participantId: n.participant_id ?? null,
+      nodeName: n.node_key,
       nodeType: n.node_type,
+      statusGroup: statusGroup(n.status),
+      statusText: nodeStatusLabel[n.status] ?? n.status,
+      claimStatus: claimStatusOf(n),
+      participantOnline: n.participant_online,
     },
     title: nodeTitle(n),
-    class: `agtalk-node agtalk-node-${n.status} ${claimClass(n)}`,
+    class: 'agtalk-node',
   }))
   const flowEdges: any[] = d.edges.map((e, i) => ({
     id: `e-${i}`,
@@ -231,20 +240,12 @@ function applyEvent(evt: GraphEventDto) {
     const n = nodes.value.find((x) => x.id === evt.node_key)
     if (n) {
       const data = n.data as {
-        participantOnline?: boolean
-        participantId?: string | null
-        nodeType?: string
+        statusGroup?: string
+        statusText?: string
       }
-      const claimCls = claimClass({
-        participant_id: data.participantId,
-        participant_online: data.participantOnline,
-      })
-      n.class = `agtalk-node agtalk-node-${status} ${claimCls}`
-      ;(n.data as { label: string }).label = `${TYPE_EMOJI[data.nodeType ?? ''] ?? ''} ${evt.node_key}\n[${nodeStatusLabel[status] ?? status} · ${claimLabel({
-        participant_id: data.participantId,
-        participant_online: data.participantOnline,
-        status,
-      })}]`
+      n.class = 'agtalk-node'
+      data.statusGroup = statusGroup(status)
+      data.statusText = nodeStatusLabel[status] ?? status
     }
     const d = detail.value?.nodes.find((x) => x.node_key === evt.node_key)
     if (d) d.status = status
@@ -353,6 +354,9 @@ onUnmounted(() => {
           :max-zoom="2"
           @node-click="onNodeClick"
         >
+          <template #node-agtalk="props">
+            <SegmentedNode v-bind="props" />
+          </template>
         </VueFlow>
         <div v-if="nodes.length" class="gv-legend">
           <div class="gv-legend-title">状态（背景色）</div>
@@ -361,8 +365,8 @@ onUnmounted(() => {
           <div><span class="gv-legend-dot gv-legend-failed"></span>失败/超时</div>
           <div><span class="gv-legend-dot gv-legend-blocked"></span>阻塞</div>
           <div><span class="gv-legend-dot gv-legend-approval"></span>待审批</div>
-          <div class="gv-legend-title">类型（emoji）</div>
-          <div>🤖执行 · ⚙️命令 · 🔀汇聚 · 🧭分叉 · 🛡️审批</div>
+          <div class="gv-legend-title">类型（图标）</div>
+          <div>👤执行 · &gt;_命令 · 汇聚 · ◇分叉 · 盾审批</div>
           <div class="gv-legend-title">认领（边框/角标）</div>
           <div class="gv-legend-claimed"><span class="gv-legend-dot"></span>已认领（实线绿）</div>
           <div class="gv-legend-unclaimed"><span class="gv-legend-dot"></span>未认领（灰虚线+!）</div>
@@ -641,95 +645,6 @@ onUnmounted(() => {
 </style>
 
 <style>
-/* 节点状态着色（Vue Flow 节点 class 由库注入，需非 scoped） */
-.agtalk-node-pending {
-  --vf-node-bg: #f3f4f6;
-  --vf-node-border: #9ca3af;
-}
-.agtalk-node-ready,
-.agtalk-node-leased,
-.agtalk-node-dispatched {
-  --vf-node-bg: #eff6ff;
-  --vf-node-border: #3b82f6;
-}
-.agtalk-node-running {
-  --vf-node-bg: #dbeafe;
-  --vf-node-border: #2563eb;
-}
-.agtalk-node-verifying {
-  --vf-node-bg: #e0e7ff;
-  --vf-node-border: #6366f1;
-}
-.agtalk-node-succeeded {
-  --vf-node-bg: #dcfce7;
-  --vf-node-border: #16a34a;
-}
-.agtalk-node-failed {
-  --vf-node-bg: #fee2e2;
-  --vf-node-border: #dc2626;
-}
-.agtalk-node-waiting_approval {
-  --vf-node-bg: #fef9c3;
-  --vf-node-border: #ca8a04;
-}
-.agtalk-node-blocked {
-  --vf-node-bg: #ffedd5;
-  --vf-node-border: #ea580c;
-}
-.agtalk-node-timed_out,
-.agtalk-node-cancelled {
-  --vf-node-bg: #f3f4f6;
-  --vf-node-border: #6b7280;
-}
-
-/* ---- 认领状态（Tim 评审 v2：一维度一通道） ----
- * 背景色 = 生命周期状态（唯一主导维度）；
- * 边框/角标 = 认领（在线=实线绿，离线/无=灰虚线 + '!' 角标）。
- * 认领类只写 border，不写 --vf-node-bg——失败节点保持红底，认领信息走边框，两维度不互斥。 */
-.agtalk-node.agtalk-unclaimed {
-  --vf-node-border: #9ca3af;
-  --vf-node-border-style: dashed;
-}
-.agtalk-node.agtalk-claimed {
-  --vf-node-border: #34d399;
-}
-.agtalk-node.agtalk-struct {
-  --vf-node-border: #94a3b8;
-}
-/* 未认领角标（'!' 提示可能卡住） */
-.agtalk-node.agtalk-unclaimed::after {
-  content: '!';
-  position: absolute;
-  top: -6px;
-  right: -6px;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: #dc2626;
-  color: #fff;
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 14px;
-  text-align: center;
-}
-
-/* 活性动画（Tim 意见 4）：running/verifying 呼吸；waiting_approval 更抢眼 */
-@keyframes agtalk-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.35); }
-  50% { box-shadow: 0 0 0 6px rgba(37, 99, 235, 0); }
-}
-.agtalk-node-running,
-.agtalk-node-verifying {
-  animation: agtalk-pulse 2s ease-in-out infinite;
-}
-@keyframes agtalk-pulse-wait {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(202, 138, 4, 0.45); }
-  50% { box-shadow: 0 0 0 6px rgba(202, 138, 4, 0); }
-}
-.agtalk-node-waiting_approval {
-  animation: agtalk-pulse-wait 1.6s ease-in-out infinite;
-}
-
 /* 详情面板执行者在线/离线徽标 */
 .gv-claim-badge {
   font-size: 11px;
