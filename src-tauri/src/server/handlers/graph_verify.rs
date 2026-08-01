@@ -8,7 +8,7 @@ use crate::graph::state::{
 };
 use crate::proto::ServerMsg;
 use crate::server::state::AppState;
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 
 use super::graph::NodeBody;
 
@@ -141,6 +141,52 @@ pub(crate) fn verify_and_advance(
                 )
                 .map_err(sqlite_err)?;
             }
+            // P1-3：修复节点（on_failure 声明）成功后，触发其上游失败节点重试（新 attempt）
+            if !spec_node.on_failure.is_empty() {
+                for f in &spec_node.on_failure {
+                    let latest_attempt: Option<u32> = conn
+                        .query_row(
+                            "SELECT MAX(attempt) FROM node_runs WHERE graph_run_id=?1 AND node_key=?2",
+                            params![body.run_id, f],
+                            |r| r.get(0),
+                        )
+                        .optional()
+                        .map_err(sqlite_err)?;
+                    if let Some(att) = latest_attempt {
+                        if let Ok(Some(f_run)) = get_node_run_by_key(&conn, &body.run_id, f, att) {
+                            if matches!(
+                                f_run.status,
+                                NodeRunStatus::Failed | NodeRunStatus::TimedOut
+                            ) {
+                                let (_, created) = crate::graph::state::create_node_run(
+                                    &conn,
+                                    &body.run_id,
+                                    f,
+                                    crate::graph::spec::NodeType::from_str_name(&f_run.node_type)
+                                        .unwrap_or(crate::graph::spec::NodeType::Executor),
+                                    att + 1,
+                                    f_run.participant_id.as_deref(),
+                                    f_run.workspace_id.as_deref(),
+                                )
+                                .map_err(graph_err)?;
+                                if created {
+                                    crate::graph::events::append(
+                                        &conn,
+                                        &body.run_id,
+                                        "node_ready",
+                                        Some(f),
+                                        &serde_json::json!({
+                                            "attempt": att + 1,
+                                            "retry_after_repair": body.node_key,
+                                        }),
+                                    )
+                                    .map_err(graph_err)?;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             // P1-2：写节点成功后 commit worktree（白名单路径 = changed_files ∩ write_paths）
             if !spec_node.write_paths.is_empty() {
                 if let Ok(Some(ws)) =
@@ -223,6 +269,21 @@ pub(crate) fn verify_and_advance(
             // 重试判定（design_graph.md §八：临时执行错误/超时可重试，路径/契约违规不重试）
             let rp = &spec_node.retry_policy;
             let retryable = rp.retryable.iter().any(|f| f.as_str() == failure_type);
+            // P1-3 Repair：图中有节点声明 on_failure 指向本节点（修复者）→ 失败不自动重试，
+            // 进入修复流程（修复节点由 P1-1 的 on_failure 触发在 tick 中派发；修复成功后触发本节点重试）
+            let has_repair = cg
+                .nodes
+                .iter()
+                .any(|n| n.on_failure.iter().any(|f| f == &body.node_key));
+            if has_repair {
+                let items = tick(&conn, &body.run_id, &cg).map_err(graph_err)?;
+                return Ok(AdvanceOutcome {
+                    cg,
+                    items,
+                    node_status: "failed_repairing".into(),
+                    message: format!("验证失败（{failure_type}），进入修复流程"),
+                });
+            }
             if run.attempt < rp.max_attempts && retryable {
                 let next_attempt = run.attempt + 1;
                 let (_, created) = crate::graph::state::create_node_run(

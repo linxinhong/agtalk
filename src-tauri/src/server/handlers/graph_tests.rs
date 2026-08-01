@@ -438,4 +438,155 @@ nodes:
         assert_eq!(evt.event_type, "graph_cancelled");
         assert_eq!(evt.node_key, None);
     }
+
+    #[test]
+    fn repair_flow_failure_triggers_repair_then_retry_original() {
+        // P1-3：a 失败（有修复者 b）→ 走 Repair（不自动重试）→ b 派发 → b 成功 → a attempt2 重试
+        let state = test_state();
+        {
+            let conn = state.storage.conn();
+            conn.execute(
+                "INSERT INTO mailboxes (address, name) VALUES ('x-addr', 'agent-x')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO event_sequences (address) VALUES ('x-addr')",
+                [],
+            )
+            .unwrap();
+        }
+        let yaml = r#"
+version: 1
+goal: "repair flow"
+nodes:
+  - id: a
+    type: executor
+    outputs: { schema: s }
+    executor_requirements: { participant: agent-x }
+    workspace: w1
+    write_paths: [src/a]
+    acceptance: [{ type: path }]
+    timeout_seconds: 300
+  - id: b
+    type: executor
+    on_failure: [a]
+    outputs: { schema: s }
+    executor_requirements: { participant: agent-x }
+    workspace: w2
+    write_paths: [src/a]
+    acceptance: [{ type: path }]
+    timeout_seconds: 300
+"#;
+        let run_id = match submit_and_start(&state, &fake_session(), yaml).unwrap() {
+            ServerMsg::GraphRunCreated { run_id, .. } => run_id,
+            _ => panic!(),
+        };
+
+        // a 执行但结果为空 → contract_violation → 进入修复（b 被派发）
+        apply_heartbeat(
+            &state,
+            &NodeBody {
+                run_id: run_id.clone(),
+                node_key: "a".into(),
+                attempt: 1,
+                result: String::new(),
+                changed_files: vec![],
+                output_artifacts: vec![],
+                verification_claims: vec![],
+                blockers: vec![],
+            },
+        )
+        .unwrap();
+        let res = apply_result(
+            &state,
+            &fake_session(),
+            &NodeBody {
+                run_id: run_id.clone(),
+                node_key: "a".into(),
+                attempt: 1,
+                result: String::new(), // 空 result = contract_violation
+                changed_files: vec![],
+                output_artifacts: vec![],
+                verification_claims: vec![],
+                blockers: vec![],
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(res, ServerMsg::GraphNodeReportOk { status, .. } if status == "failed_repairing"),
+            "a 失败应进入修复流程"
+        );
+        // b 被派发（on_failure 触发）
+        let b1 = {
+            let conn = state.storage.conn();
+            crate::graph::state::get_node_run_by_key(&conn, &run_id, "b", 1)
+                .unwrap()
+                .unwrap()
+        };
+        assert_eq!(
+            b1.status,
+            crate::graph::state::NodeRunStatus::Dispatched,
+            "修复节点 b 应被派发"
+        );
+
+        // b 修复成功
+        apply_heartbeat(
+            &state,
+            &NodeBody {
+                run_id: run_id.clone(),
+                node_key: "b".into(),
+                attempt: 1,
+                result: String::new(),
+                changed_files: vec![],
+                output_artifacts: vec![],
+                verification_claims: vec![],
+                blockers: vec![],
+            },
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("fix.txt");
+        std::fs::write(&f, "fix").unwrap();
+        apply_result(
+            &state,
+            &fake_session(),
+            &NodeBody {
+                run_id: run_id.clone(),
+                node_key: "b".into(),
+                attempt: 1,
+                result: "修复完成".into(),
+                changed_files: vec!["src/a/fix.rs".into()],
+                output_artifacts: vec![crate::graph::dto::GraphArtifactRef {
+                    artifact_type: "source-diff".into(),
+                    schema_version: "v1".into(),
+                    uri: format!("file://{}", f.display()),
+                    checksum: String::new(),
+                }],
+                verification_claims: vec![],
+                blockers: vec![],
+            },
+        )
+        .unwrap();
+
+        // b succeeded + a attempt2 被触发重试并派发
+        let conn = state.storage.conn();
+        let b = crate::graph::state::get_node_run_by_key(&conn, &run_id, "b", 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(b.status, crate::graph::state::NodeRunStatus::Succeeded);
+        let a2 = crate::graph::state::get_node_run_by_key(&conn, &run_id, "a", 2)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            a2.status,
+            crate::graph::state::NodeRunStatus::Dispatched,
+            "修复后原节点 a 应重试（attempt 2）"
+        );
+        // a attempt1 保留失败记录
+        let a1 = crate::graph::state::get_node_run_by_key(&conn, &run_id, "a", 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(a1.status, crate::graph::state::NodeRunStatus::Failed);
+    }
 }
