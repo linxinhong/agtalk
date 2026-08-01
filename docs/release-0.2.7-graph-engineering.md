@@ -75,4 +75,5 @@ agtalk 是本地 Agent 对话总线（daemon 唯一真相源 + 三域统一 mail
 | 偏差② 派发未触发 notify | ✅ 已补（派发/审批后 notify 打扰 participant/human） |
 | 偏差③ Reconciler 无探测/grace | ✅ 已补（lease 过期发探测 + 60s grace 续活，避免误判长任务） |
 | 偏差① e2e 文档表述夸大 | ✅ 本文件 §5 已收敛 |
-| 风险⑤ symlink 逃逸 / 风险⑥ merge 冲突无指引 | ⏳ 待处理（symlink canonicalize、冲突事件） |
+| 风险⑤ symlink 逃逸 | ✅ 已修复（verify_paths 两层 canonicalize 防护：write_path 不得逃出 worktree；changed_file canonical 必须落在 write_path 内） |
+| 风险⑥ merge 冲突无指引 | ✅ 已修复（冲突保留现场 + merge_conflict 事件含手动解决指引，不中断其余 workspace 合并） |

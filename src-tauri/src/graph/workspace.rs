@@ -194,9 +194,10 @@ pub fn merge_workspaces(
     conn: &Connection,
     graph_run_id: &str,
     integration_target: &str,
-) -> Result<usize, String> {
+) -> Result<(usize, usize), String> {
     let rows = list_by_graph(conn, graph_run_id).map_err(|e| e.to_string())?;
     let mut merged = 0;
+    let mut conflicts = 0;
     for ws in rows {
         let Some(branch) = &ws.branch else { continue };
         let Some(repository) = &ws.repository else {
@@ -216,17 +217,31 @@ pub fn merge_workspaces(
                 merged += 1;
             }
             Err(e) => {
-                // 合并冲突：保留现场（不自动处理），标记 failed
+                // 合并冲突：保留现场（不自动处理），发事件带指引，继续合并其余 workspace
                 conn.execute(
                     "UPDATE workspaces SET status='failed' WHERE id=?1",
                     params![ws.id],
                 )
                 .map_err(|e| e.to_string())?;
-                return Err(format!("merge 冲突（workspace {}）: {e}", ws.id));
+                crate::graph::events::append(
+                    conn,
+                    graph_run_id,
+                    "merge_conflict",
+                    None,
+                    &serde_json::json!({
+                        "workspace": ws.id,
+                        "branch": branch,
+                        "path": ws.path,
+                        "error": e,
+                        "hint": "集成分支存在冲突：请手动解决（在 worktree 分支上 git merge --abort 或解决冲突后提交），现场已保留",
+                    }),
+                )
+                .map_err(|e| e.to_string())?;
+                conflicts += 1;
             }
         }
     }
-    Ok(merged)
+    Ok((merged, conflicts))
 }
 
 /// 释放 worktree（移除）。
@@ -382,7 +397,7 @@ mod tests {
 
         // merge 到 main
         let merged = merge_workspaces(&conn, "g-run-1234", "main").unwrap();
-        assert_eq!(merged, 1);
+        assert_eq!(merged, (1, 0));
         // main 分支应含 src/a.rs
         let files = git(repo.path(), &["ls-tree", "-r", "--name-only", "main"]).unwrap();
         assert!(

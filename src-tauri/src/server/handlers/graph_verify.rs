@@ -90,7 +90,14 @@ pub(crate) fn verify_and_advance(
             })?;
 
         // M2 验证（路径 / artifact / schema，不 spawn）
+        // worktree 根（symlink canonicalize 防护）；无 worktree（降级）传 None
+        let ws_root = crate::graph::workspace::get_by_node(&conn, &body.run_id, &body.node_key)
+            .ok()
+            .flatten()
+            .and_then(|ws| ws.path)
+            .map(std::path::PathBuf::from);
         let v = crate::graph::verify::verify_node_result(
+            ws_root.as_deref(),
             &body.changed_files,
             &spec_node.write_paths,
             &spec_node.forbidden_paths,
@@ -252,8 +259,22 @@ pub(crate) fn verify_and_advance(
                         |r| r.get(0),
                     )
                     .map_err(sqlite_err)?;
-                let _ = crate::graph::workspace::merge_workspaces(&conn, &body.run_id, &target)
-                    .map_err(|e| err("graph_workspace_merge_failed", e))?;
+                match crate::graph::workspace::merge_workspaces(&conn, &body.run_id, &target) {
+                    Ok((merged, conflicts)) => {
+                        // 冲突已由 merge_workspaces 发 merge_conflict 事件（含手动解决指引）
+                        let _ = crate::graph::events::append(
+                            &conn,
+                            &body.run_id,
+                            "graph_merged",
+                            None,
+                            &serde_json::json!({ "merged": merged, "conflicts": conflicts }),
+                        )
+                        .map_err(graph_err)?;
+                    }
+                    Err(e) => {
+                        return Err(err("graph_workspace_merge_failed", e));
+                    }
+                }
             }
             let items = tick(&conn, &body.run_id, &cg).map_err(graph_err)?;
             (
