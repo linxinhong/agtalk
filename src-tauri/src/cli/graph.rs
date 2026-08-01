@@ -14,7 +14,6 @@ use super::GraphCmd;
 pub(crate) fn dispatch(ctx: Context, cmd: GraphCmd, json: bool) -> Result<(), CliError> {
     match cmd {
         GraphCmd::Submit { spec } => submit(&ctx, &spec, json),
-        GraphCmd::Run { spec } => submit(&ctx, &spec, json),
         GraphCmd::List { status } => list(&ctx, status, json),
         GraphCmd::Status { run_id } => status(&ctx, &run_id, json),
         GraphCmd::Logs { run_id, since } => logs(&ctx, &run_id, since, json),

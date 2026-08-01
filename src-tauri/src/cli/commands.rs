@@ -50,14 +50,10 @@ pub(crate) enum Commands {
 
 #[derive(Subcommand)]
 pub(crate) enum GraphCmd {
-    /// 提交图工程 spec（自动探测当前目录 git 的 repository/base_revision）
+    /// 提交并运行图工程 spec（自动探测当前目录 git 的 repository/base_revision；
+    /// 名字自动解析到 <cwd>/.agtalk/graph/<name>.yaml，也可传显式路径）
     Submit {
-        /// spec YAML 文件路径
-        spec: PathBuf,
-    },
-    /// 加载并运行图工程 spec（= submit；Agent 生成 spec 后以此加载）
-    Run {
-        /// spec YAML 文件路径
+        /// spec 名字或 YAML 文件路径
         spec: PathBuf,
     },
     /// 列出 GraphRun
