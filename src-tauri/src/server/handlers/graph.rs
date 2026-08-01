@@ -158,7 +158,7 @@ fn respond(res: Result<ServerMsg, ServerMsg>) -> (StatusCode, Json<ServerMsg>) {
 
 /// flush 新增 GraphEvent 到推送中枢（先落库后推送，design_graph.md §11 红线 6）。
 /// `since` 为函数开始时的 max_event_id；期间所有 append（含状态机内部事件）都会被推送。
-fn push_new_graph_events(state: &AppState, run_id: &str, since: i64) {
+pub(crate) fn push_new_graph_events(state: &AppState, run_id: &str, since: i64) {
     let events = {
         let conn = state.storage.conn();
         crate::graph::events::list_after(&conn, run_id, Some(since), 200).unwrap_or_default()
@@ -176,7 +176,7 @@ fn push_new_graph_events(state: &AppState, run_id: &str, since: i64) {
 }
 
 /// 当前 run 的最大事件 id（flush 起点）。
-fn graph_max_event_id(state: &AppState, run_id: &str) -> i64 {
+pub(crate) fn graph_max_event_id(state: &AppState, run_id: &str) -> i64 {
     let conn = state.storage.conn();
     crate::graph::events::max_event_id(&conn, run_id).unwrap_or(0)
 }

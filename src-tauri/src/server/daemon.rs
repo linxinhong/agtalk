@@ -160,6 +160,21 @@ pub async fn start(dot_agtalk: PathBuf) -> Result<(), DaemonError> {
         info!("feishu surface 已启用，Router 已启动");
     }
 
+    // 图工程运行期调度（design_graph.md §5.5/§5.7）：每 30s 收敛运行现场 + 派发就绪节点
+    // （覆盖超时重派的新 attempt 与重启后遗留的 ready 节点）
+    {
+        let state_for_tick = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                if let Err(e) = graph_schedule_tick(&state_for_tick).await {
+                    error!("graph schedule tick 失败: {}", e);
+                }
+            }
+        });
+    }
+
     let app = routes(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], config.http_port));
@@ -189,6 +204,78 @@ pub async fn start(dot_agtalk: PathBuf) -> Result<(), DaemonError> {
     remove_status_file();
     info!("daemon 已停止");
     Ok(())
+}
+
+/// 图工程调度节拍：收敛（超时/重试 attempt）+ 派发 running/ready 图的就绪节点。
+/// 派发消息 from 用 human mailbox（daemon 系统身份，无提交者上下文时）。
+async fn graph_schedule_tick(state: &crate::server::state::AppState) -> Result<(), String> {
+    let storage = &state.storage;
+    let n = crate::graph::reconciler::reconcile_all(storage).map_err(|e| e.to_string())?;
+    if n > 0 {
+        info!("graph reconciler 处理 {} 个节点", n);
+    }
+
+    let run_ids = list_running_graphs(storage)?;
+
+    for run_id in run_ids {
+        let cg = load_compiled_graph(storage, &run_id)?;
+        let since = crate::server::handlers::graph::graph_max_event_id(state, &run_id);
+        let items = {
+            let conn = storage.conn();
+            crate::graph::scheduler::tick(&conn, &run_id, &cg).map_err(|e| e.to_string())?
+        };
+        if items.is_empty() {
+            continue;
+        }
+        let from = schedule_from(storage);
+        for item in &items {
+            crate::server::handlers::graph_dispatch::dispatch_one(state, &from, &cg, item)
+                .map_err(|e| format!("{:?}", e))?;
+        }
+        crate::server::handlers::graph::push_new_graph_events(state, &run_id, since);
+    }
+    Ok(())
+}
+
+/// running/ready 的图 id 列表。
+fn list_running_graphs(storage: &crate::storage::Storage) -> Result<Vec<String>, String> {
+    let conn = storage.conn();
+    let mut stmt = conn
+        .prepare("SELECT id FROM graph_runs WHERE status IN ('running','ready')")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    let ids: Vec<String> = rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?;
+    Ok(ids)
+}
+
+/// 读取 compiled_graph。
+fn load_compiled_graph(
+    storage: &crate::storage::Storage,
+    run_id: &str,
+) -> Result<crate::graph::compiler::CompiledGraph, String> {
+    let conn = storage.conn();
+    let json: String = conn
+        .query_row(
+            "SELECT compiled_graph FROM graph_runs WHERE id=?1",
+            rusqlite::params![run_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+/// 调度节拍的系统身份：human mailbox（daemon 代表系统派发）。
+fn schedule_from(storage: &crate::storage::Storage) -> crate::identity::auth::AuthenticatedSession {
+    let address = crate::human::human_address(storage).unwrap_or_default();
+    crate::identity::auth::AuthenticatedSession {
+        address,
+        name: "system".into(),
+        workspace: String::new(),
+        workspace_root: std::path::PathBuf::new(),
+        pid: None,
+    }
 }
 
 pub fn stop() -> Result<(), DaemonError> {
