@@ -4,7 +4,7 @@ mod tests {
     use crate::identity::auth::AuthenticatedSession;
     use crate::proto::ServerMsg;
     use crate::server::handlers::graph::{
-        apply_heartbeat, apply_result, patch_run, submit_and_start, NodeBody,
+        apply_heartbeat, apply_result, patch_run, show_run, submit_and_start, NodeBody,
     };
     use crate::server::state::AppState;
     use crate::storage::Storage;
@@ -679,5 +679,63 @@ nodes:
                 other => panic!("预期拒绝 {status} 图: {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn show_run_reports_participant_online_state() {
+        // 认领状态着色数据：participant 有活跃 mailbox → participant_online=true；
+        // 离线/不存在 → false；无 participant（控制节点）→ false
+        let state = test_state();
+        {
+            let conn = state.storage.conn();
+            conn.execute(
+                "INSERT INTO mailboxes (address, name) VALUES ('x-addr', 'agent-x')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO event_sequences (address) VALUES ('x-addr')",
+                [],
+            )
+            .unwrap();
+        }
+        let yaml = r#"
+version: 1
+goal: "claim status"
+nodes:
+  - id: online
+    type: executor
+    outputs: { schema: s }
+    executor_requirements: { participant: agent-x }
+    workspace: w1
+    write_paths: [src/online]
+    acceptance: [{ type: path }]
+    timeout_seconds: 300
+  - id: offline
+    type: executor
+    outputs: { schema: s }
+    executor_requirements: { participant: ghost-agent }
+    workspace: w2
+    write_paths: [src/offline]
+    acceptance: [{ type: path }]
+    timeout_seconds: 300
+"#;
+        let run_id = match submit_and_start(&state, &fake_session(), yaml).unwrap() {
+            ServerMsg::GraphRunCreated { run_id, .. } => run_id,
+            _ => panic!("submit 失败"),
+        };
+        let msg = show_run(&state, &run_id).unwrap();
+        let ServerMsg::GraphRunDetail { nodes, .. } = msg else {
+            panic!("期望 GraphRunDetail");
+        };
+        let by_key = |k: &str| nodes.iter().find(|n| n.node_key == k).unwrap();
+        assert!(
+            by_key("online").participant_online,
+            "在线 participant 应报 online"
+        );
+        assert!(
+            !by_key("offline").participant_online,
+            "离线 participant 应报 offline"
+        );
     }
 }

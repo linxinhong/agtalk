@@ -475,6 +475,16 @@ pub fn show_run(state: &AppState, run_id: &str) -> Result<ServerMsg, ServerMsg> 
             status: r.status.as_str().to_string(),
             attempt: r.attempt,
             participant_id: r.participant_id.clone(),
+            // 认领状态：participant 有活跃 mailbox（join 且未 leave）即"已认领"
+            participant_online: r.participant_id.as_ref().is_some_and(|p| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM mailboxes WHERE name=?1 AND left_at IS NULL",
+                    params![p],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap_or(0)
+                    > 0
+            }),
             workspace_id: r.workspace_id.clone(),
             started_at: r.started_at,
             completed_at: r.completed_at,

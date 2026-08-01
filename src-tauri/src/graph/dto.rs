@@ -65,6 +65,9 @@ pub struct GraphNodeDetail {
     pub attempt: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub participant_id: Option<String>,
+    /// participant 是否有活跃 mailbox（在 join 且未 leave）——认领状态着色用（灰/绿）。
+    #[serde(default)]
+    pub participant_online: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -20,6 +20,8 @@ export interface GraphNodeDetail {
   status: string
   attempt: number
   participant_id: string | null
+  /** participant 是否有活跃 mailbox（认领状态：false 且未派发 → 灰） */
+  participant_online: boolean
   workspace_id: string | null
   started_at: number | null
   completed_at: number | null

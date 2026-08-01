@@ -113,13 +113,35 @@ async function loadDetail(runId: string) {
 }
 
 // ---- 画布构建 ----
+
+/** 认领维度 class（用户决策 C：两档深浅绿）：
+ *  执行节点（有 participant）+ 在线 → claimed（可认领）；
+ *  离线/无执行者 → unclaimed（灰）；join/gate/approval 结构节点 → struct（中性） */
+function claimClass(n: { participant_id?: string | null; participant_online?: boolean }): string {
+  if (!n.participant_id) return 'agtalk-struct'
+  return n.participant_online ? 'agtalk-claimed' : 'agtalk-unclaimed'
+}
+
+/** 节点 title 提示（未认领时提示可能卡住） */
+function nodeTitle(n: GraphRunDetail['nodes'][number]): string {
+  if (n.participant_id && !n.participant_online && !['dispatched', 'running', 'verifying', 'succeeded', 'failed', 'blocked', 'cancelled', 'timed_out'].includes(n.status)) {
+    return `执行者 ${n.participant_id} 离线，节点可能卡住（待认领）`
+  }
+  return n.node_key
+}
+
 function buildGraph(d: GraphRunDetail) {
   const flowNodes: any[] = d.nodes.map((n) => ({
     id: n.node_key,
     type: 'default',
     position: { x: 0, y: 0 },
-    data: { label: `${n.node_key}\n[${nodeStatusLabel[n.status] ?? n.status}]` },
-    class: `agtalk-node agtalk-node-${n.status}`,
+    data: {
+      label: `${n.node_key}\n[${nodeStatusLabel[n.status] ?? n.status}]`,
+      participantOnline: n.participant_online,
+      participantId: n.participant_id ?? null,
+    },
+    title: nodeTitle(n),
+    class: `agtalk-node agtalk-node-${n.status} ${claimClass(n)}`,
   }))
   const flowEdges: any[] = d.edges.map((e, i) => ({
     id: `e-${i}`,
@@ -181,7 +203,12 @@ function applyEvent(evt: GraphEventDto) {
     const status = evt.event_type.slice('node_'.length)
     const n = nodes.value.find((x) => x.id === evt.node_key)
     if (n) {
-      n.class = `agtalk-node agtalk-node-${status}`
+      const data = n.data as { participantOnline?: boolean; participantId?: string | null }
+      const claimCls = claimClass({
+        participant_id: data.participantId,
+        participant_online: data.participantOnline,
+      })
+      n.class = `agtalk-node agtalk-node-${status} ${claimCls}`
       ;(n.data as { label: string }).label = `${evt.node_key}\n[${nodeStatusLabel[status] ?? status}]`
     }
     const d = detail.value?.nodes.find((x) => x.node_key === evt.node_key)
@@ -298,6 +325,13 @@ onUnmounted(() => {
           :max-zoom="2"
           @node-click="onNodeClick"
         />
+        <div v-if="nodes.length" class="gv-legend">
+          <div class="gv-legend-unclaimed"><span class="gv-legend-dot"></span>未认领（执行者离线/无）</div>
+          <div class="gv-legend-claimed"><span class="gv-legend-dot"></span>已认领（可执行）</div>
+          <div class="gv-legend-active"><span class="gv-legend-dot"></span>激活中</div>
+          <div class="gv-legend-struct"><span class="gv-legend-dot"></span>结构节点</div>
+          <div class="gv-legend-failed"><span class="gv-legend-dot"></span>失败/阻塞</div>
+        </div>
         <div v-if="detail" class="gv-run-meta">
           {{ detail.run.id }} · {{ statusLabel[detail.run.status] ?? detail.run.status }} ·
           {{ detail.run.repository ?? '' }}
@@ -324,7 +358,14 @@ onUnmounted(() => {
               <span>尝试</span><b>attempt {{ selectedNode.attempt }}</b>
             </div>
             <div class="gv-kv">
-              <span>执行者</span><b>{{ selectedNode.participant_id ?? '-' }}</b>
+              <span>执行者</span
+              ><b>{{ selectedNode.participant_id ?? '-' }}</b>
+              <span
+                v-if="selectedNode.participant_id"
+                class="gv-claim-badge"
+                :class="selectedNode.participant_online ? 'gv-claim-online' : 'gv-claim-offline'"
+                >{{ selectedNode.participant_online ? '在线' : '离线' }}</span
+              >
             </div>
             <div v-if="selectedNode.participant_id" class="gv-kv">
               <button
@@ -598,6 +639,73 @@ onUnmounted(() => {
   --vf-node-bg: #f3f4f6;
   --vf-node-border: #6b7280;
 }
+
+/* ---- 认领状态着色（用户决策 C：两档深浅绿） ----
+ * unclaimed：执行节点无在线执行者 → 灰（可能卡住）
+ * claimed：有在线执行者（可认领）→ 浅绿
+ * 激活中（dispatched/running/verifying）→ 深绿
+ * struct：join/gate/approval 结构节点 → 中性蓝灰（不算未认领） */
+.agtalk-node.agtalk-unclaimed {
+  --vf-node-bg: #e5e7eb;
+  --vf-node-border: #9ca3af;
+  --vf-node-border-style: dashed;
+}
+.agtalk-node.agtalk-claimed {
+  --vf-node-bg: #ecfdf5;
+  --vf-node-border: #34d399;
+}
+.agtalk-node.agtalk-claimed.agtalk-node-dispatched,
+.agtalk-node.agtalk-claimed.agtalk-node-running,
+.agtalk-node.agtalk-claimed.agtalk-node-verifying {
+  --vf-node-bg: #a7f3d0;
+  --vf-node-border: #059669;
+}
+.agtalk-node.agtalk-struct {
+  --vf-node-bg: #eef2f7;
+  --vf-node-border: #94a3b8;
+}
+
+/* 详情面板执行者在线/离线徽标 */
+.gv-claim-badge {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  margin-left: 6px;
+}
+.gv-claim-online {
+  background: #dcfce7;
+  color: #15803d;
+}
+.gv-claim-offline {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+/* 画布图例 */
+.gv-legend {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  z-index: 5;
+  font-size: 11px;
+  background: var(--bg-elevated, rgba(0, 0, 0, 0.03));
+  padding: 6px 10px;
+  border-radius: 6px;
+  line-height: 1.8;
+}
+.gv-legend-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-right: 6px;
+  vertical-align: -1px;
+}
+.gv-legend-unclaimed .gv-legend-dot { background: #9ca3af; }
+.gv-legend-claimed .gv-legend-dot { background: #34d399; }
+.gv-legend-active .gv-legend-dot { background: #059669; }
+.gv-legend-struct .gv-legend-dot { background: #94a3b8; }
+.gv-legend-failed .gv-legend-dot { background: #dc2626; }
 .agtalk-edge-on_failure {
   stroke: #dc2626;
   stroke-dasharray: 5 3;
