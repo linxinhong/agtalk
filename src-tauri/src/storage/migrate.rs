@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 
-pub const CURRENT_VERSION: u32 = 9;
+pub const CURRENT_VERSION: u32 = 10;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS _migrations (
@@ -134,6 +134,109 @@ CREATE TABLE IF NOT EXISTS approval_resolutions (
 );
 "#;
 
+// V10：图工程运行时（见 docs/design_graph.md §5.2）。
+// 幂等键 graph_run_id+node_key+attempt 用 UNIQUE 约束保证；version 为乐观锁。
+const MIGRATE_V10: &str = r#"
+CREATE TABLE IF NOT EXISTS graph_runs (
+    id TEXT PRIMARY KEY,
+    goal TEXT NOT NULL,
+    spec_snapshot TEXT NOT NULL,
+    compiled_graph TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
+    repository TEXT,
+    base_revision TEXT,
+    integration_target TEXT,
+    created_at REAL NOT NULL DEFAULT (unixepoch('subsec')),
+    started_at REAL,
+    completed_at REAL,
+    failure_reason TEXT
+);
+
+CREATE TABLE IF NOT EXISTS node_runs (
+    id TEXT PRIMARY KEY,
+    graph_run_id TEXT NOT NULL REFERENCES graph_runs(id),
+    node_key TEXT NOT NULL,
+    node_type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempt INTEGER NOT NULL DEFAULT 1,
+    participant_id TEXT,
+    workspace_id TEXT,
+    lease_token TEXT,
+    lease_expires_at REAL,
+    input_artifact_ids TEXT NOT NULL DEFAULT '[]',
+    output_artifact_ids TEXT NOT NULL DEFAULT '[]',
+    started_at REAL,
+    heartbeat_at REAL,
+    completed_at REAL,
+    failure_type TEXT,
+    failure_detail TEXT,
+    verification_summary TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(graph_run_id, node_key, attempt)
+);
+CREATE INDEX IF NOT EXISTS idx_node_runs_graph ON node_runs(graph_run_id);
+
+CREATE TABLE IF NOT EXISTS artifacts (
+    id TEXT PRIMARY KEY,
+    graph_run_id TEXT NOT NULL REFERENCES graph_runs(id),
+    producer_node_run_id TEXT REFERENCES node_runs(id),
+    artifact_type TEXT NOT NULL,
+    schema_version TEXT NOT NULL,
+    uri TEXT NOT NULL,
+    checksum TEXT,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at REAL NOT NULL DEFAULT (unixepoch('subsec'))
+);
+CREATE INDEX IF NOT EXISTS idx_artifacts_run ON artifacts(graph_run_id);
+
+CREATE TABLE IF NOT EXISTS workspaces (
+    id TEXT PRIMARY KEY,
+    graph_run_id TEXT NOT NULL REFERENCES graph_runs(id),
+    owner_node_run_id TEXT REFERENCES node_runs(id),
+    repository TEXT,
+    base_revision TEXT,
+    branch TEXT,
+    path TEXT,
+    status TEXT NOT NULL DEFAULT 'creating',
+    dirty INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL DEFAULT (unixepoch('subsec')),
+    released_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS verifications (
+    id TEXT PRIMARY KEY,
+    node_run_id TEXT NOT NULL REFERENCES node_runs(id),
+    verifier_type TEXT NOT NULL,
+    rule TEXT,
+    expected TEXT,
+    actual TEXT,
+    status TEXT NOT NULL,
+    evidence_artifact_id TEXT REFERENCES artifacts(id),
+    started_at REAL,
+    completed_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_verifications_node ON verifications(node_run_id);
+
+CREATE TABLE IF NOT EXISTS graph_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    graph_run_id TEXT NOT NULL REFERENCES graph_runs(id),
+    event_type TEXT NOT NULL,
+    node_key TEXT,
+    payload TEXT NOT NULL DEFAULT '{}',
+    created_at REAL NOT NULL DEFAULT (unixepoch('subsec'))
+);
+CREATE INDEX IF NOT EXISTS idx_graph_events_run ON graph_events(graph_run_id);
+
+CREATE TABLE IF NOT EXISTS graph_node_assignments (
+    id TEXT PRIMARY KEY,
+    node_run_id TEXT NOT NULL REFERENCES node_runs(id),
+    message_id TEXT REFERENCES messages(id),
+    kind TEXT NOT NULL,
+    created_at REAL NOT NULL DEFAULT (unixepoch('subsec'))
+);
+CREATE INDEX IF NOT EXISTS idx_assignments_node ON graph_node_assignments(node_run_id);
+"#;
+
 pub fn run(conn: &mut Connection) -> Result<(), super::StorageError> {
     let tx = conn.transaction()?;
 
@@ -177,6 +280,9 @@ pub fn run(conn: &mut Connection) -> Result<(), super::StorageError> {
     }
     if version < 9 {
         tx.execute_batch(MIGRATE_V9)?;
+    }
+    if version < 10 {
+        tx.execute_batch(MIGRATE_V10)?;
     }
 
     tx.execute(
@@ -403,5 +509,114 @@ mod tests {
             [],
         );
         assert!(dup_resolution.is_err(), "request_message_id 应唯一");
+    }
+
+    #[test]
+    fn v9_to_v10_creates_graph_tables_with_idempotency_key() {
+        let mut conn = Connection::open_in_memory().unwrap();
+
+        // 构造 v9 时代的数据库：SCHEMA_V1 + MIGRATE_V2..V9，但不包含 MIGRATE_V10。
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(MIGRATE_V2).unwrap();
+        conn.execute_batch(MIGRATE_V3).unwrap();
+        conn.execute_batch(MIGRATE_V4).unwrap();
+        conn.execute_batch(MIGRATE_V5).unwrap();
+        conn.execute_batch(MIGRATE_V6).unwrap();
+        conn.execute_batch(MIGRATE_V7).unwrap();
+        conn.execute_batch(MIGRATE_V8).unwrap();
+        conn.execute_batch(MIGRATE_V9).unwrap();
+        conn.execute("INSERT OR REPLACE INTO _migrations(version) VALUES (9)", [])
+            .unwrap();
+
+        conn.execute(
+            "INSERT INTO mailboxes (address, name) VALUES ('a1', 'alice')",
+            [],
+        )
+        .unwrap();
+
+        for t in [
+            "graph_runs",
+            "node_runs",
+            "artifacts",
+            "workspaces",
+            "verifications",
+            "graph_events",
+            "graph_node_assignments",
+        ] {
+            assert!(!table_exists(&conn, t), "迁移前 {t} 表不应存在");
+        }
+        assert_eq!(max_migration(&conn), 9);
+
+        run(&mut conn).unwrap();
+
+        assert_eq!(max_migration(&conn), CURRENT_VERSION);
+        for t in [
+            "graph_runs",
+            "node_runs",
+            "artifacts",
+            "workspaces",
+            "verifications",
+            "graph_events",
+            "graph_node_assignments",
+        ] {
+            assert!(table_exists(&conn, t), "迁移后 {t} 表应存在");
+        }
+
+        // 幂等键：graph_run_id + node_key + attempt 唯一。
+        conn.execute(
+            "INSERT INTO graph_runs (id, goal, spec_snapshot, compiled_graph) \
+             VALUES ('g1', 'goal', '{}', '{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO node_runs (id, graph_run_id, node_key, node_type) \
+             VALUES ('n1', 'g1', 'impl', 'executor')",
+            [],
+        )
+        .unwrap();
+        // 同一节点 attempt=2 是合法的新执行尝试。
+        conn.execute(
+            "INSERT INTO node_runs (id, graph_run_id, node_key, node_type, attempt) \
+             VALUES ('n2', 'g1', 'impl', 'executor', 2)",
+            [],
+        )
+        .unwrap();
+        // 完全相同的幂等键必须被拒绝。
+        let dup = conn.execute(
+            "INSERT INTO node_runs (id, graph_run_id, node_key, node_type, attempt) \
+             VALUES ('n3', 'g1', 'impl', 'executor', 1)",
+            [],
+        );
+        assert!(
+            dup.is_err(),
+            "graph_run_id+node_key+attempt 应唯一（幂等键）"
+        );
+
+        // 乐观锁默认 version=1。
+        let version: i64 = conn
+            .query_row("SELECT version FROM node_runs WHERE id='n1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, 1, "node_runs.version 默认应为 1");
+
+        // graph_events 单调自增。
+        conn.execute(
+            "INSERT INTO graph_events (graph_run_id, event_type) VALUES ('g1', 'graph_created')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO graph_events (graph_run_id, event_type) VALUES ('g1', 'graph_validated')",
+            [],
+        )
+        .unwrap();
+        let (e1, e2): (i64, i64) = conn
+            .query_row("SELECT MIN(id), MAX(id) FROM graph_events", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert!(e2 > e1, "graph_events.id 应单调递增");
     }
 }

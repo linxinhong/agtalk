@@ -2,6 +2,7 @@ pub mod cli;
 pub mod commands;
 pub mod config;
 pub mod feishu;
+pub mod graph;
 pub mod human;
 pub mod identity;
 #[cfg(target_os = "macos")]
