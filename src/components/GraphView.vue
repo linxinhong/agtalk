@@ -183,6 +183,7 @@ function buildGraph(d: GraphRunDetail) {
       statusText: nodeStatusLabel[n.status] ?? n.status,
       claimStatus: claimStatusOf(n),
       claimText: claimTextOf(claimStatusOf(n)),
+      participantId: n.participant_id ?? null,
       participantOnline: n.participant_online,
     },
     title: nodeTitle(n),

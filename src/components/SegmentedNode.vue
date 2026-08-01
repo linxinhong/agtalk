@@ -37,6 +37,7 @@ interface SegmentedNodeData {
   statusText: string
   claimStatus: 'claimed' | 'unclaimed' | 'struct'
   claimText: string
+  participantId?: string | null
   participantOnline?: boolean
 }
 
@@ -91,6 +92,17 @@ const ICONS: Record<NodeType, string> = {
 
 const iconSvg = computed(() => ICONS[props.data.nodeType as NodeType] ?? ICONS.executor)
 
+/* ── 执行者 emoji 小标识（Tim 评审：类型图标 + participant 标识共存；同名同 emoji） ── */
+const OWNER_EMOJI = ['🤖', '🧑‍💻', '👩‍💻', '🦊', '🐱', '🐼', '🦉', '🐯', '👾', '🐙']
+function ownerEmoji(name: string): string {
+  let h = 5381
+  for (let i = 0; i < name.length; i++) h = (h * 33) ^ name.charCodeAt(i)
+  return OWNER_EMOJI[(h >>> 0) % OWNER_EMOJI.length]
+}
+const ownerEmojiText = computed(() =>
+  props.data.participantId ? ownerEmoji(props.data.participantId) : '',
+)
+
 /* ── 动态 class ── */
 const nodeClass = computed(() => [
   'segmented-node',
@@ -108,8 +120,11 @@ const nodeClass = computed(() => [
     <!-- 未认领角标（无执行者/离线且待执行） -->
     <span v-if="isUnclaimed" class="seg-badge" title="未认领：执行者离线/无，节点可能卡住">!</span>
 
-    <!-- 左侧分段：状态色块 + 类型图标 -->
-    <div class="seg-left" v-html="iconSvg" />
+    <!-- 左侧分段：状态色块 + 类型图标 + 执行者 emoji 小标识 -->
+    <div class="seg-left">
+      <span v-html="iconSvg" />
+      <span v-if="ownerEmojiText" class="seg-owner" :title="props.data.participantId ?? ''">{{ ownerEmojiText }}</span>
+    </div>
 
     <!-- 右侧分段：文字区 -->
     <div class="seg-right">
@@ -173,6 +188,7 @@ const nodeClass = computed(() => [
 
 /* ── 左侧分段 ── */
 .seg-left {
+  position: relative;
   flex-shrink: 0;
   width: var(--seg-left-w);
   height: 100%;
@@ -184,6 +200,17 @@ const nodeClass = computed(() => [
 }
 .seg-left :deep(svg) {
   display: block;
+}
+/* 执行者 emoji 小标识（右下角） */
+.seg-owner {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  font-size: 11px;
+  line-height: 1;
+  border-radius: 50%;
+  background: var(--node-bg);
+  padding: 1px;
 }
 
 /* ── 右侧分段 ── */
@@ -279,8 +306,31 @@ const nodeClass = computed(() => [
   background: var(--status-running);
 }
 
-/* ── 深色主题（Vue Flow .dark 或 prefers-color-scheme） ── */
-:where(.dark, .vue-flow-dark) .segmented-node,
+/* ── 深色主题（Tim 评审：@media 不能混进选择器列表，拆两条独立规则） ── */
+/* ① Vue Flow .dark 类（显式切深色） */
+:where(.dark, .vue-flow-dark) .segmented-node {
+  --node-bg:      var(--vf-node-bg, #1A1B1E);
+  --node-border:  #2D2E33;
+  --text-primary: #E8E9EB;
+
+  --status-running-bg:   rgba(59, 130, 246, 0.12);
+  --status-waiting-bg:   rgba(245, 158, 11, 0.12);
+  --status-blocked-bg:   rgba(234, 88, 12, 0.12);
+  --status-succeeded-bg: rgba(16, 185, 129, 0.12);
+  --status-failed-bg:    rgba(239, 68, 68, 0.12);
+  --status-idle-bg:      rgba(148, 163, 184, 0.1);
+  --status-cancelled-bg: rgba(156, 163, 175, 0.1);
+
+  --text-running:   #60A5FA;
+  --text-waiting:   #FBBF24;
+  --text-blocked:   #FB923C;
+  --text-succeeded: #34D399;
+  --text-failed:    #F87171;
+  --text-idle:      #94A3B8;
+  --text-cancelled: #9CA3AF;
+}
+
+/* ② 系统深色模式偏好 */
 @media (prefers-color-scheme: dark) {
   .segmented-node {
     --node-bg:      var(--vf-node-bg, #1A1B1E);
