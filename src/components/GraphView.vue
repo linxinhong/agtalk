@@ -122,12 +122,41 @@ function claimClass(n: { participant_id?: string | null; participant_online?: bo
   return n.participant_online ? 'agtalk-claimed' : 'agtalk-unclaimed'
 }
 
-/** 节点 title 提示（未认领时提示可能卡住） */
+/** 认领状态中文（颜色提示词，配合图例） */
+function claimLabel(n: {
+  participant_id?: string | null
+  participant_online?: boolean
+  status?: string
+}): string {
+  if (!n.participant_id) return '结构'
+  const active = ['dispatched', 'running', 'verifying'].includes(n.status ?? '')
+  if (active) return '激活'
+  return n.participant_online ? '已认领' : '未认领'
+}
+
+/** 节点 label 第二行：状态 + 认领（颜色提示词文字化） */
+function statusLine(n: {
+  participant_id?: string | null
+  participant_online?: boolean
+  status?: string
+}): string {
+  const st = nodeStatusLabel[n.status ?? ''] ?? n.status ?? ''
+  return `[${st} · ${claimLabel(n)}]`
+}
+
+/** 节点 title 完整状态描述（hover 显示） */
 function nodeTitle(n: GraphRunDetail['nodes'][number]): string {
-  if (n.participant_id && !n.participant_online && !['dispatched', 'running', 'verifying', 'succeeded', 'failed', 'blocked', 'cancelled', 'timed_out'].includes(n.status)) {
-    return `执行者 ${n.participant_id} 离线，节点可能卡住（待认领）`
+  const lines = [`节点 ${n.node_key}`, `状态: ${nodeStatusLabel[n.status] ?? n.status}`]
+  if (n.participant_id) {
+    lines.push(`执行者: ${n.participant_id}（${n.participant_online ? '在线' : '离线'}）`)
+    lines.push(
+      `认领: ${n.participant_online ? '已认领（可执行）' : '未认领（执行者离线，可能卡住）'}`,
+    )
+  } else {
+    lines.push('认领: 结构节点（join/gate/approval，无外部执行者）')
   }
-  return n.node_key
+  if (n.failure_detail) lines.push(`失败: ${n.failure_detail}`)
+  return lines.join('\n')
 }
 
 function buildGraph(d: GraphRunDetail) {
@@ -136,7 +165,7 @@ function buildGraph(d: GraphRunDetail) {
     type: 'default',
     position: { x: 0, y: 0 },
     data: {
-      label: `${n.node_key}\n[${nodeStatusLabel[n.status] ?? n.status}]`,
+      label: `${n.node_key}\n${statusLine(n)}`,
       participantOnline: n.participant_online,
       participantId: n.participant_id ?? null,
     },
@@ -209,7 +238,11 @@ function applyEvent(evt: GraphEventDto) {
         participant_online: data.participantOnline,
       })
       n.class = `agtalk-node agtalk-node-${status} ${claimCls}`
-      ;(n.data as { label: string }).label = `${evt.node_key}\n[${nodeStatusLabel[status] ?? status}]`
+      ;(n.data as { label: string }).label = `${evt.node_key}\n${statusLine({
+        participant_id: data.participantId,
+        participant_online: data.participantOnline,
+        status,
+      })}`
     }
     const d = detail.value?.nodes.find((x) => x.node_key === evt.node_key)
     if (d) d.status = status
