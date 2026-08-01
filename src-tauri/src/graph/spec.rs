@@ -31,6 +31,17 @@ impl NodeType {
             NodeType::Approval => "approval",
         }
     }
+
+    pub fn from_str_name(s: &str) -> Option<Self> {
+        match s {
+            "executor" => Some(NodeType::Executor),
+            "deterministic" => Some(NodeType::Deterministic),
+            "join" => Some(NodeType::Join),
+            "gate" => Some(NodeType::Gate),
+            "approval" => Some(NodeType::Approval),
+            _ => None,
+        }
+    }
 }
 
 /// Join 汇聚策略（第一版只支持两种，见 docs/design_graph.md §四）。
