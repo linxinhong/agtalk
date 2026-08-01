@@ -334,6 +334,47 @@ pub enum ClientMsg {
         #[serde(default)]
         file: Option<String>,
     },
+
+    // graph（图工程，docs/design_graph.md §7）
+    GraphSubmit {
+        spec: String,
+    },
+    GraphRuns {
+        #[serde(default)]
+        status: Option<String>,
+    },
+    GraphRunShow {
+        run_id: String,
+    },
+    GraphRunEvents {
+        run_id: String,
+        #[serde(default)]
+        since: Option<i64>,
+    },
+    GraphRunControl {
+        run_id: String,
+        action: String,
+    },
+    GraphNodeHeartbeat {
+        run_id: String,
+        node_key: String,
+        attempt: u32,
+    },
+    GraphNodeResult {
+        run_id: String,
+        node_key: String,
+        attempt: u32,
+        #[serde(default)]
+        result: String,
+        #[serde(default)]
+        changed_files: Vec<String>,
+        #[serde(default)]
+        output_artifacts: Vec<crate::graph::dto::GraphArtifactRef>,
+        #[serde(default)]
+        verification_claims: Vec<crate::graph::dto::GraphClaim>,
+        #[serde(default)]
+        blockers: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -496,5 +537,37 @@ pub enum ServerMsg {
         address: String,
         name: String,
         token: String,
+    },
+
+    // graph
+    GraphRunCreated {
+        run_id: String,
+        status: String,
+        errors: Vec<crate::graph::dto::GraphCompileIssue>,
+        warnings: Vec<crate::graph::dto::GraphCompileIssue>,
+    },
+    GraphRunList {
+        runs: Vec<crate::graph::dto::GraphRunSummary>,
+    },
+    GraphRunDetail {
+        run: crate::graph::dto::GraphRunSummary,
+        nodes: Vec<crate::graph::dto::GraphNodeDetail>,
+        required_approvals: Vec<String>,
+        resource_conflicts: Vec<String>,
+    },
+    GraphEventsResult {
+        events: Vec<crate::graph::dto::GraphEventDto>,
+    },
+    GraphNodeReportOk {
+        run_id: String,
+        node_key: String,
+        attempt: u32,
+        status: String,
+        message: String,
+    },
+    GraphRunControlOk {
+        run_id: String,
+        action: String,
+        status: String,
     },
 }

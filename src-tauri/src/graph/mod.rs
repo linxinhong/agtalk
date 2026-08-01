@@ -4,6 +4,7 @@
 //! M1：NodeRun/GraphRun 状态机（state.rs）+ GraphEvent（events.rs）。
 
 pub mod compiler;
+pub mod dto;
 pub mod events;
 mod paths;
 pub mod scheduler;

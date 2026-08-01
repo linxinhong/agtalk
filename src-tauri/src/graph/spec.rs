@@ -4,14 +4,14 @@
 //! 必填字段在 serde 层强制（缺字段 → 解析错误），语义约束（如写节点必须绑 workspace）
 //! 在 compiler 层校验。
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// 节点 ID（图中唯一，路由/依赖引用键）。
 pub type NodeKey = String;
 
 /// 第一版五类基础节点（docs/design_graph.md §三）。
 /// P0 运行时只实现 executor / deterministic / approval；join / gate 结构校验先行（P1 生效）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeType {
     Executor,
@@ -45,7 +45,7 @@ impl NodeType {
 }
 
 /// Join 汇聚策略（第一版只支持两种，见 docs/design_graph.md §四）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JoinPolicy {
     AllSucceeded,
@@ -53,7 +53,7 @@ pub enum JoinPolicy {
 }
 
 /// 失败分类（docs/design_graph.md §八）。重试策略按分类判定。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureType {
     ExecutionError,
@@ -98,7 +98,7 @@ const fn default_max_attempts() -> u32 {
 }
 
 /// 重试策略。无无限重试：max_attempts 必填语义由默认值 1 兜底。
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RetryPolicy {
     #[serde(default = "default_max_attempts")]
     pub max_attempts: u32,
@@ -110,7 +110,7 @@ pub struct RetryPolicy {
 }
 
 /// 节点输出契约。
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct OutputSpec {
     /// 输出 Schema 名（compiler 校验非空；schema 内容语义校验在 M2 运行时）。
     pub schema: String,
@@ -120,7 +120,7 @@ pub struct OutputSpec {
 }
 
 /// 执行者能力要求（M1 调度按 participant / capabilities 匹配）。
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ExecutorRequirements {
     #[serde(default)]
     pub participant: Option<String>,
@@ -129,7 +129,7 @@ pub struct ExecutorRequirements {
 }
 
 /// 验收规则（M2 Verification 消费）。
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AcceptanceRule {
     /// path / schema / artifact / command / review
     #[serde(rename = "type")]
@@ -139,7 +139,7 @@ pub struct AcceptanceRule {
 }
 
 /// Approval 节点配置（复用 human approval 仲裁，docs/design_graph.md §5.2 取舍 3）。
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ApprovalSpec {
     pub message: String,
     #[serde(default)]
@@ -147,7 +147,7 @@ pub struct ApprovalSpec {
 }
 
 /// 单个节点的契约（docs/design_graph.md §三 Typed Node 契约）。
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NodeSpec {
     pub id: NodeKey,
     #[serde(rename = "type")]
@@ -198,7 +198,7 @@ pub struct NodeSpec {
 }
 
 /// Graph Spec（docs/design_graph.md §三 图目标/节点/依赖/并发/重试/验收）。
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GraphSpec {
     /// 当前必须为 1（compiler 校验）。
     pub version: u32,

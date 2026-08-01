@@ -6,11 +6,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::{Deserialize, Serialize};
+
 use super::paths::{paths_overlap, touches_shared_contract};
 use super::spec::{GraphSpec, NodeSpec, NodeType};
 
 /// 边触发条件（docs/design_graph.md §四 Edge）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Trigger {
     OnSuccess,
     OnFailure,
@@ -29,7 +31,7 @@ impl Trigger {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Edge {
     pub from: String,
     pub to: String,
@@ -37,7 +39,7 @@ pub struct Edge {
 }
 
 /// 编译诊断项（error 或 warning）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompileIssue {
     pub code: &'static str,
     pub message: String,
@@ -45,7 +47,7 @@ pub struct CompileIssue {
 }
 
 /// 编译通过后的不可变图（运行时快照存 JSON）。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompiledGraph {
     pub goal: String,
     pub repository: Option<String>,

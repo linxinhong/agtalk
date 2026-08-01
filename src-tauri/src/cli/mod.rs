@@ -4,6 +4,7 @@ pub(crate) mod client;
 pub mod context;
 pub mod context_error;
 pub mod daemon;
+pub mod graph;
 pub mod output;
 pub mod runner;
 
@@ -76,6 +77,71 @@ enum Commands {
         /// run spec 名称（无扩展名）或显式 YAML 文件路径；省略时读取 default.yaml
         #[arg(value_name = "NAME_OR_PATH")]
         file: Option<PathBuf>,
+    },
+    /// 图工程（docs/design_graph.md）
+    Graph {
+        #[command(subcommand)]
+        cmd: GraphCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum GraphCmd {
+    /// 提交图工程 spec（自动探测当前目录 git 的 repository/base_revision）
+    Submit {
+        /// spec YAML 文件路径
+        spec: PathBuf,
+    },
+    /// 列出 GraphRun
+    List {
+        #[arg(long)]
+        status: Option<String>,
+    },
+    /// GraphRun 详情（节点状态/attempt/失败原因）
+    Status { run_id: String },
+    /// GraphRun 事件日志
+    Logs {
+        run_id: String,
+        #[arg(long)]
+        since: Option<i64>,
+    },
+    /// 取消运行
+    Cancel { run_id: String },
+    /// 节点上报（participant 执行者用，docs/graph-participant-protocol.md §4）
+    Node {
+        #[command(subcommand)]
+        cmd: GraphNodeCmd,
+    },
+    /// 拉起图工程管理界面（M4 预留）
+    Gui { run_id: Option<String> },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum GraphNodeCmd {
+    /// 心跳续租（长任务周期上报）
+    Heartbeat {
+        run_id: String,
+        node_key: String,
+        #[arg(long)]
+        attempt: u32,
+    },
+    /// 提交候选结果（result.json 见 protocol §6）
+    Result {
+        run_id: String,
+        node_key: String,
+        #[arg(long)]
+        attempt: u32,
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// 上报阻塞
+    Blocker {
+        run_id: String,
+        node_key: String,
+        #[arg(long)]
+        attempt: u32,
+        #[arg(long)]
+        blocker: String,
     },
 }
 
@@ -789,6 +855,10 @@ fn run(cli: Cli, json: bool) -> Result<(), CliError> {
             Commands::Run { file } => {
                 let ctx = Context::current(as_name).ok();
                 client::run::run(ctx, file, json)
+            }
+            Commands::Graph { cmd } => {
+                let ctx = Context::current(as_name).map_err(CliError::from)?;
+                graph::dispatch(ctx, cmd, json)
             }
         },
         None => {

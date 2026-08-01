@@ -8,6 +8,10 @@ use std::path::PathBuf;
 
 pub mod config;
 pub mod daemon;
+pub mod graph;
+pub mod graph_dispatch;
+#[cfg(test)]
+pub mod graph_tests;
 pub mod human;
 pub mod id;
 pub mod mem;

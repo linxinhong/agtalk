@@ -1,7 +1,7 @@
 //! HTTP API v1：canonical `/api/v1/*` 路由。
 
 use crate::proto::ServerMsg;
-use crate::server::handlers::{config, daemon, human, id, mem, msg, status_for, tool};
+use crate::server::handlers::{config, daemon, graph, human, id, mem, msg, status_for, tool};
 use crate::server::state::AppState;
 use crate::transport::sse::events_stream;
 use axum::extract::{Path, Query, State};
@@ -64,6 +64,26 @@ pub fn routes(state: AppState) -> Router {
         )
         .route("/api/v1/human/agents", get(human_agents_handler))
         .route("/api/v1/human/send", post(human_send_handler))
+        // graph（图工程，docs/design_graph.md §6）
+        .route("/api/v1/graph/submit", post(graph::graph_submit_handler))
+        .route("/api/v1/graph/runs", get(graph::graph_runs_handler))
+        .route("/api/v1/graph/runs/:id", get(graph::graph_run_show_handler))
+        .route(
+            "/api/v1/graph/runs/:id/events",
+            get(graph::graph_run_events_handler),
+        )
+        .route(
+            "/api/v1/graph/runs/:id/control",
+            post(graph::graph_run_control_handler),
+        )
+        .route(
+            "/api/v1/graph/node/heartbeat",
+            post(graph::graph_node_heartbeat_handler),
+        )
+        .route(
+            "/api/v1/graph/node/result",
+            post(graph::graph_node_result_handler),
+        )
         // events
         .route("/api/v1/events", get(events_handler))
         .with_state(state)

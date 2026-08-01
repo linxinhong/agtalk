@@ -511,6 +511,117 @@ fn print_text_server_msg(msg: &ServerMsg) {
             println!("name      : {}", name);
             println!("token     : {}", token);
         }
+        // graph（图工程，docs/design_graph.md §7）
+        ServerMsg::GraphRunCreated {
+            run_id,
+            status,
+            errors,
+            warnings,
+        } => {
+            if run_id.is_empty() {
+                println!("status    : {}", status);
+            } else {
+                println!("run_id    : {}", run_id);
+                println!("status    : {}", status);
+            }
+            for e in errors {
+                eprintln!("error     : {} - {}", e.code, e.message);
+            }
+            if !warnings.is_empty() {
+                println!("warnings  : {}", warnings.len());
+            }
+        }
+        ServerMsg::GraphRunList { runs } => {
+            if runs.is_empty() {
+                println!("no graph runs");
+            }
+            for r in runs {
+                println!(
+                    "{}  {}  {}  {}",
+                    short_id(&r.id),
+                    r.status,
+                    r.goal,
+                    r.created_at
+                );
+            }
+        }
+        ServerMsg::GraphRunDetail {
+            run,
+            nodes,
+            required_approvals,
+            resource_conflicts,
+        } => {
+            println!("run_id    : {}", run.id);
+            println!("goal      : {}", run.goal);
+            println!("status    : {}", run.status);
+            if let Some(repo) = &run.repository {
+                println!("repository: {}", repo);
+            }
+            if let Some(base) = &run.base_revision {
+                println!("base      : {}", base);
+            }
+            println!("nodes     : {}", nodes.len());
+            for n in nodes {
+                println!(
+                    "  [{}] {} ({}) attempt={}",
+                    n.status, n.node_key, n.node_type, n.attempt
+                );
+                if let Some(f) = &n.failure_detail {
+                    println!("          failure: {}", f);
+                }
+            }
+            if !required_approvals.is_empty() {
+                println!("approvals : {}", required_approvals.join(", "));
+            }
+            if !resource_conflicts.is_empty() {
+                println!("conflicts : {}", resource_conflicts.len());
+            }
+        }
+        ServerMsg::GraphEventsResult { events } => {
+            for e in events {
+                println!(
+                    "#{} {} {}{}",
+                    e.id,
+                    e.event_type,
+                    e.node_key.as_deref().unwrap_or("-"),
+                    if e.payload.is_null() {
+                        String::new()
+                    } else {
+                        format!(" {}", e.payload)
+                    }
+                );
+            }
+        }
+        ServerMsg::GraphNodeReportOk {
+            run_id,
+            node_key,
+            attempt,
+            status,
+            message,
+        } => {
+            println!("status    : {}", status);
+            println!("run_id    : {}", run_id);
+            println!("node      : {} (attempt {})", node_key, attempt);
+            println!("message   : {}", message);
+        }
+        ServerMsg::GraphRunControlOk {
+            run_id,
+            action,
+            status,
+        } => {
+            println!("run_id    : {}", run_id);
+            println!("action    : {}", action);
+            println!("status    : {}", status);
+        }
+    }
+}
+
+/// 短 ID：前 8 字符（与 msg 短 ID 风格一致）。
+fn short_id(id: &str) -> &str {
+    if id.len() > 8 {
+        &id[..8]
+    } else {
+        id
     }
 }
 
