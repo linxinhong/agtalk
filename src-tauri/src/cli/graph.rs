@@ -18,6 +18,7 @@ pub(crate) fn dispatch(ctx: Context, cmd: GraphCmd, json: bool) -> Result<(), Cl
         GraphCmd::Status { run_id } => status(&ctx, &run_id, json),
         GraphCmd::Logs { run_id, since } => logs(&ctx, &run_id, since, json),
         GraphCmd::Cancel { run_id } => cancel(&ctx, &run_id, json),
+        GraphCmd::Patch { run_id, spec } => patch(&ctx, &run_id, &spec, json),
         GraphCmd::Node { cmd } => match cmd {
             super::GraphNodeCmd::Heartbeat {
                 run_id,
@@ -115,6 +116,20 @@ pub fn logs(ctx: &Context, run_id: &str, since: Option<i64>, json: bool) -> Resu
         since.map(|s| format!("?since={s}")).unwrap_or_default()
     );
     let msg = client::get(ctx, &path)?;
+    print_server_msg(json, &msg);
+    Ok(())
+}
+
+/// 打补丁：读取 spec（resolve_spec 目录约定）后替换图定义。
+pub fn patch(ctx: &Context, run_id: &str, spec_file: &PathBuf, json: bool) -> Result<(), CliError> {
+    let resolved = resolve_spec(ctx, spec_file)?;
+    let raw = std::fs::read_to_string(&resolved)
+        .map_err(|e| CliError::from(format!("读取 spec 失败 {}: {}", resolved.display(), e)))?;
+    let msg = client::post(
+        ctx,
+        &format!("/api/v1/graph/runs/{run_id}/patch"),
+        json!({ "spec": raw }),
+    )?;
     print_server_msg(json, &msg);
     Ok(())
 }

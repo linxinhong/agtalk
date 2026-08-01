@@ -71,6 +71,12 @@ pub(crate) enum GraphCmd {
     },
     /// 取消运行
     Cancel { run_id: String },
+    /// 以新 spec 打补丁更新图定义（仅 paused/ready 图；spec 名字解析同 submit）
+    Patch {
+        run_id: String,
+        /// spec 名字或 YAML 文件路径
+        spec: PathBuf,
+    },
     /// 节点上报（participant 执行者用，docs/graph-participant-protocol.md §4）
     Node {
         #[command(subcommand)]

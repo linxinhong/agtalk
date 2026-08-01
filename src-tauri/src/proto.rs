@@ -355,6 +355,10 @@ pub enum ClientMsg {
         run_id: String,
         action: String,
     },
+    GraphRunPatch {
+        run_id: String,
+        spec: String,
+    },
     GraphNodeHeartbeat {
         run_id: String,
         node_key: String,

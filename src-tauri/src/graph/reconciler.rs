@@ -73,6 +73,44 @@ pub fn reconcile_all(storage: &Storage) -> Result<usize, crate::graph::Error> {
         let _ = crate::graph::state::converge_graph_run(&conn, &graph_id)?;
     }
 
+    // 3. 脏 Workspace 恢复检查（P2）：worktree 有未提交改动 → 保留现场 + 事件（不自动清理）
+    //    design_graph.md §六.4：节点失败后现场默认保留；此处覆盖 daemon 重启后未提交 diff
+    let active_graphs: Vec<String> = conn
+        .prepare("SELECT id FROM graph_runs WHERE status IN ('running','paused')")?
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    for graph_id in active_graphs {
+        let wss = crate::graph::workspace::list_by_graph(&conn, &graph_id)?;
+        for ws in wss {
+            let Some(path) = &ws.path else { continue };
+            let p = std::path::Path::new(path);
+            if !p.exists() {
+                continue; // worktree 已被移除（非现场保留场景）
+            }
+            let dirty =
+                crate::graph::workspace::git(p, &["status", "--porcelain"]).unwrap_or_default();
+            if !dirty.trim().is_empty() {
+                conn.execute(
+                    "UPDATE workspaces SET dirty=1 WHERE id=?1",
+                    rusqlite::params![ws.id],
+                )?;
+                crate::graph::events::append(
+                    &conn,
+                    &graph_id,
+                    "workspace_dirty",
+                    None,
+                    &serde_json::json!({
+                        "workspace": ws.id,
+                        "branch": ws.branch,
+                        "path": path,
+                        "hint": "未提交改动已保留（失败现场），需要人工决定提交/放弃",
+                    }),
+                )?;
+                handled += 1;
+            }
+        }
+    }
+
     Ok(handled)
 }
 

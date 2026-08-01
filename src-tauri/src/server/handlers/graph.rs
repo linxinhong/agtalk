@@ -123,6 +123,18 @@ pub async fn graph_run_control_handler(
     respond(control_run(&state, &run_id, &body.action))
 }
 
+pub async fn graph_run_patch_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(run_id): Path<String>,
+    Json(body): Json<SubmitBody>,
+) -> (StatusCode, Json<ServerMsg>) {
+    if let Err(e) = super::authenticate_req(&state, &headers) {
+        return json_response(e);
+    }
+    respond(patch_run(&state, &run_id, &body.spec))
+}
+
 pub async fn graph_node_heartbeat_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -520,6 +532,65 @@ pub fn run_events(
         })
         .collect();
     Ok(ServerMsg::GraphEventsResult { events: dto })
+}
+
+/// Graph Patch（P2）：以完整新 spec 替换图定义并重新编译校验。
+/// 仅允许 paused/ready 状态图应用；running 需先 pause，terminal 拒绝。
+/// 运行现场（node_runs/workspaces）保留；新节点需重新提交完整图（或后续扩展增量）。
+#[allow(clippy::result_large_err)]
+pub fn patch_run(state: &AppState, run_id: &str, spec_yaml: &str) -> Result<ServerMsg, ServerMsg> {
+    let spec = GraphSpec::parse(spec_yaml)
+        .map_err(|e| err("graph_spec_parse_error", format!("spec 解析失败: {e}")))?;
+    let compiled = crate::graph::compiler::compile(&spec);
+    if !compiled.valid {
+        return Ok(ServerMsg::GraphRunCreated {
+            run_id: String::new(),
+            status: "invalid".into(),
+            errors: issues(&compiled.errors),
+            warnings: issues(&compiled.warnings),
+        });
+    }
+    let cg = compiled
+        .compiled
+        .clone()
+        .ok_or_else(|| err("graph_compile_error", "编译无结果"))?;
+    let conn = state.storage.conn();
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM graph_runs WHERE id=?1",
+            params![run_id],
+            |r| r.get(0),
+        )
+        .map_err(sqlite_err)?;
+    if matches!(status.as_str(), "completed" | "failed" | "cancelled") {
+        return Err(err(
+            "graph_patch_terminal",
+            format!("图已 {status}，不能 patch"),
+        ));
+    }
+    if status == "running" {
+        return Err(err(
+            "graph_patch_running",
+            "运行中的图不能 patch（先 pause 或 cancel）",
+        ));
+    }
+    conn.execute(
+        "UPDATE graph_runs SET goal=?1, spec_snapshot=?2, compiled_graph=?3 WHERE id=?4",
+        params![
+            cg.goal,
+            serde_json::to_string(&spec).map_err(json_err)?,
+            serde_json::to_string(&cg).map_err(json_err)?,
+            run_id
+        ],
+    )
+    .map_err(sqlite_err)?;
+    events::append(&conn, run_id, "graph_patched", None, &serde_json::json!({}))
+        .map_err(graph_err)?;
+    Ok(ServerMsg::GraphRunControlOk {
+        run_id: run_id.to_string(),
+        action: "patch".into(),
+        status: "patched".into(),
+    })
 }
 
 /// 运行控制：cancel / pause / resume。

@@ -4,7 +4,7 @@ mod tests {
     use crate::identity::auth::AuthenticatedSession;
     use crate::proto::ServerMsg;
     use crate::server::handlers::graph::{
-        apply_heartbeat, apply_result, submit_and_start, NodeBody,
+        apply_heartbeat, apply_result, patch_run, submit_and_start, NodeBody,
     };
     use crate::server::state::AppState;
     use crate::storage::Storage;
@@ -588,5 +588,96 @@ nodes:
             .unwrap()
             .unwrap();
         assert_eq!(a1.status, crate::graph::state::NodeRunStatus::Failed);
+    }
+
+    #[test]
+    fn patch_updates_paused_graph_definition() {
+        // P2：paused 图可 patch（定义替换 + 重新编译 + 事件）
+        let state = test_state();
+        {
+            let conn = state.storage.conn();
+            conn.execute(
+                "INSERT INTO graph_runs (id, goal, spec_snapshot, compiled_graph, status) \
+             VALUES ('g-patch', 'old', '{}', '{}', 'paused')",
+                [],
+            )
+            .unwrap();
+        }
+        let yaml = r#"
+version: 1
+goal: "patched 新目标"
+nodes:
+  - id: only
+    type: executor
+    outputs: { schema: s }
+    executor_requirements: { participant: agent-x }
+    workspace: w
+    write_paths: [x]
+    acceptance: [{ type: path }]
+    timeout_seconds: 300
+"#;
+        match patch_run(&state, "g-patch", yaml).unwrap() {
+            ServerMsg::GraphRunControlOk { action, status, .. } => {
+                assert_eq!(action, "patch");
+                assert_eq!(status, "patched");
+            }
+            other => panic!("预期 GraphRunControlOk: {other:?}"),
+        }
+        let conn = state.storage.conn();
+        let (goal, cg): (String, String) = conn
+            .query_row(
+                "SELECT goal, compiled_graph FROM graph_runs WHERE id='g-patch'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(goal, "patched 新目标", "goal 应更新");
+        assert!(cg.contains("only"), "compiled_graph 应包含新节点");
+        let ev: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM graph_events WHERE graph_run_id='g-patch' AND event_type='graph_patched'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+        assert_eq!(ev, 1, "应有 graph_patched 事件");
+    }
+
+    #[test]
+    fn patch_rejects_running_and_terminal() {
+        let state = test_state();
+        let yaml = r#"
+version: 1
+goal: "g"
+nodes:
+  - id: n
+    type: executor
+    outputs: { schema: s }
+    executor_requirements: { participant: p }
+    workspace: w
+    write_paths: [x]
+    acceptance: [{ type: path }]
+    timeout_seconds: 300
+"#;
+        for (id, status) in [("g-run", "running"), ("g-done", "completed")] {
+            {
+                let conn = state.storage.conn();
+                conn.execute(
+                    "INSERT INTO graph_runs (id, goal, spec_snapshot, compiled_graph, status) \
+                 VALUES (?1, 'g', '{}', '{}', ?2)",
+                    rusqlite::params![id, status],
+                )
+                .unwrap();
+            }
+            match patch_run(&state, id, yaml) {
+                Err(ServerMsg::Error { code, .. }) => {
+                    assert!(
+                        code == "graph_patch_running" || code == "graph_patch_terminal",
+                        "应拒绝 {status} 图: {code}"
+                    );
+                }
+                other => panic!("预期拒绝 {status} 图: {other:?}"),
+            }
+        }
     }
 }

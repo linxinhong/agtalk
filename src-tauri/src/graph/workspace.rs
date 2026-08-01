@@ -272,7 +272,7 @@ pub fn get_by_node(
     .optional()
 }
 
-fn list_by_graph(
+pub(crate) fn list_by_graph(
     conn: &Connection,
     graph_run_id: &str,
 ) -> Result<Vec<WorkspaceRow>, rusqlite::Error> {

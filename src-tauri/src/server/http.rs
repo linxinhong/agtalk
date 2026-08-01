@@ -83,6 +83,10 @@ pub fn routes(state: AppState) -> Router {
             post(graph::graph_run_control_handler),
         )
         .route(
+            "/api/v1/graph/runs/:id/patch",
+            post(graph::graph_run_patch_handler),
+        )
+        .route(
             "/api/v1/graph/events/stream",
             get(graph_events_stream_handler),
         )
