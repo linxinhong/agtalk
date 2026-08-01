@@ -325,7 +325,7 @@ onUnmounted(() => {
             </div>
             <div class="gv-kv">
               <span>状态</span
-              ><b class="gv-status gv-status-{{ selectedNode.status }}">{{
+              ><b :class="['gv-status', 'gv-status-' + selectedNode.status]">{{
                 nodeStatusLabel[selectedNode.status] ?? selectedNode.status
               }}</b>
             </div>
@@ -364,7 +364,7 @@ onUnmounted(() => {
   flex-direction: column;
   height: 100vh;
   font-family: var(--font-ui, system-ui, sans-serif);
-  color: var(--text, #1f2937);
+  color: var(--text-primary, #1d1d1f);
   background: var(--bg, #ffffff);
 }
 .gv-header {
@@ -384,7 +384,7 @@ onUnmounted(() => {
   border: 1px solid var(--border, #d1d5db);
   border-radius: 6px;
   background: var(--bg, #fff);
-  color: var(--text, #111827);
+  color: var(--text-primary, #1d1d1f);
   max-width: 320px;
 }
 .gv-run-select {
@@ -396,7 +396,7 @@ onUnmounted(() => {
   border: 1px solid var(--border, #d1d5db);
   border-radius: 6px;
   background: var(--bg, #fff);
-  color: var(--text, #111827);
+  color: var(--text-primary, #1d1d1f);
   cursor: pointer;
 }
 .gv-btn-primary {
@@ -436,7 +436,7 @@ onUnmounted(() => {
   border-radius: 6px;
   padding: 8px;
   background: var(--bg, #fff);
-  color: var(--text, #111827);
+  color: var(--text-primary, #1d1d1f);
 }
 .gv-submit-actions {
   display: flex;
@@ -445,7 +445,7 @@ onUnmounted(() => {
 .gv-empty {
   padding: 40px;
   text-align: center;
-  color: var(--text-muted, #6b7280);
+  color: var(--text-secondary, rgba(0,0,0,0.55));
 }
 .gv-main {
   flex: 1;
@@ -463,7 +463,8 @@ onUnmounted(() => {
   left: 8px;
   z-index: 5;
   font-size: 12px;
-  background: rgba(255, 255, 255, 0.85);
+  background: var(--bg-elevated, rgba(0, 0, 0, 0.03));
+  backdrop-filter: blur(4px);
   padding: 4px 8px;
   border-radius: 6px;
   border: 1px solid var(--border, #e5e7eb);
@@ -482,7 +483,7 @@ onUnmounted(() => {
 .gv-panel h3 {
   margin: 0 0 8px;
   font-size: 13px;
-  color: var(--text-muted, #6b7280);
+  color: var(--text-secondary, rgba(0,0,0,0.55));
 }
 .gv-kv {
   display: flex;
@@ -492,7 +493,7 @@ onUnmounted(() => {
   padding: 2px 0;
 }
 .gv-kv span {
-  color: var(--text-muted, #6b7280);
+  color: var(--text-secondary, rgba(0,0,0,0.55));
 }
 .gv-fail {
   margin-top: 6px;
@@ -526,16 +527,16 @@ onUnmounted(() => {
   border-bottom: 1px dashed var(--border, #f3f4f6);
 }
 .gv-log-id {
-  color: var(--text-muted, #9ca3af);
+  color: var(--text-tertiary, rgba(0,0,0,0.38));
 }
 .gv-log-type {
   color: var(--accent, #2563eb);
 }
 .gv-log-node {
-  color: var(--text-muted, #6b7280);
+  color: var(--text-secondary, rgba(0,0,0,0.55));
 }
 .gv-muted {
-  color: var(--text-muted, #9ca3af);
+  color: var(--text-tertiary, rgba(0,0,0,0.38));
   font-size: 12px;
 }
 </style>
