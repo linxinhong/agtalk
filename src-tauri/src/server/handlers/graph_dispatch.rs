@@ -50,8 +50,60 @@ pub(crate) fn dispatch_one(
             // 注意锁纪律：send()/lookup() 内部自取 storage 锁，本函数不得同时持锁调用。
             // 先无锁完成消息发送，再单独持锁写 assignment（分段持锁）。
             let target = active[0];
-            let body =
-                serde_json::to_string(&dispatch_payload(compiled, item)).map_err(json_err)?;
+            let ws_info = {
+                let conn = state.storage.conn();
+                let spec_node = compiled
+                    .nodes
+                    .iter()
+                    .find(|n| n.id == item.node_key)
+                    .ok_or_else(|| {
+                        err(
+                            "graph_node_not_found",
+                            format!("spec 无节点 {}", item.node_key),
+                        )
+                    })?;
+                if spec_node.write_paths.is_empty() {
+                    None
+                } else {
+                    // repository/base_revision 从 graph_runs 读（spec 或 CLI 探测）
+                    let (repo, base): (Option<String>, Option<String>) = conn
+                        .query_row(
+                            "SELECT repository, base_revision FROM graph_runs WHERE id=?1",
+                            params![item.graph_run_id],
+                            |r| Ok((r.get(0)?, r.get(1)?)),
+                        )
+                        .map_err(sqlite_err)?;
+                    let repo = repo.unwrap_or_default();
+                    if repo.is_empty() {
+                        // 降级：无本地 git 仓库时不建 worktree（隔离失效，验证仍生效），记录 warning
+                        crate::graph::events::append(
+                            &conn,
+                            &item.graph_run_id,
+                            "workspace_skipped",
+                            Some(&item.node_key),
+                            &serde_json::json!({
+                                "reason": "repository_missing",
+                                "hint": "提交 spec 时自动探测本地 git 仓库；写节点建议在 git 仓库内运行",
+                            }),
+                        )
+                        .map_err(graph_err)?;
+                        None
+                    } else {
+                        let base = base.unwrap_or_else(|| "HEAD".into());
+                        let ws = crate::graph::workspace::ensure_worktree(
+                            &conn,
+                            &item.graph_run_id,
+                            &item.node_key,
+                            &repo,
+                            &base,
+                        )
+                        .map_err(|e| err("graph_workspace_failed", e))?;
+                        Some((ws.path.unwrap_or_default(), ws.branch.unwrap_or_default()))
+                    }
+                }
+            };
+            let body = serde_json::to_string(&dispatch_payload(compiled, item, ws_info.as_ref()))
+                .map_err(json_err)?;
             let subject = format!("[graph] {}", item.node_key);
             let req = SendRequest {
                 to: &target.address,
@@ -103,7 +155,11 @@ pub(crate) fn dispatch_one(
 }
 
 /// 派发消息体（docs/graph-participant-protocol.md §5）。
-fn dispatch_payload(compiled: &CompiledGraph, item: &DispatchItem) -> serde_json::Value {
+fn dispatch_payload(
+    compiled: &CompiledGraph,
+    item: &DispatchItem,
+    ws_info: Option<&(String, String)>,
+) -> serde_json::Value {
     let spec_node = compiled
         .nodes
         .iter()
@@ -116,7 +172,8 @@ fn dispatch_payload(compiled: &CompiledGraph, item: &DispatchItem) -> serde_json
             "attempt": item.attempt,
             "node_type": item.node_type.as_str(),
             "goal": compiled.goal,
-            "workspace": null, // M1 尚无 worktree（workspace.rs 未实现）
+            "workspace": ws_info
+                .map(|(path, branch)| serde_json::json!({ "path": path, "branch": branch })),
             "read_paths": spec_node.read_paths,
             "write_paths": spec_node.write_paths,
             "forbidden_paths": spec_node.forbidden_paths,

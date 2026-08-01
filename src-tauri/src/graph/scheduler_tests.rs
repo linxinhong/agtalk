@@ -469,6 +469,8 @@ nodes:
     {
         let conn = storage.conn();
         let items = tick(&conn, "g3", &compiled).unwrap();
+        assert_eq!(items.len(), 1, "join 汇聚后只派发 c");
+        assert_eq!(items[0].node_key, "c");
     }
     let conn = storage.conn();
     let j = crate::graph::state::get_node_run_by_key(&conn, "g3", "j", 1)

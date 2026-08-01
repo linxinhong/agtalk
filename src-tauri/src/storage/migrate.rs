@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 
-pub const CURRENT_VERSION: u32 = 10;
+pub const CURRENT_VERSION: u32 = 11;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS _migrations (
@@ -237,6 +237,11 @@ CREATE TABLE IF NOT EXISTS graph_node_assignments (
 CREATE INDEX IF NOT EXISTS idx_assignments_node ON graph_node_assignments(node_run_id);
 "#;
 
+// V11：workspaces 记录提交哈希（P1-2 worktree commit/merge 后可审计）。
+const MIGRATE_V11: &str = r#"
+ALTER TABLE workspaces ADD COLUMN commit_hash TEXT DEFAULT NULL;
+"#;
+
 pub fn run(conn: &mut Connection) -> Result<(), super::StorageError> {
     let tx = conn.transaction()?;
 
@@ -283,6 +288,9 @@ pub fn run(conn: &mut Connection) -> Result<(), super::StorageError> {
     }
     if version < 10 {
         tx.execute_batch(MIGRATE_V10)?;
+    }
+    if version < 11 {
+        tx.execute_batch(MIGRATE_V11)?;
     }
 
     tx.execute(

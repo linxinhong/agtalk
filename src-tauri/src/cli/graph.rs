@@ -179,10 +179,11 @@ fn detect_git() -> Option<(String, String)> {
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .filter(|s| !s.is_empty())
     };
-    let remote = run(&["remote", "get-url", "origin"]);
+    // repository = 本地 git 仓库根（worktree 需在本地仓库内创建）
+    let repo_root = run(&["rev-parse", "--show-toplevel"]);
     let branch =
         run(&["branch", "--show-current"]).or_else(|| run(&["rev-parse", "--short", "HEAD"]));
-    match (remote, branch) {
+    match (repo_root, branch) {
         (Some(r), Some(b)) => Some((r, b)),
         _ => None,
     }

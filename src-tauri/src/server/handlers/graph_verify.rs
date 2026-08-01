@@ -141,7 +141,51 @@ pub(crate) fn verify_and_advance(
                 )
                 .map_err(sqlite_err)?;
             }
+            // P1-2：写节点成功后 commit worktree（白名单路径 = changed_files ∩ write_paths）
+            if !spec_node.write_paths.is_empty() {
+                if let Ok(Some(ws)) =
+                    crate::graph::workspace::get_by_node(&conn, &body.run_id, &body.node_key)
+                {
+                    let allowed: Vec<String> = body
+                        .changed_files
+                        .iter()
+                        .filter(|f| {
+                            spec_node
+                                .write_paths
+                                .iter()
+                                .any(|w| crate::graph::paths::paths_overlap(w, f))
+                        })
+                        .cloned()
+                        .collect();
+                    let _ = crate::graph::workspace::commit_worktree(
+                        &conn,
+                        &ws,
+                        &allowed,
+                        &format!("graph {} {}", body.run_id, body.node_key),
+                    )
+                    .map_err(|e| err("graph_workspace_commit_failed", e))?;
+                }
+            }
             let _ = converge_graph_run(&conn, &body.run_id).map_err(graph_err)?;
+            // P1-2：图 completed → merge workspaces 到集成分支
+            let gstatus: String = conn
+                .query_row(
+                    "SELECT status FROM graph_runs WHERE id=?1",
+                    params![body.run_id],
+                    |r| r.get(0),
+                )
+                .map_err(sqlite_err)?;
+            if gstatus == "completed" {
+                let target: String = conn
+                    .query_row(
+                        "SELECT COALESCE(integration_target, 'main') FROM graph_runs WHERE id=?1",
+                        params![body.run_id],
+                        |r| r.get(0),
+                    )
+                    .map_err(sqlite_err)?;
+                let _ = crate::graph::workspace::merge_workspaces(&conn, &body.run_id, &target)
+                    .map_err(|e| err("graph_workspace_merge_failed", e))?;
+            }
             let items = tick(&conn, &body.run_id, &cg).map_err(graph_err)?;
             (
                 cg,

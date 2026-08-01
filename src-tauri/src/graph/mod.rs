@@ -7,7 +7,7 @@ pub mod approval;
 pub mod compiler;
 pub mod dto;
 pub mod events;
-mod paths;
+pub mod paths;
 pub mod reconciler;
 pub mod scheduler;
 pub mod spec;
@@ -17,6 +17,7 @@ pub mod state_tests;
 #[cfg(test)]
 pub mod tests;
 pub mod verify;
+pub mod workspace;
 
 pub use compiler::{CompileIssue, CompileResult, CompiledGraph, Edge, Trigger};
 pub use scheduler::{tick, DispatchItem};
