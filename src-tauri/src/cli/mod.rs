@@ -247,6 +247,27 @@ struct ResolvedNotify {
     diagnostics: Vec<crate::proto::NotifyProbe>,
 }
 
+/// 读取已存在 session 的 notify 配置（幂等 join 复用原通道）。
+/// 找不到 session（新注册）→ None，调用方回退 auto 探测。
+fn existing_notify(ctx: &Context, name: Option<&str>) -> Option<ResolvedNotify> {
+    let name: String = name
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| std::env::var("AGTALK_NAME").ok().filter(|s| !s.is_empty()))?;
+    let path = ctx.dot_agtalk.join(&name).join("session.json");
+    let raw = std::fs::read_to_string(path).ok()?;
+    let session: crate::identity::session_file::SessionFile = serde_json::from_str(&raw).ok()?;
+    Some(ResolvedNotify {
+        channel: session.notify.channel.clone(),
+        endpoint: if session.notify.endpoint.is_null() {
+            None
+        } else {
+            Some(session.notify.endpoint.clone())
+        },
+        diagnostics: Vec::new(),
+    })
+}
+
 fn resolve_notify(notify: &str, agent_name: Option<&str>) -> Result<ResolvedNotify, CliError> {
     let notify = notify.trim();
     if notify.eq_ignore_ascii_case("none") {
@@ -351,8 +372,15 @@ fn run(cli: Cli, json: bool) -> Result<(), CliError> {
                     notify,
                 } => {
                     let ctx = Context::pre_join().map_err(CliError::from)?;
-                    let notify_input = notify.as_deref().unwrap_or("auto");
-                    let resolved = resolve_notify(notify_input, name.as_deref())?;
+                    // 幂等语义（AGENTS.md §2.9）：session 已存在且未显式指定 --notify 时，
+                    // 复用原 notify 通道（不重探测、不因 auto 探测失败而降级为 none）
+                    let resolved = match notify.as_deref() {
+                        Some(input) => resolve_notify(input, name.as_deref())?,
+                        None => match existing_notify(&ctx, name.as_deref()) {
+                            Some(existing) => existing,
+                            None => resolve_notify("auto", name.as_deref())?,
+                        },
+                    };
                     client::id::join(
                         ctx,
                         name,

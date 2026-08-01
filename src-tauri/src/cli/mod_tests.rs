@@ -326,3 +326,50 @@ fn agent_guide_markdown_is_non_empty() {
     assert!(markdown.contains("notify_ready"));
     assert!(markdown.contains("history.jsonl"));
 }
+
+#[test]
+fn existing_notify_reuses_previous_channel() {
+    // 幂等 join：session 已存在 → 复用原 notify（不因 auto 探测失败降级）
+    let dir = tempfile::tempdir().unwrap();
+    let alan_dir = dir.path().join("alan");
+    std::fs::create_dir_all(&alan_dir).unwrap();
+    std::fs::write(
+        alan_dir.join("session.json"),
+        r#"{
+            "version": 2,
+            "address": "93b837c6-68fa-4ab8-b359-141fada2494a",
+            "name": "alan",
+            "intro": "t",
+            "notify": { "channel": "plugin:cmux", "endpoint": { "target": "pane-1" } }
+        }"#,
+    )
+    .unwrap();
+    let ctx = Context {
+        dot_agtalk: dir.path().to_path_buf(),
+        address: String::new(),
+        name: String::new(),
+        pid: 0,
+        start_time: 0,
+        base_url: String::new(),
+    };
+    let resolved = super::existing_notify(&ctx, Some("alan")).expect("应读到原 notify");
+    assert_eq!(resolved.channel, "plugin:cmux");
+    assert!(resolved.endpoint.is_some());
+}
+
+#[test]
+fn existing_notify_none_for_new_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = Context {
+        dot_agtalk: dir.path().to_path_buf(),
+        address: String::new(),
+        name: String::new(),
+        pid: 0,
+        start_time: 0,
+        base_url: String::new(),
+    };
+    assert!(
+        super::existing_notify(&ctx, Some("nobody")).is_none(),
+        "新注册 → 回退 auto"
+    );
+}
