@@ -60,27 +60,27 @@ pub fn reconcile_all(storage: &Storage) -> Result<usize, crate::graph::Error> {
                 | crate::graph::state::NodeRunStatus::Dispatched
                 | crate::graph::state::NodeRunStatus::Running
         ) {
-            // 探测机制（design_graph.md §5.7-3）：lease 过期未发探测 → 发探测消息 + 续租 grace，
-            // 避免把仍在执行的长任务误判超时（agent 收到探测后 heartbeat 续活）
-            let probed_recently: bool = {
+            // 探测机制（design_graph.md §5.7-3）：lease 过期未探测过 → 发探测消息 + 续租 grace，
+            // 给 agent 一次续活机会；已探测过（任意历史）→ 直接 timed_out（收敛，避免循环探测）。
+            // 修复：原 60s 窗口判定在 lease 延长后过期时会再次探测（无限循环）。
+            let probed_before: bool = {
                 let conn = storage.conn();
                 conn.query_row(
                     "SELECT COUNT(*) FROM graph_events WHERE graph_run_id=?1 AND node_key=?2 \
-                     AND event_type='node_probe_sent' AND created_at > ?3",
+                     AND event_type='node_probe_sent'",
                     params![
                         graph_run_id,
                         node_id_opt.as_ref().map(|(k, _)| k.as_str()).unwrap_or(""),
-                        unix_now() - PROBE_GRACE_SECONDS,
                     ],
                     |r| r.get::<_, i64>(0),
                 )? > 0
             };
             if let Some((node_key, _)) = &node_id_opt {
-                if !probed_recently {
+                if !probed_before {
                     // 无锁态调用（外层无 conn guard；send_probe 内部自己拿锁）
                     if send_probe(storage, &graph_run_id, node_key, PROBE_GRACE_SECONDS)? {
                         handled += 1;
-                        continue; // grace 中，等待 agent 心跳
+                        continue; // grace 中，等待 agent 心跳续活
                     }
                 }
             }

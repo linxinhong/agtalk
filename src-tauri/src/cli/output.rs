@@ -539,13 +539,7 @@ fn print_text_server_msg(msg: &ServerMsg) {
                 println!("no graph runs");
             }
             for r in runs {
-                println!(
-                    "{}  {}  {}  {}",
-                    short_id(&r.id),
-                    r.status,
-                    r.goal,
-                    r.created_at
-                );
+                println!("{}  {}  {}  {}", r.id, r.status, r.goal, r.created_at);
             }
         }
         ServerMsg::GraphRunDetail {
@@ -618,14 +612,6 @@ fn print_text_server_msg(msg: &ServerMsg) {
             println!("action    : {}", action);
             println!("status    : {}", status);
         }
-    }
-}
-
-fn short_id(id: &str) -> &str {
-    if id.len() > 8 {
-        &id[..8]
-    } else {
-        id
     }
 }
 
