@@ -28,7 +28,7 @@ const FILTERS: { key: string; label: string }[] = [
 
 <template>
   <header class="top">
-    <span class="logo"><i></i>图工程</span>
+    <span class="logo"><i></i>agtalk 图工程</span>
 
     <span class="crumb" v-if="runId">
       <b>{{ project }}</b>
