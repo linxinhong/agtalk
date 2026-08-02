@@ -7,7 +7,6 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { VueFlow, useVueFlow, MarkerType } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
-import { MiniMap } from '@vue-flow/minimap'
 import dagre from '@dagrejs/dagre'
 
 import ProjectRail from '../components/ProjectRail.vue'
@@ -313,10 +312,12 @@ const inspectorNode = computed(() =>
         >
           <Background :gap="20" :size="1" pattern-color="var(--canvas-dot)" />
           <Controls position="bottom-left" />
-          <MiniMap position="bottom-right" pannable zoomable />
           <div v-if="active.runId" class="cv-meta">
             {{ active.runId }} · {{ nodes.length }} 节点
           </div>
+          <button class="cv-fit" title="恢复默认视角（适应全部节点）" @click="fitView({ padding: 0.15 })">
+            ⌂ 适应视图
+          </button>
         </VueFlow>
       </div>
 
@@ -350,6 +351,26 @@ const inspectorNode = computed(() =>
   position: relative;
   overflow: hidden;
   background: var(--bg);
+}
+.cv-fit {
+  position: absolute;
+  right: 12px;
+  top: 10px;
+  z-index: 5;
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-family: var(--font-ui);
+  cursor: pointer;
+  transition: all 150ms;
+}
+.cv-fit:hover {
+  border-color: var(--text-tertiary);
+  background: var(--surface-2);
 }
 .cv-meta {
   position: absolute;
