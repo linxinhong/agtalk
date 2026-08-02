@@ -16,8 +16,6 @@ interface HeaderProps {
   loading?: boolean
 }
 const props = defineProps<HeaderProps>();
-/** 仓库短名（路径最后段），全路径放 title */
-const repoShort = computed(() => props.repo?.split('/').pop() || props.repo || '');
 
 const emit = defineEmits(['filter', 'refresh', 'pause', 'resume', 'cancel']);
 
@@ -34,11 +32,10 @@ const FILTERS: { key: string; label: string }[] = [
   <header class="top">
     <span class="logo"><i></i>agtalk 图工程</span>
 
-    <span class="crumb" v-if="runId">
+    <span class="crumb" v-if="runId" :title="repo">
       <b>{{ project }}</b>
       <span class="sep">/</span>
       <span class="mono">{{ runId }}</span>
-      <template v-if="repo"><span class="sep">·</span><span :title="repo">{{ repoShort }}</span></template>
     </span>
 
     <nav class="filters">
