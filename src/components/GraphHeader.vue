@@ -3,13 +3,10 @@
  * GraphHeader · 顶栏：面包屑（工程/运行/仓库）+ 状态筛选 + 运行操作
  * 主操作用墨色，危险操作用失败色描边——彩色只属于状态。
  *
- * props: project(名), runId, repo, runStatus(7组), filter, loading
+ * props: runStatus(7组), filter, loading
  * emit: filter(status), refresh(), pause(), resume(), cancel()
  */
 interface HeaderProps {
-  project?: string
-  runId?: string
-  repo?: string
   runStatus?: string
   filter?: string
   loading?: boolean
@@ -30,12 +27,6 @@ const FILTERS: { key: string; label: string }[] = [
 <template>
   <header class="top">
     <span class="logo"><i></i>agtalk 图工程</span>
-
-    <span class="crumb" v-if="runId" :title="repo">
-      <b>{{ project }}</b>
-      <span class="sep">/</span>
-      <span class="mono">{{ runId }}</span>
-    </span>
 
     <nav class="filters">
       <span
@@ -69,25 +60,6 @@ const FILTERS: { key: string; label: string }[] = [
 }
 .logo { font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
 .logo i { width: 18px; height: 18px; border-radius: 5px; background: var(--ink); }
-
-.crumb {
-  font-size: 12px; color: var(--text-secondary);
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.crumb .mono {
-  font-family: var(--font-mono);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 180px;
-  display: inline-block;
-  vertical-align: bottom;
-}
-.crumb b { color: var(--text-primary); font-weight: 600; }
-.crumb .sep { margin: 0 6px; color: var(--text-tertiary); }
-.mono { font-family: var(--font-mono); }
 
 .filters {
   display: flex; gap: 4px; margin-left: 8px;
@@ -125,7 +97,6 @@ const FILTERS: { key: string; label: string }[] = [
   .top { gap: 8px; padding: 0 10px; }
 }
 @media (max-width: 700px) {
-  .crumb { max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .logo { font-size: 12px; }
   .filters { display: none; }
 }
