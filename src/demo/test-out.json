@@ -1,0 +1,43 @@
+{
+  "schema": "test-report",
+  "run": "6d301255-6a48-483f-b876-c3010f609f77",
+  "node": "test",
+  "verdict": "M2 产物链路部分通过：store 通道✅，worktree 副本❌（实现改为 store 直引），代码链❌（下游分支未基于上游）",
+  "checks": [
+    {
+      "item": "artifact 注册入 store",
+      "result": "pass",
+      "evidence": "~/.config/agtalk2/artifacts/6d301255.../write/impl-diff.json 存在"
+    },
+    {
+      "item": "checksum 一致性（dispatch 声明 vs store 实际）",
+      "result": "pass",
+      "evidence": "sha256:5ae29a0a...4d41b 两侧完全一致"
+    },
+    {
+      "item": "input_artifacts / input_summaries 随派发下发",
+      "result": "pass",
+      "evidence": "uri+checksum+producer 齐全；summary='已实现 ping 函数（M2 产物验证）'"
+    },
+    {
+      "item": "产物复制到下游 worktree .agtalk-artifacts/",
+      "result": "fail",
+      "evidence": "目录不存在；实现实际传递的是 store 绝对路径直引（与评审确认的'复制保隔离'方案不一致，需确认是有意改设计还是遗漏）"
+    },
+    {
+      "item": "下游 worktree 包含上游代码（代码链）",
+      "result": "fail",
+      "evidence": "write worktree 有 ping.rs，test worktree（agtalk/6d301255-test）基于 main@bc23582 无 ping.rs——artifact 证据与 workspace 代码脱节，下游无法真正测试上游产物"
+    },
+    {
+      "item": "collab 上下文与指引（M1）",
+      "result": "pass",
+      "evidence": "peers 预解析 address、lease_renewal/no_loop/no_infinite_wait/no_broadcast 四条指引齐全"
+    }
+  ],
+  "recommendations": [
+    "明确设计：artifact 走 store 直引还是 worktree 副本？直引需补 GC 生命周期保证（下游在飞期间 store 不得清理）",
+    "串行依赖节点的下游 workspace 应基于上游分支创建（或 daemon 提供合并），否则 write→test→review 链路只是证据传递而非代码传递",
+    "artifact 通道与 git 分支通道的语义需写进 protocol：artifact=产物/证据，代码经分支链流转"
+  ]
+}
