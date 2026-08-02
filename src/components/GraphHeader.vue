@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { computed } from 'vue';
 /**
  * GraphHeader · 顶栏：面包屑（工程/运行/仓库）+ 状态筛选 + 运行操作
  * 主操作用墨色，危险操作用失败色描边——彩色只属于状态。
@@ -15,7 +14,7 @@ interface HeaderProps {
   filter?: string
   loading?: boolean
 }
-const props = defineProps<HeaderProps>();
+defineProps<HeaderProps>();
 
 const emit = defineEmits(['filter', 'refresh', 'pause', 'resume', 'cancel']);
 
