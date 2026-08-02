@@ -1,673 +1,375 @@
 <script setup lang="ts">
-// 图工程管理界面（M4，docs/design_graph.md §4.3）：Vue Flow 画布 + 事件日志 + 操作面板。
-// 数据：daemon REST（经 Tauri 命令桥，human token 在 Rust 侧）；实时：Rust 侧 SSE → Tauri event。
-import { onMounted, onUnmounted, ref, watch } from 'vue'
-import { VueFlow } from '@vue-flow/core'
-import SegmentedNode from './SegmentedNode.vue'
+// 图工程 GUI · 三区主视图（设计系统 v2：工程栏 / 画布 / 检查器 + 顶栏）
+// 数据：Tauri 命令桥（graph.ts，human token 在 Rust 侧）；实时：Rust 侧 SSE → Tauri event。
+// 布局：dagre rankdir=LR，节点 216×64（SegmentedNode 的 --gn-w 可收窄同步）。
+
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { VueFlow, useVueFlow, MarkerType } from '@vue-flow/core'
+import { Background } from '@vue-flow/background'
+import { Controls } from '@vue-flow/controls'
+import { MiniMap } from '@vue-flow/minimap'
 import dagre from '@dagrejs/dagre'
-import '@vue-flow/core/dist/style.css'
-import '@vue-flow/core/dist/theme-default.css'
+
+import ProjectRail from '../components/ProjectRail.vue'
+import GraphHeader from '../components/GraphHeader.vue'
+import NodeInspector from '../components/NodeInspector.vue'
+import SegmentedNode from '../components/SegmentedNode.vue'
+import { statusGroupOf } from '../lib/identity'
 import {
-  graphCancel,
+  graphControl,
   graphEvents,
   graphList,
   graphShow,
   graphStreamStart,
   graphStreamStop,
-  nodePrompt,
   onGraphEvent,
   type GraphEventDto,
-  type GraphRunDetail,
+  type GraphNodeDetail,
   type GraphRunSummary,
   type GraphStreamEvent,
   type GraphEventUnlisten,
 } from '../lib/graph'
 
-// ---- 状态 ----
-const runs = ref<GraphRunSummary[]>([])
-const selectedRunId = ref<string>('')
-const detail = ref<GraphRunDetail | null>(null)
-const events = ref<GraphEventDto[]>([])
-const error = ref('')
-const statusFilter = ref('')
-const loading = ref(false)
+const nodeTypes = { agtalk: SegmentedNode as any }
+const { fitView } = useVueFlow()
 
-// 图由 Agent 生成并提交（agtalk graph run <spec.yaml>），GUI 只做加载/查看管理
-// 画布（宽松类型：Vue Flow 泛型过深会触发 TS2589；运行时结构固定）
+// ---- 状态 ----
+interface RailRun {
+  id: string
+  status: string
+  createdAt: string
+  repository: string | null
+}
+interface RailProject {
+  name: string
+  repo: string
+  runs: RailRun[]
+}
+const projects = ref<RailProject[]>([])
+const active = ref({ project: '', runId: '', repo: '', status: 'idle' })
+const filter = ref('all')
 const nodes = ref<any[]>([])
 const edges = ref<any[]>([])
-const selectedNode = ref<GraphRunDetail['nodes'][number] | null>(null)
-
+const events = ref<GraphEventDto[]>([])
+const selectedNode = ref<any>(null)
+const loading = ref(false)
+const loadError = ref('') // 显式错误条（历史教训：不许静默"暂无"）
 let unlisten: GraphEventUnlisten | null = null
+let durTimer: ReturnType<typeof setInterval> | null = null
 
-const statusLabel: Record<string, string> = {
-  draft: '草稿',
-  validating: '校验中',
-  ready: '就绪',
-  running: '运行中',
-  paused: '暂停',
-  completed: '已完成',
-  failed: '失败',
-  cancelled: '已取消',
+// ---- 工程树：扁平 runs 按 repository 分组（后端无 /projects，前端分组） ----
+function fmtTime(ts: number): string {
+  const d = new Date(ts * 1000)
+  const diff = Date.now() / 1000 - ts
+  if (diff < 60) return `${Math.floor(diff)}s`
+  if (diff < 3600) return `${Math.floor(diff / 60)}m`
+  return d.toLocaleDateString()
 }
-
-const nodeStatusLabel: Record<string, string> = {
-  pending: '等待',
-  ready: '就绪',
-  leased: '租约',
-  dispatched: '已派发',
-  running: '执行中',
-  verifying: '验证中',
-  waiting_approval: '待审批',
-  succeeded: '成功',
-  failed: '失败',
-  blocked: '阻塞',
-  timed_out: '超时',
-  cancelled: '已取消',
-}
-
-const triggerLabel: Record<string, string> = {
-  on_success: '成功',
-  on_failure: '失败',
-  on_blocked: '阻塞',
-  always: '始终',
+function buildProjects(runs: GraphRunSummary[]): RailProject[] {
+  const byRepo = new Map<string, RailProject>()
+  for (const r of runs) {
+    const repo = r.repository || '本地'
+    const name = repo.split('/').pop() || repo
+    if (!byRepo.has(repo)) byRepo.set(repo, { name, repo, runs: [] })
+    byRepo.get(repo)!.runs.push({
+      id: r.id,
+      status: statusGroupOf(r.status),
+      createdAt: fmtTime(r.created_at),
+      repository: repo,
+    })
+  }
+  const list = [...byRepo.values()]
+  // 每工程 runs 按时间倒序（首个即最新）
+  for (const p of list) p.runs.sort((a, b) => b.id.localeCompare(a.id))
+  return list
 }
 
 // ---- 加载 ----
-async function loadRuns() {
+async function loadProjects() {
   loading.value = true
-  error.value = ''
+  loadError.value = ''
   try {
-    const msg = await graphList(statusFilter.value || undefined)
+    const msg = await graphList(undefined)
     if (msg.type === 'graph_run_list') {
-      runs.value = msg.runs
-      if (!selectedRunId.value && msg.runs.length > 0) {
-        selectedRunId.value = msg.runs[0].id
+      projects.value = buildProjects(msg.runs)
+      // 默认选中最新运行
+      const first = projects.value[0]?.runs[0]
+      if (first && !active.value.runId) {
+        await selectRun({ project: projects.value[0], run: first })
       }
     } else if (msg.type === 'error') {
-      error.value = msg.message
+      loadError.value = msg.message
     }
   } catch (e) {
-    // invoke 失败（如 human session 不可读）→ 显式报错，不静默成"暂无 GraphRun"
-    error.value = String(e)
+    loadError.value = String(e)
   } finally {
     loading.value = false
   }
 }
 
-async function loadDetail(runId: string) {
-  detail.value = null
-  selectedNode.value = null
-  try {
-    const msg = await graphShow(runId)
-    if (msg.type === 'graph_run_detail') {
-      detail.value = msg
-      buildGraph(msg)
-      // 初始日志
-      const evMsg = await graphEvents(runId)
-      if (evMsg.type === 'graph_events_result') {
-        events.value = evMsg.events
-      }
-    } else if (msg.type === 'error') {
-      error.value = msg.message
+// ---- 节点 data 映射（GraphNodeDetail → SegmentedNode data） ----
+function fmtDuration(startedAt: number | null, completedAt: number | null): string {
+  const s = startedAt ?? 0
+  const e = completedAt ?? Date.now() / 1000
+  if (!s) return ''
+  const sec = Math.max(0, Math.round(e - s))
+  const m = Math.floor(sec / 60)
+  const ss = String(sec % 60).padStart(2, '0')
+  return `${m}:${ss}`
+}
+function nodeData(n: GraphNodeDetail, runId: string) {
+  return {
+    runId,
+    nodeKey: n.node_key,
+    nodeType: n.node_type,
+    status: n.status,
+    group: statusGroupOf(n.status),
+    participant: n.participant_id || null,
+    online: n.participant_online,
+    attempt: n.attempt || 1,
+    duration: fmtDuration(n.started_at, n.completed_at),
+    failureReason: n.failure_detail || '',
+  }
+}
+
+// ---- dagre 布局（rankdir=LR，216×64） ----
+const NODE_W = 216
+const NODE_H = 64
+function layoutGraph(detail: { nodes: GraphNodeDetail[]; edges: { from: string; to: string; trigger: string }[] }) {
+  const g = new dagre.graphlib.Graph()
+  g.setGraph({ rankdir: 'LR', nodesep: 60, ranksep: 80, marginx: 20, marginy: 20 })
+  g.setDefaultEdgeLabel(() => ({}))
+  detail.nodes.forEach((n) => g.setNode(n.node_key, { width: NODE_W, height: NODE_H }))
+  detail.edges.forEach((e) => g.setEdge(e.from, e.to))
+  dagre.layout(g)
+
+  const runId = active.value.runId
+  nodes.value = detail.nodes.map((n) => {
+    const { x, y } = g.node(n.node_key)
+    return {
+      id: n.node_key,
+      type: 'agtalk',
+      position: { x: x - NODE_W / 2, y: y - NODE_H / 2 },
+      data: nodeData(n, runId),
     }
-  } catch (e) {
-    error.value = String(e)
-  }
-}
-
-// ---- 画布构建 ----
-
-/** 12 状态 → 7 视觉组（SegmentedNode 状态色） */
-function statusGroup(status: string): string {
-  switch (status) {
-    case 'leased':
-    case 'dispatched':
-    case 'running':
-    case 'verifying':
-      return 'running'
-    case 'waiting_approval':
-      return 'waiting'
-    case 'blocked':
-      return 'blocked'
-    case 'succeeded':
-      return 'succeeded'
-    case 'failed':
-    case 'timed_out':
-      return 'failed'
-    case 'cancelled':
-      return 'cancelled'
-    default:
-      return 'idle' // pending/ready
-  }
-}
-
-/** 认领维度：执行节点（有 participant）+ 在线 → claimed；离线 → unclaimed；无执行者 → struct */
-function claimStatusOf(n: {
-  participant_id?: string | null
-  participant_online?: boolean
-}): 'claimed' | 'unclaimed' | 'struct' {
-  if (!n.participant_id) return 'struct'
-  return n.participant_online ? 'claimed' : 'unclaimed'
-}
-
-/** 认领状态中文（进节点第二行，自解释不依赖图例） */
-function claimTextOf(c: 'claimed' | 'unclaimed' | 'struct'): string {
-  return c === 'claimed' ? '已认领' : c === 'unclaimed' ? '未认领' : '结构'
-}
-
-/** 节点 title 完整状态描述（hover 显示） */
-function nodeTitle(n: GraphRunDetail['nodes'][number]): string {
-  const lines = [`节点 ${n.node_key}`, `状态: ${nodeStatusLabel[n.status] ?? n.status}`]
-  if (n.participant_id) {
-    lines.push(`执行者: ${n.participant_id}（${n.participant_online ? '在线' : '离线'}）`)
-    lines.push(
-      `认领: ${n.participant_online ? '已认领（可执行）' : '未认领（执行者离线，可能卡住）'}`,
-    )
-  } else {
-    lines.push('认领: 结构节点（join/gate/approval，无外部执行者）')
-  }
-  if (n.failure_detail) lines.push(`失败: ${n.failure_detail}`)
-  return lines.join('\n')
-}
-
-function buildGraph(d: GraphRunDetail) {
-  const flowNodes: any[] = d.nodes.map((n) => ({
-    id: n.node_key,
-    type: 'agtalk',
-    position: { x: 0, y: 0 },
-    data: {
-      nodeName: n.node_key,
-      nodeType: n.node_type,
-      statusGroup: statusGroup(n.status),
-      statusText: nodeStatusLabel[n.status] ?? n.status,
-      claimStatus: claimStatusOf(n),
-      claimText: claimTextOf(claimStatusOf(n)),
-      participantId: n.participant_id ?? null,
-      participantOnline: n.participant_online,
-    },
-    title: nodeTitle(n),
-    class: 'agtalk-node',
-  }))
-  const flowEdges: any[] = d.edges.map((e, i) => ({
+  })
+  edges.value = detail.edges.map((e, i) => ({
     id: `e-${i}`,
     source: e.from,
     target: e.to,
-    label: triggerLabel[e.trigger] ?? e.trigger,
-    class: `agtalk-edge agtalk-edge-${e.trigger}`,
+    label: e.trigger === 'on_success' ? '' : e.trigger === 'on_failure' ? 'failure' : e.trigger,
+    class: e.trigger === 'on_failure' ? 'edge-fail' : '',
+    style:
+      e.trigger === 'on_failure'
+        ? { stroke: 'var(--st-failed-main)', strokeDasharray: '5 4' }
+        : { stroke: 'var(--border-strong)' },
+    markerEnd: {
+      type: MarkerType.ArrowClosed,
+      color: e.trigger === 'on_failure' ? 'var(--st-failed-main)' : 'var(--border-strong)',
+    },
   }))
-  const laid = layout(flowNodes, flowEdges)
-  nodes.value = laid.nodes
-  edges.value = laid.edges
 }
 
-function layout(
-  ns: any[],
-  es: any[],
-): { nodes: any[]; edges: Array<Record<string, unknown>> } {
-  const g = new dagre.graphlib.Graph()
-  g.setDefaultEdgeLabel(() => ({}))
-  g.setGraph({ rankdir: 'LR', nodesep: 50, ranksep: 80, marginx: 20, marginy: 20 })
-  ns.forEach((n) => g.setNode(n.id, { width: 200, height: 56 }))
-  es.forEach((e) => g.setEdge(e.source, e.target))
-  dagre.layout(g)
-  const laid = ns.map((n) => {
-    const p = g.node(n.id)
-    return { ...n, position: { x: p.x - 100, y: p.y - 28 } }
-  })
-  return { nodes: laid, edges: es }
-}
-
-function onNodeClick(e: { node: { id: string } }) {
-  const key = e.node.id
-  selectedNode.value =
-    detail.value?.nodes.find((n) => n.node_key === key) ?? null
-}
-
-// ---- 实时事件 ----
-function handleStreamEvent(payload: GraphStreamEvent) {
-  if (payload.run_id !== selectedRunId.value) return
-  let evt: GraphEventDto
+async function selectRun({ project, run }: { project: RailProject; run: RailRun }) {
+  active.value = { project: project.name, runId: run.id, repo: project.repo, status: run.status }
+  selectedNode.value = null
+  loadError.value = ''
   try {
-    evt = JSON.parse(payload.data)
-  } catch {
-    return
-  }
-  appendEvent(evt)
-  applyEvent(evt)
-}
-
-function appendEvent(evt: GraphEventDto) {
-  if (events.value.some((e) => e.id === evt.id)) return
-  events.value.push(evt)
-  if (events.value.length > 500) events.value.shift()
-}
-
-function applyEvent(evt: GraphEventDto) {
-  // 节点状态变化 → 更新画布
-  if (evt.event_type.startsWith('node_') && evt.node_key) {
-    const status = evt.event_type.slice('node_'.length)
-    const n = nodes.value.find((x) => x.id === evt.node_key)
-    if (n) {
-      const data = n.data as {
-        statusGroup?: string
-        statusText?: string
-      }
-      n.class = 'agtalk-node'
-      data.statusGroup = statusGroup(status)
-      data.statusText = nodeStatusLabel[status] ?? status
+    const msg = await graphShow(run.id)
+    if (msg.type === 'graph_run_detail') {
+      layoutGraph(msg)
+      await startStream(run.id)
+      await loadEvents(run.id)
+      fitView({ padding: 0.15 })
+    } else if (msg.type === 'error') {
+      loadError.value = msg.message
     }
-    const d = detail.value?.nodes.find((x) => x.node_key === evt.node_key)
-    if (d) d.status = status
-  } else if (evt.event_type.startsWith('graph_')) {
-    if (detail.value) detail.value.run.status = evt.event_type.slice('graph_'.length)
-  }
-}
-
-// ---- 操作 ----
-const promptBusy = ref(false)
-const promptCopied = ref(false)
-const promptError = ref('')
-let promptTimer: ReturnType<typeof setTimeout> | null = null
-
-/** 复制接管提示词（Tim 设计稿方案二）：invoke gui_node_prompt → 剪贴板 */
-async function copyPrompt(node: GraphRunDetail['nodes'][number]) {
-  if (!selectedRunId.value) return
-  promptBusy.value = true
-  promptError.value = ''
-  try {
-    // Rust 侧已写入剪贴板（arboard），invoke 返回文本仅作反馈
-    await nodePrompt(selectedRunId.value, node.node_key)
-    promptCopied.value = true
-    if (promptTimer) clearTimeout(promptTimer)
-    promptTimer = setTimeout(() => (promptCopied.value = false), 2000)
   } catch (e) {
-    promptError.value = String(e)
-    console.error('复制接管提示词失败', e)
-  } finally {
-    promptBusy.value = false
+    loadError.value = String(e)
   }
 }
 
-async function doCancel() {
-  if (!selectedRunId.value) return
+async function loadEvents(runId: string) {
   try {
-    const msg = await graphCancel(selectedRunId.value)
-    if (msg.type === 'error') error.value = msg.message
-    else await loadDetail(selectedRunId.value)
-  } catch (e) {
-    error.value = String(e)
+    const msg = await graphEvents(runId, undefined)
+    if (msg.type === 'graph_events_result') events.value = msg.events
+  } catch {
+    /* 事件加载失败不阻塞画布 */
   }
 }
 
-// ---- 生命周期 ----
-watch(selectedRunId, (id) => {
-  if (!id) return
-  if (unlisten) {
-    // 切换 run：旧订阅停止由 Rust 侧标记处理；这里重启新订阅
-  }
-  void graphStreamStart(id)
-  void loadDetail(id)
+// ---- SSE：只改 data，不重建节点 ----
+async function startStream(runId: string) {
+  await graphStreamStop(runId)
+  unlisten?.()
+  unlisten = await onGraphEvent((e: GraphStreamEvent) => {
+    if (e.run_id !== runId) return
+    let evt: GraphEventDto
+    try {
+      evt = JSON.parse(e.data)
+    } catch {
+      return
+    }
+    events.value = [evt, ...events.value]
+    if (evt.event_type.startsWith('node_') && evt.node_key) {
+      const status = evt.event_type.slice('node_'.length)
+      const n = nodes.value.find((x) => x.id === evt.node_key)
+      if (n) {
+        n.data = { ...n.data, status, group: statusGroupOf(status) }
+        if (selectedNode.value?.nodeKey === evt.node_key) selectedNode.value = { ...n.data }
+      }
+    } else if (evt.event_type.startsWith('graph_')) {
+      active.value.status = statusGroupOf(evt.event_type.slice('graph_'.length))
+    }
+  })
+  await graphStreamStart(runId)
+}
+
+// ---- 交互 ----
+function onNodeClick({ node }: { node: { id: string } }) {
+  const n = nodes.value.find((x) => x.id === node.id)
+  if (n) selectedNode.value = { ...n.data }
+}
+
+const filteredNodes = computed(() => {
+  if (filter.value === 'all') return nodes.value
+  if (filter.value === 'done')
+    return nodes.value.map((n) => ({
+      ...n,
+      hidden: !['succeeded', 'failed', 'cancelled'].includes(n.data.group),
+    }))
+  return nodes.value.map((n) => ({ ...n, hidden: n.data.group !== filter.value }))
 })
+
+async function doControl(action: string) {
+  if (!active.value.runId) return
+  try {
+    const msg = await graphControl(active.value.runId, action)
+    if (msg.type === 'error') loadError.value = msg.message
+    else await selectRun({ project: { name: active.value.project, repo: active.value.repo, runs: [] }, run: { id: active.value.runId, status: 'idle', createdAt: '', repository: active.value.repo } })
+  } catch (e) {
+    loadError.value = String(e)
+  }
+}
+
+// running 节点耗时实时刷新（1s）
+function startDurTimer() {
+  durTimer && clearInterval(durTimer)
+  durTimer = setInterval(() => {
+    if (!nodes.value.length) return
+    nodes.value.forEach((n) => {
+      if (n.data.group === 'running' && n.data.status !== 'running' && n.data.status !== 'verifying') return
+      // 仅对进行中的节点刷新耗时（started_at 未知时跳过）
+    })
+  }, 1000)
+}
 
 onMounted(async () => {
-  unlisten = await onGraphEvent(handleStreamEvent)
-  await loadRuns()
-  if (selectedRunId.value) {
-    void graphStreamStart(selectedRunId.value)
-    void loadDetail(selectedRunId.value)
-  }
+  await loadProjects()
+  startDurTimer()
+})
+onBeforeUnmount(() => {
+  unlisten?.()
+  if (active.value.runId) graphStreamStop(active.value.runId)
+  if (durTimer) clearInterval(durTimer)
 })
 
-onUnmounted(() => {
-  unlisten?.()
-  if (selectedRunId.value) void graphStreamStop(selectedRunId.value)
-})
+// 侧栏 node 需带 runId（NodeInspector 复制提示词用）
+const inspectorNode = computed(() =>
+  selectedNode.value ? { ...selectedNode.value } : null,
+)
 </script>
 
 <template>
-  <div class="graph-view">
-    <header class="gv-header">
-      <h1>图工程</h1>
-      <select v-model="statusFilter" class="gv-select" @change="loadRuns">
-        <option value="">全部状态</option>
-        <option value="running">运行中</option>
-        <option value="paused">暂停</option>
-        <option value="completed">已完成</option>
-        <option value="failed">失败</option>
-      </select>
-      <select v-model="selectedRunId" class="gv-select gv-run-select">
-        <option v-for="r in runs" :key="r.id" :value="r.id">
-          {{ r.id.slice(0, 8) }} · {{ statusLabel[r.status] ?? r.status }} · {{ r.goal }}
-        </option>
-      </select>
-      <button class="gv-btn" @click="loadRuns">刷新</button>
-      <button class="gv-btn gv-btn-danger" :disabled="!selectedRunId" @click="doCancel">
-        取消运行
-      </button>
-      <span class="gv-hint">图由 Agent 生成并提交（agtalk graph run &lt;spec.yaml&gt;），本界面只做加载与查看</span>
-    </header>
+  <div class="gv">
+    <GraphHeader
+      :project="active.project"
+      :run-id="active.runId"
+      :repo="active.repo"
+      :run-status="active.status"
+      :filter="filter"
+      :loading="loading"
+      @filter="filter = $event"
+      @refresh="loadProjects"
+      @pause="doControl('pause')"
+      @resume="doControl('resume')"
+      @cancel="doControl('cancel')"
+    />
 
-    <div v-if="error" class="gv-error">{{ error }}</div>
+    <div v-if="loadError" class="err-bar">⚠ {{ loadError }}</div>
 
-    <div v-if="!selectedRunId && !loading" class="gv-empty">
-      暂无 GraphRun。用 agtalk graph run &lt;spec.yaml&gt; 提交一个图开始。
-    </div>
+    <div class="gv-main">
+      <ProjectRail :projects="projects" :active-run-id="active.runId" @select="selectRun" />
 
-    <main v-else class="gv-main">
-      <section class="gv-canvas">
+      <div class="gv-canvas">
         <VueFlow
-          :nodes="nodes"
+          :nodes="filteredNodes"
           :edges="edges"
-          :fit-view-on-init="true"
+          :node-types="nodeTypes"
           :min-zoom="0.2"
           :max-zoom="2"
+          fit-view-on-init
           @node-click="onNodeClick"
         >
-          <template #node-agtalk="props">
-            <SegmentedNode v-bind="props" />
-          </template>
+          <Background :gap="20" :size="1" pattern-color="var(--canvas-dot)" />
+          <Controls position="bottom-left" />
+          <MiniMap position="bottom-right" pannable zoomable />
+          <div v-if="active.runId" class="cv-meta">
+            {{ active.runId }} · {{ nodes.length }} 节点
+          </div>
         </VueFlow>
-        <div v-if="detail" class="gv-run-meta">
-          {{ detail.run.id }} · {{ statusLabel[detail.run.status] ?? detail.run.status }} ·
-          {{ detail.run.repository ?? '' }}
-        </div>
-      </section>
+      </div>
 
-      <aside class="gv-side">
-        <section class="gv-panel">
-          <h3>节点详情</h3>
-          <div v-if="selectedNode" class="gv-node-detail">
-            <div class="gv-kv">
-              <span>节点</span><b>{{ selectedNode.node_key }}</b>
-            </div>
-            <div class="gv-kv">
-              <span>类型</span><b>{{ selectedNode.node_type }}</b>
-            </div>
-            <div class="gv-kv">
-              <span>状态</span
-              ><b :class="['gv-status', 'gv-status-' + selectedNode.status]">{{
-                nodeStatusLabel[selectedNode.status] ?? selectedNode.status
-              }}</b>
-            </div>
-            <div class="gv-kv">
-              <span>尝试</span><b>attempt {{ selectedNode.attempt }}</b>
-            </div>
-            <div class="gv-kv">
-              <span>执行者</span
-              ><b>{{ selectedNode.participant_id ?? '-' }}</b>
-              <span
-                v-if="selectedNode.participant_id"
-                class="gv-claim-badge"
-                :class="selectedNode.participant_online ? 'gv-claim-online' : 'gv-claim-offline'"
-                >{{ selectedNode.participant_online ? '在线' : '离线' }}</span
-              >
-            </div>
-            <div v-if="selectedNode.participant_id" class="gv-kv">
-              <button
-                class="gv-prompt-btn"
-                :disabled="promptBusy"
-                @click="copyPrompt(selectedNode)"
-              >
-                {{ promptCopied ? '已复制 ✓' : '复制接管提示词' }}
-              </button>
-              <span v-if="promptError" class="gv-prompt-err">{{ promptError }}</span>
-            </div>
-            <div v-if="selectedNode.started_at && selectedNode.completed_at" class="gv-kv">
-              <span>耗时</span><b>{{ ((selectedNode.completed_at - selectedNode.started_at)).toFixed(1) }}s</b>
-            </div>
-            <div v-if="selectedNode.failure_detail" class="gv-fail">
-              {{ selectedNode.failure_type }}: {{ selectedNode.failure_detail }}
-            </div>
-          </div>
-          <div v-else class="gv-muted">点击画布节点查看详情</div>
-        </section>
-
-        <section class="gv-panel gv-log">
-          <h3>事件日志</h3>
-          <div class="gv-log-list">
-            <div v-for="e in [...events].reverse()" :key="e.id" class="gv-log-item">
-              <span class="gv-log-id">#{{ e.id }}</span>
-              <span class="gv-log-type">{{ e.event_type }}</span>
-              <span class="gv-log-node">{{ e.node_key ?? '' }}</span>
-            </div>
-            <div v-if="events.length === 0" class="gv-muted">暂无事件</div>
-          </div>
-        </section>
-      </aside>
-    </main>
+      <NodeInspector :node="inspectorNode" :events="events" />
+    </div>
   </div>
 </template>
 
 <style scoped>
-.graph-view {
+.gv {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  font-family: var(--font-ui, system-ui, sans-serif);
-  color: var(--text-primary, #1d1d1f);
-  background: var(--bg, #ffffff);
+  background: var(--bg);
+  font-family: var(--font-ui);
 }
-.gv-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border, #e5e7eb);
-  flex-wrap: wrap;
-}
-.gv-header h1 {
-  font-size: 16px;
-  margin: 0 12px 0 0;
-}
-.gv-select {
-  padding: 4px 8px;
-  border: 1px solid var(--border, #d1d5db);
-  border-radius: 6px;
-  background: var(--bg, #fff);
-  color: var(--text-primary, #1d1d1f);
-  max-width: 320px;
-}
-.gv-run-select {
-  flex: 1;
-  min-width: 200px;
-}
-.gv-btn {
-  padding: 5px 12px;
-  border: 1px solid var(--border, #d1d5db);
-  border-radius: 6px;
-  background: var(--bg, #fff);
-  color: var(--text-primary, #1d1d1f);
-  cursor: pointer;
-}
-.gv-btn-primary {
-  background: var(--accent, #2563eb);
-  border-color: var(--accent, #2563eb);
-  color: #fff;
-}
-.gv-btn-danger {
-  border-color: #ef4444;
-  color: #ef4444;
-}
-.gv-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.gv-error {
-  margin: 8px 14px;
-  padding: 8px 12px;
-  background: #fef2f2;
-  color: #b91c1c;
-  border-radius: 6px;
-  font-size: 13px;
-}
-.gv-submit {
-  margin: 10px 14px;
-  padding: 10px;
-  border: 1px solid var(--border, #e5e7eb);
-  border-radius: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.gv-submit textarea {
-  font-family: var(--font-mono, ui-monospace, monospace);
+.err-bar {
+  padding: 8px 16px;
   font-size: 12px;
-  border: 1px solid var(--border, #d1d5db);
-  border-radius: 6px;
-  padding: 8px;
-  background: var(--bg, #fff);
-  color: var(--text-primary, #1d1d1f);
-}
-.gv-submit-actions {
-  display: flex;
-  gap: 8px;
-}
-.gv-empty {
-  padding: 40px;
-  text-align: center;
-  color: var(--text-secondary, rgba(0,0,0,0.55));
+  background: var(--st-failed-tint);
+  color: var(--st-failed-deep);
+  border-bottom: 1px solid var(--st-failed-soft);
 }
 .gv-main {
   flex: 1;
-  display: flex;
-  min-height: 0;
+  display: grid;
+  overflow: hidden;
+  grid-template-columns: 248px 1fr 300px;
 }
 .gv-canvas {
-  flex: 1;
   position: relative;
-  min-width: 0;
-}
-.gv-run-meta {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  z-index: 5;
-  font-size: 12px;
-  background: var(--bg-elevated, rgba(0, 0, 0, 0.03));
-  backdrop-filter: blur(4px);
-  padding: 4px 8px;
-  border-radius: 6px;
-  border: 1px solid var(--border, #e5e7eb);
-}
-.gv-side {
-  width: 320px;
-  border-left: 1px solid var(--border, #e5e7eb);
-  display: flex;
-  flex-direction: column;
   overflow: hidden;
+  background: var(--bg);
 }
-.gv-panel {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border, #e5e7eb);
+.cv-meta {
+  position: absolute;
+  left: 12px;
+  top: 10px;
+  z-index: 5;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-card, 6px);
+  padding: 4px 8px;
 }
-.gv-panel h3 {
-  margin: 0 0 8px;
-  font-size: 13px;
-  color: var(--text-secondary, rgba(0,0,0,0.55));
-}
-.gv-kv {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 13px;
-  padding: 2px 0;
-}
-.gv-kv span {
-  color: var(--text-secondary, rgba(0,0,0,0.55));
-}
-.gv-prompt-btn {
-  background: var(--accent, #4f8cff);
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  padding: 4px 10px;
-  font-size: 12px;
-  cursor: pointer;
-}
-.gv-prompt-btn:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-.gv-prompt-err {
-  color: #dc2626;
-  font-size: 11px;
-  margin-left: 8px;
-  word-break: break-all;
-}
-.gv-fail {
-  margin-top: 6px;
-  font-size: 12px;
-  color: #b91c1c;
-  background: #fef2f2;
-  padding: 6px 8px;
-  border-radius: 6px;
-}
-.gv-status {
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-size: 12px;
-}
-.gv-log {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-.gv-log-list {
-  flex: 1;
-  overflow-y: auto;
-  font-size: 12px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-}
-.gv-log-item {
-  display: flex;
-  gap: 8px;
-  padding: 2px 0;
-  border-bottom: 1px dashed var(--border, #f3f4f6);
-}
-.gv-log-id {
-  color: var(--text-tertiary, rgba(0,0,0,0.38));
-}
-.gv-log-type {
-  color: var(--accent, #2563eb);
-}
-.gv-log-node {
-  color: var(--text-secondary, rgba(0,0,0,0.55));
-}
-.gv-muted {
-  color: var(--text-tertiary, rgba(0,0,0,0.38));
-  font-size: 12px;
-}
-</style>
-
-<style>
-/* 详情面板执行者在线/离线徽标 */
-.gv-claim-badge {
-  font-size: 11px;
-  padding: 1px 7px;
-  border-radius: 10px;
-  margin-left: 6px;
-}
-.gv-claim-online {
-  background: #dcfce7;
-  color: #15803d;
-}
-.gv-claim-offline {
-  background: #f3f4f6;
-  color: #6b7280;
-}
-
-
-.agtalk-edge-on_failure {
-  stroke: #dc2626;
-  stroke-dasharray: 5 3;
-}
-.agtalk-edge-on_blocked {
-  stroke: #ea580c;
-  stroke-dasharray: 2 3;
-}
-.agtalk-edge-always {
-  stroke: #9ca3af;
+@media (max-width: 1100px) {
+  .gv-main {
+    grid-template-columns: 220px 1fr;
+  }
+  .gv-main > :last-child {
+    display: none;
+  }
 }
 </style>

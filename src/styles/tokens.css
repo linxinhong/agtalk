@@ -1,11 +1,154 @@
-/* macOS 风设计 token：颜色 / 字体 / 间距 / 圆角，深浅色两套（参考 AskHuman src/styles/tokens.css） */
-:root {
-  --font-sans: -apple-system, "SF Pro Text", system-ui, "Segoe UI",
-    "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
-  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
-    "Liberation Mono", monospace;
+/* ==========================================================================
+   图工程 GUI · 设计系统 tokens v2
+   --------------------------------------------------------------------------
+   原则：
+   1. 暖石灰（stone）中性色打底；中性层不含任何语义，语义只由 7 组状态色表达。
+   2. 主操作 = 墨色填充（不使用彩色 accent），杜绝与状态色争夺注意力。
+   3. 一维度一通道：每个视觉通道只承载一个语义维度（见 DESIGN.md §3）。
+   4. 深色模式双路径：`.dark` 类规则 与 @media 规则 分开书写，
+      严禁把 @media 混进选择器列表（历史 bug：混入会导致整条规则失效）。
+   ========================================================================== */
 
-  --accent: #0a84ff;
+:root {
+  /* ---- 中性层（暖石灰） ------------------------------------------------ */
+  --bg:            #faf9f5;
+  --surface:       #ffffff;
+  --surface-2:     #f4f3ee;
+  --surface-3:     #ebeae4;
+  --border:        #e5e4df;
+  --border-strong: #d3d2cb;
+  --text-primary:   #191919;
+  --text-secondary: #6b6a63;
+  --text-tertiary:  #9c9b94;
+  --text-inverse:   #faf9f5;
+
+  /* ---- 主操作（墨色，非彩色） ------------------------------------------ */
+  --ink:         #262625;
+  --ink-hover:   #191919;
+  --ink-active:  #000000;
+
+  /* ---- 7 组状态色（main = 图标/条纹/强调文字；deep = 状态文字；
+          tint = 节点底色；soft = 徽章底色） ----------------------------- */
+  --st-idle-main:     #8a8a83;  --st-idle-deep:     #6b6a63;  --st-idle-tint:     #f1f1ec;  --st-idle-soft:     #e7e7e1;
+  --st-running-main:  #2563eb;  --st-running-deep:  #1d4ed8;  --st-running-tint:  #eff4fe;  --st-running-soft:  #dbe7fd;
+  --st-waiting-main:  #d97706;  --st-waiting-deep:  #b45309;  --st-waiting-tint:  #fdf6e7;  --st-waiting-soft:  #fae8c8;
+  --st-blocked-main:  #ea580c;  --st-blocked-deep:  #c2410c;  --st-blocked-tint:  #fdf1e7;  --st-blocked-soft:  #fbe0cb;
+  --st-succeeded-main:#10b981;  --st-succeeded-deep:#047857;  --st-succeeded-tint:#eafaf3;  --st-succeeded-soft:#d2f3e4;
+  --st-failed-main:   #dc2626;  --st-failed-deep:   #b91c1c;  --st-failed-tint:   #fdecec;  --st-failed-soft:   #fbd5d5;
+  --st-cancelled-main:#a3a29a;  --st-cancelled-deep:#78776f;  --st-cancelled-tint:#f3f2ee;  --st-cancelled-soft:#e6e5df;
+
+  /* ---- 认领 / 在线 ----------------------------------------------------- */
+  --claim-online:  #16a34a;   /* 执行者在线徽标（仅用于头像右下圆点） */
+  --claim-offline: #a3a29a;
+  --claim-warn:    #dc2626;   /* 未认领 `!` 角标 */
+
+  /* ---- 字级（13/11 双档 + 等宽 ID） ------------------------------------ */
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+             "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Fira Code", "JetBrains Mono",
+               Menlo, Consolas, monospace;
+  --fs-node-key: 13px;   --fw-node-key: 600;
+  --fs-body:     13px;
+  --fs-meta:     11px;   --ls-meta: 0.04em;   /* meta 全大写/加字距 */
+  --fs-micro:    10px;
+
+  /* ---- 形状 / 深度 ------------------------------------------------------ */
+  --r-node: 8px;
+  --r-card: 6px;
+  --r-pill: 999px;
+  --shadow-float: 0 10px 30px rgba(25, 25, 25, .10);
+  --shadow-pop:   0 4px 16px rgba(25, 25, 25, .12);
+
+  /* ---- 动效 -------------------------------------------------------------- */
+  --ease: cubic-bezier(.4, 0, .2, 1);
+  --t-fast: 150ms;
+  --t-med:  250ms;
+  --pulse-running: 2s;    /* 活性呼吸：缓 */
+  --pulse-waiting: 1.2s;  /* 等待人类：更急更抢眼 */
+
+  /* ---- 画布 -------------------------------------------------------------- */
+  --canvas-dot: #e0dfd8;  /* 点阵背景 */
+}
+
+/* ---- 深色模式 · 路径 1：`.dark` 类（手动切换，localStorage 持久化） ----- */
+.dark {
+  --bg:            #141413;
+  --surface:       #1c1c1a;
+  --surface-2:     #222221;
+  --surface-3:     #2a2a28;
+  --border:        #2e2e2b;
+  --border-strong: #3d3d3a;
+  --text-primary:   #faf9f5;
+  --text-secondary: #a3a29a;
+  --text-tertiary:  #6f6e67;
+  --text-inverse:   #191919;
+
+  --ink:         #faf9f5;
+  --ink-hover:   #ffffff;
+  --ink-active:  #e5e4df;
+
+  /* tint 用主色 10–12% 透明度；deep 文字换亮色 */
+  --st-idle-tint:     rgba(138,138,131,.12);  --st-idle-soft:     rgba(138,138,131,.18);  --st-idle-deep:     #a3a29a;
+  --st-running-tint:  rgba(37,99,235,.12);    --st-running-soft:  rgba(37,99,235,.20);    --st-running-deep:  #60a5fa;
+  --st-waiting-tint:  rgba(217,119,6,.12);    --st-waiting-soft:  rgba(217,119,6,.20);    --st-waiting-deep:  #fbbf24;
+  --st-blocked-tint:  rgba(234,88,12,.12);    --st-blocked-soft:  rgba(234,88,12,.20);    --st-blocked-deep:  #fb923c;
+  --st-succeeded-tint:rgba(16,185,129,.12);   --st-succeeded-soft:rgba(16,185,129,.20);   --st-succeeded-deep:#34d399;
+  --st-failed-tint:   rgba(220,38,38,.12);    --st-failed-soft:   rgba(220,38,38,.20);    --st-failed-deep:   #f87171;
+  --st-cancelled-tint:rgba(163,162,154,.10);  --st-cancelled-soft:rgba(163,162,154,.16);  --st-cancelled-deep:#8f8e86;
+
+  --claim-online: #22c55e;
+  --canvas-dot: #262624;
+  --shadow-float: 0 10px 30px rgba(0, 0, 0, .45);
+  --shadow-pop:   0 4px 16px rgba(0, 0, 0, .5);
+}
+
+/* ---- 深色模式 · 路径 2：系统偏好（未手动切换时跟随系统） -----------------
+   与 .dark 规则完全分离书写，互不混入选择器列表。                        */
+@media (prefers-color-scheme: dark) {
+  :root:not(.light):not(.dark) {
+    --bg:            #141413;
+    --surface:       #1c1c1a;
+    --surface-2:     #222221;
+    --surface-3:     #2a2a28;
+    --border:        #2e2e2b;
+    --border-strong: #3d3d3a;
+    --text-primary:   #faf9f5;
+    --text-secondary: #a3a29a;
+    --text-tertiary:  #6f6e67;
+    --text-inverse:   #191919;
+
+    --ink:         #faf9f5;
+    --ink-hover:   #ffffff;
+    --ink-active:  #e5e4df;
+
+    --st-idle-tint:     rgba(138,138,131,.12);  --st-idle-soft:     rgba(138,138,131,.18);  --st-idle-deep:     #a3a29a;
+    --st-running-tint:  rgba(37,99,235,.12);    --st-running-soft:  rgba(37,99,235,.20);    --st-running-deep:  #60a5fa;
+    --st-waiting-tint:  rgba(217,119,6,.12);    --st-waiting-soft:  rgba(217,119,6,.20);    --st-waiting-deep:  #fbbf24;
+    --st-blocked-tint:  rgba(234,88,12,.12);    --st-blocked-soft:  rgba(234,88,12,.20);    --st-blocked-deep:  #fb923c;
+    --st-succeeded-tint:rgba(16,185,129,.12);   --st-succeeded-soft:rgba(16,185,129,.20);   --st-succeeded-deep:#34d399;
+    --st-failed-tint:   rgba(220,38,38,.12);    --st-failed-soft:   rgba(220,38,38,.20);    --st-failed-deep:   #f87171;
+    --st-cancelled-tint:rgba(163,162,154,.10);  --st-cancelled-soft:rgba(163,162,154,.16);  --st-cancelled-deep:#8f8e86;
+
+    --claim-online: #22c55e;
+    --canvas-dot: #262624;
+    --shadow-float: 0 10px 30px rgba(0, 0, 0, .45);
+    --shadow-pop:   0 4px 16px rgba(0, 0, 0, .5);
+  }
+}
+
+/* ---- 动效降级 ------------------------------------------------------------ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
+
+
+/* ---- 旧视图兼容 alias（ConfigView/PopupView 沿用旧变量名；主操作统一墨色） ---- */
+:root {
+  --accent: var(--ink);
   --accent-orange: #ff9500;
   --accent-green: #34c759;
   --radius-sm: 6px;
@@ -16,36 +159,9 @@
   --space-3: 12px;
   --space-4: 16px;
   --space-5: 20px;
-}
-
-/* 浅色 */
-:root {
-  --bg: #ffffff;
-  --bg-elevated: rgba(0, 0, 0, 0.03);
-  --card-bg: rgba(0, 0, 0, 0.035);
-  --border: rgba(0, 0, 0, 0.14);
-  --text-primary: #1d1d1f;
-  --text-secondary: rgba(0, 0, 0, 0.55);
-  --text-tertiary: rgba(0, 0, 0, 0.38);
-  --control-bg: #ffffff;
-  --control-border: rgba(0, 0, 0, 0.2);
-  --danger: #d43b3b;
-}
-
-/* 深色 */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #1e1e1e;
-    --bg-elevated: rgba(255, 255, 255, 0.06);
-    --card-bg: rgba(255, 255, 255, 0.06);
-    --border: rgba(255, 255, 255, 0.16);
-    --text-primary: #e8e8ea;
-    --text-secondary: rgba(255, 255, 255, 0.62);
-    --text-tertiary: rgba(255, 255, 255, 0.4);
-    --control-bg: rgba(255, 255, 255, 0.08);
-    --control-border: rgba(255, 255, 255, 0.22);
-    --accent-orange: #ff9f0a;
-    --accent-green: #30d158;
-    --danger: #ff6b6b;
-  }
+  --bg-elevated: var(--surface-2);
+  --card-bg: var(--surface-2);
+  --control-bg: var(--surface);
+  --control-border: var(--border-strong);
+  --danger: var(--st-failed-main);
 }

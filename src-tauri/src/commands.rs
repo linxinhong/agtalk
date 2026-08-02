@@ -272,6 +272,19 @@ pub fn gui_node_prompt(run_id: String, node_key: String) -> Result<String, Strin
     Ok(text)
 }
 
+/// 运行控制（pause / resume / cancel）。
+#[tauri::command]
+pub fn gui_graph_control(run_id: String, action: String) -> Result<serde_json::Value, String> {
+    let base = gui_base_url()?;
+    let msg = graph_request(
+        reqwest::Method::POST,
+        &base,
+        &format!("/api/v1/graph/runs/{}/control", run_id),
+        Some(serde_json::json!({ "action": action })),
+    )?;
+    serde_json::to_value(msg).map_err(|e| e.to_string())
+}
+
 /// 取消运行。
 #[tauri::command]
 pub fn gui_graph_cancel(run_id: String) -> Result<serde_json::Value, String> {

@@ -1,357 +1,249 @@
-<!--
-  SegmentedNode.vue
-  ─────────────────
-  方案 H · 分段式画布节点（agtalk 适配扩展版）
-  左侧 40px 状态色块 + 类型图标，右侧文字区
-  适用于 agtalk 图工程 GUI (Vue 3 + Vue Flow)
-
-  信息优先级：生命周期状态 > 认领状态 > 节点类型 > 节点名
-  视觉通道：
-    - 状态色块背景 (浅色 tint) → 生命周期状态（7 组，agtalk 12 状态归并）
-    - 虚线/实线边框            → 认领状态（未认领 = 虚线 + '!' 角标）
-    - SVG 图标                 → 节点类型（5 种：executor/deterministic/join/gate/approval）
-    - 文字                     → 节点名 + 状态文案（中文）
-    - pulse 动画               → 活性（进行中）+ 等待人类（待审批更抢眼）
--->
-
 <script setup lang="ts">
-import { computed } from 'vue'
-import { Handle, Position } from '@vue-flow/core'
+/**
+ * SegmentedNode · 定稿方案 A（分段式 + 像素头像）
+ * Vue Flow 自定义节点：<VueFlow :node-types="{ agtalk: SegmentedNode }">
+ *
+ * data 字段（SSE 更新只改 data，不重建节点）：
+ *   nodeKey      节点名
+ *   nodeType     executor / deterministic / join / gate / approval
+ *   status       12 态之一（内部归并 7 组）
+ *   participant  执行者名（可空）
+ *   online       执行者在线（默认 true）
+ *   attempt      第几次尝试（>1 显示角标）
+ *   duration     已运行时长文本，如 "12:03"（可空）
+ *   failureReason 失败原因（进 hover title）
+ */
+import { computed } from 'vue';
+import { Handle, Position } from '@vue-flow/core';
+import { avatarFor, statusGroupOf, STATUS_TEXT, STRUCT_TYPES } from '../lib/identity'
 
-/* ── agtalk 12 状态 → 7 视觉组 ── */
-type StatusGroup =
-  | 'idle' // pending/ready/cancelled：未开始/终止
-  | 'running' // leased/dispatched/running/verifying：进行中
-  | 'waiting' // waiting_approval：等待人类
-  | 'blocked' // blocked：阻塞
-  | 'succeeded' // succeeded
-  | 'failed' // failed/timed_out
-  | 'cancelled'
-
-type NodeType = 'executor' | 'deterministic' | 'join' | 'gate' | 'approval'
-
-interface SegmentedNodeData {
-  nodeName: string
-  nodeType: NodeType
-  statusGroup: StatusGroup
-  statusText: string
-  claimStatus: 'claimed' | 'unclaimed' | 'struct'
-  claimText: string
-  participantId?: string | null
-  participantOnline?: boolean
+interface SegNodeData {
+  runId?: string
+  nodeKey: string
+  nodeType: string
+  status: string
+  group?: string
+  participant?: string | null
+  online?: boolean
+  attempt?: number
+  duration?: string
+  failureReason?: string
 }
 
-// 只消费 data（node 名称/类型/状态/认领）；Handle 是本组件子元素，不需要父 props
-const props = defineProps<{ data: SegmentedNodeData }>()
+const props = defineProps<{ data: SegNodeData; selected?: boolean }>()
 
-const isUnclaimed = computed(
-  () => props.data.claimStatus === 'unclaimed',
-)
-const isStruct = computed(() => props.data.claimStatus === 'struct')
+const isStruct = computed(() => STRUCT_TYPES.includes(props.data.nodeType));
+const group = computed(() => statusGroupOf(props.data.status));
+const claimed = computed(() => !!props.data.participant && props.data.online !== false);
+const avatar = computed(() => avatarFor(props.data.participant));
+const alive = computed(() => group.value === 'running' || group.value === 'waiting');
+const showWarn = computed(() =>
+  !isStruct.value && !claimed.value && !['succeeded', 'cancelled'].includes(group.value));
 
-/* ── SVG 图标（5 种节点类型，stroke=currentColor 继承状态色） ── */
-const ICONS: Record<NodeType, string> = {
-  executor: `
-    <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"
-         width="20" height="20" aria-hidden="true">
-      <circle cx="10" cy="7" r="3" stroke="currentColor" stroke-width="1.5"/>
-      <path d="M4.5 17c0-3 2.5-5.5 5.5-5.5s5.5 2.5 5.5 5.5"
-            stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-    </svg>`,
-  deterministic: `
-    <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"
-         width="20" height="20" aria-hidden="true">
-      <path d="M3.5 6.5l4.5 3.5-4.5 3.5" stroke="currentColor" stroke-width="1.5"
-            stroke-linecap="round" stroke-linejoin="round"/>
-      <path d="M10.5 14.5h6" stroke="currentColor" stroke-width="1.5"
-            stroke-linecap="round"/>
-    </svg>`,
-  join: `
-    <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"
-         width="20" height="20" aria-hidden="true">
-      <path d="M3 4c0 4.5 3 6 7 6s7-1.5 7-6" stroke="currentColor" stroke-width="1.5"
-            stroke-linecap="round"/>
-      <path d="M10 10v6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-    </svg>`,
-  gate: `
-    <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"
-         width="20" height="20" aria-hidden="true">
-      <path d="M10 3l6 7-6 7-6-7z" stroke="currentColor" stroke-width="1.5"
-            stroke-linejoin="round"/>
-    </svg>`,
-  approval: `
-    <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"
-         width="20" height="20" aria-hidden="true">
-      <path d="M10 3l6 2v5c0 3.5-2.5 6-6 7-3.5-1-6-3.5-6-7V5l6-2z"
-            stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
-      <path d="M7.5 10l2 2 3-3.5"
-            stroke="currentColor" stroke-width="1.5"
-            stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>`,
-}
+const statusText = computed(() => STATUS_TEXT[group.value]);
+const claimText = computed(() =>
+  isStruct.value ? '结构' : claimed.value ? '已认领' : '未认领');
 
-const iconSvg = computed(() => ICONS[props.data.nodeType as NodeType] ?? ICONS.executor)
+const title = computed(() => [
+  `${props.data.nodeKey} · ${props.data.nodeType} · ${statusText.value}${props.data.duration ? ' ' + props.data.duration : ''}`,
+  props.data.participant
+    ? `执行者 ${props.data.participant}（${props.data.online !== false ? '在线' : '离线'}）· ${claimText.value}`
+    : claimText.value === '未认领' ? '未认领：无执行者在线' : null,
+  (props.data.attempt ?? 0) > 1 ? `attempt ${props.data.attempt}` : null,
+  props.data.failureReason ? `失败原因：${props.data.failureReason}` : null,
+].filter(Boolean).join('\n'));
 
-/* ── 执行者 emoji 小标识（Tim 评审：类型图标 + participant 标识共存；同名同 emoji） ── */
-const OWNER_EMOJI = ['🤖', '🧑‍💻', '👩‍💻', '🦊', '🐱', '🐼', '🦉', '🐯', '👾', '🐙']
-function ownerEmoji(name: string): string {
-  let h = 5381
-  for (let i = 0; i < name.length; i++) h = (h * 33) ^ name.charCodeAt(i)
-  return OWNER_EMOJI[(h >>> 0) % OWNER_EMOJI.length]
-}
-const ownerEmojiText = computed(() =>
-  props.data.participantId ? ownerEmoji(props.data.participantId) : '',
-)
-
-/* ── 动态 class ── */
-const nodeClass = computed(() => [
-  'segmented-node',
-  `status-${props.data.statusGroup}`,
-  { unclaimed: isUnclaimed.value, struct: isStruct.value },
-])
+/* 类型几何字形 ○▢▷◇⬡（stroke=currentColor，跟随状态色） */
+const GLYPHS: Record<string, string> = {
+  executor:     '<circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="8" cy="8" r="1.6" fill="currentColor"/>',
+  deterministic:'<rect x="3" y="3" width="10" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/>',
+  join:         '<path d="M4 3 L12.5 8 L4 13 Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>',
+  gate:         '<path d="M8 2.5 L13.5 8 L8 13.5 L2.5 8 Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>',
+  approval:     '<path d="M8 1.8 L13 4.3 V8 C13 11.2 10.9 13.4 8 14.2 C5.1 13.4 3 11.2 3 8 V4.3 Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M5.8 7.8 L7.4 9.4 L10.3 6.3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>',
+};
+const glyph = computed(() => GLYPHS[props.data.nodeType] || GLYPHS.executor);
 </script>
 
 <template>
-  <div :class="nodeClass">
-    <!-- 连接桩 -->
-    <Handle type="target" :position="Position.Left" />
-    <Handle type="source" :position="Position.Right" />
+  <div
+    class="gn"
+    :class="[
+      `gn--${group}`,
+      isStruct ? 'gn--struct' : claimed ? 'gn--claimed' : 'gn--unclaimed',
+      { 'gn--alive': alive, 'gn--selected': selected },
+    ]"
+    :title="title"
+  >
+    <span class="gn-stripe"></span>
 
-    <!-- 未认领角标（无执行者/离线且待执行） -->
-    <span v-if="isUnclaimed" class="seg-badge" title="未认领：执行者离线/无，节点可能卡住">!</span>
+    <!-- 通道 3：执行者（结构节点改放几何字形块） -->
+    <span v-if="isStruct" class="gn-shape">
+      <svg viewBox="0 0 16 16" v-html="glyph"></svg>
+    </span>
+    <span v-else-if="avatar" class="gn-avatar">
+      <img :src="avatar" :alt="data.participant ?? ''" draggable="false">
+      <i class="gn-presence" :class="{ 'gn-presence--on': data.online !== false }"></i>
+    </span>
+    <span v-else class="gn-avatar--empty">?</span>
 
-    <!-- 左侧分段：状态色块 + 类型图标 + 执行者 emoji 小标识 -->
-    <div class="seg-left">
-      <span v-html="iconSvg" />
-      <span v-if="ownerEmojiText" class="seg-owner" :title="props.data.participantId ?? ''">{{ ownerEmojiText }}</span>
-    </div>
+    <span class="gn-main">
+      <span class="gn-key">{{ data.nodeKey }}</span>
+      <span class="gn-sub">
+        <b>{{ statusText }}</b><span v-if="data.duration" class="gn-dur"> {{ data.duration }}</span>
+        · {{ claimText }}
+      </span>
+    </span>
 
-    <!-- 右侧分段：文字区 -->
-    <div class="seg-right">
-      <span class="node-name">{{ props.data.nodeName }}</span>
-      <span class="node-status">{{ props.data.statusText }} · {{ props.data.claimText }}</span>
-    </div>
+    <span class="gn-side">
+      <svg v-if="!isStruct" class="gn-type" viewBox="0 0 16 16" v-html="glyph"></svg>
+      <span v-if="(data.attempt ?? 0) > 1" class="gn-attempt">×{{ data.attempt }}</span>
+    </span>
+
+    <span v-if="showWarn" class="gn-warn">!</span>
+
+    <Handle type="target" :position="Position.Left" class="gn-handle" />
+    <Handle type="source" :position="Position.Right" class="gn-handle" />
   </div>
 </template>
 
 <style scoped>
-/* ── 状态色（浅色主题，值与 Ardot 设计稿一致，Bento Neutral） ── */
-.segmented-node {
-  /* 状态主色 */
-  --status-running:   #3B82F6;
-  --status-waiting:   #F59E0B;
-  --status-blocked:   #EA580C;
-  --status-succeeded: #10B981;
-  --status-failed:    #EF4444;
-  --status-idle:      #94A3B8;
-  --status-cancelled: #9CA3AF;
-
-  /* 状态浅色 tint（左侧色块背景） */
-  --status-running-bg:   #EFF6FF;
-  --status-waiting-bg:   #FFFBEB;
-  --status-blocked-bg:   #FFF7ED;
-  --status-succeeded-bg: #ECFDF5;
-  --status-failed-bg:    #FEF2F2;
-  --status-idle-bg:      #F1F5F9;
-  --status-cancelled-bg: #F3F4F6;
-
-  /* 中性色 */
-  --node-bg:      var(--vf-node-bg, #FFFFFF);
-  --node-border:  #E5E7EB;
-  --text-primary: #111827;
-  --text-running:   var(--status-running);
-  --text-waiting:   #B45309;
-  --text-blocked:   #C2410C;
-  --text-succeeded: #059669;
-  --text-failed:    var(--status-failed);
-  --text-idle:      #64748B;
-  --text-cancelled: #6B7280;
-
-  /* 布局 */
-  --node-width: 200px;
-  --node-height: 56px;
-  --seg-left-w: 40px;
-  --radius: 8px;
-
+/* 与 styles/node.css 一一对应；颜色全部走 tokens.css 变量，
+   组件内用具体 CSS 属性渲染（历史坑：自定义节点不消费 --vf-node-bg） */
+.gn {
   position: relative;
-  display: flex;
-  width: var(--node-width);
-  height: var(--node-height);
-  background: var(--node-bg);
-  border: 1px solid var(--node-border);
-  border-radius: var(--radius);
-  overflow: hidden;
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  box-sizing: border-box;
-  user-select: none;
+  display: flex; align-items: center; gap: 8px;
+  width: var(--gn-w, 216px); height: 64px;
+  padding: 0 10px 0 14px; box-sizing: border-box;
+  background: var(--surface);
+  border: 1.5px solid var(--border-strong);
+  border-radius: var(--r-node, 8px);
+  font-family: var(--font-ui);
+  cursor: pointer; user-select: none;
+  transition: transform 150ms cubic-bezier(.4,0,.2,1),
+              box-shadow 150ms cubic-bezier(.4,0,.2,1),
+              border-color 150ms cubic-bezier(.4,0,.2,1);
+}
+.gn:hover { transform: translateY(-1px); box-shadow: var(--shadow-pop); }
+.gn--selected { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+/* 通道 1：状态（左色条 + tint + 状态文字） */
+.gn-stripe {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
+  border-radius: var(--r-node, 8px) 0 0 var(--r-node, 8px);
+}
+.gn--idle      { background: var(--st-idle-tint); }      .gn--idle .gn-stripe      { background: var(--st-idle-main); }
+.gn--running   { background: var(--st-running-tint); }   .gn--running .gn-stripe   { background: var(--st-running-main); }
+.gn--waiting   { background: var(--st-waiting-tint); }   .gn--waiting .gn-stripe   { background: var(--st-waiting-main); }
+.gn--blocked   { background: var(--st-blocked-tint); }   .gn--blocked .gn-stripe   { background: var(--st-blocked-main); }
+.gn--succeeded { background: var(--st-succeeded-tint); } .gn--succeeded .gn-stripe { background: var(--st-succeeded-main); }
+.gn--failed    { background: var(--st-failed-tint); }    .gn--failed .gn-stripe    { background: var(--st-failed-main); }
+.gn--cancelled { background: var(--st-cancelled-tint); } .gn--cancelled .gn-stripe { background: var(--st-cancelled-main); }
+
+.gn--idle .gn-sub b      { color: var(--st-idle-deep); }
+.gn--running .gn-sub b   { color: var(--st-running-deep); }
+.gn--waiting .gn-sub b   { color: var(--st-waiting-deep); }
+.gn--blocked .gn-sub b   { color: var(--st-blocked-deep); }
+.gn--succeeded .gn-sub b { color: var(--st-succeeded-deep); }
+.gn--failed .gn-sub b    { color: var(--st-failed-deep); }
+.gn--cancelled .gn-sub b { color: var(--st-cancelled-deep); }
+
+.gn--running .gn-type   { color: var(--st-running-main); }
+.gn--waiting .gn-type   { color: var(--st-waiting-main); }
+.gn--blocked .gn-type   { color: var(--st-blocked-main); }
+.gn--succeeded .gn-type { color: var(--st-succeeded-main); }
+.gn--failed .gn-type    { color: var(--st-failed-main); }
+.gn--idle .gn-type, .gn--cancelled .gn-type { color: var(--st-idle-main); }
+
+/* 通道 2：认领（边框 + `!` 角标） */
+.gn--claimed   { border-style: solid; }
+.gn--unclaimed { border-style: dashed; }
+.gn--unclaimed .gn-avatar img { filter: grayscale(1); opacity: .55; }
+.gn-warn {
+  position: absolute; top: -7px; right: -7px;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--claim-warn); color: #fff;
+  font-size: 10px; font-weight: 700; line-height: 16px; text-align: center;
+  box-shadow: 0 0 0 2px var(--surface);
 }
 
-/* ── 左侧分段 ── */
-.seg-left {
-  position: relative;
-  flex-shrink: 0;
-  width: var(--seg-left-w);
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--seg-bg, transparent);
-  color: var(--seg-color, #6B7280); /* SVG currentColor 继承 */
+/* 通道 3：执行者（像素头像 + 在线圆点） */
+.gn-avatar { position: relative; flex: 0 0 36px; width: 36px; height: 36px; }
+.gn-avatar img {
+  width: 36px; height: 36px; border-radius: 50%;
+  image-rendering: pixelated;
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--border);
+  background: var(--surface-2);
 }
-.seg-left :deep(svg) {
-  display: block;
+.gn-presence {
+  position: absolute; right: -1px; bottom: -1px;
+  width: 10px; height: 10px; border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--surface);
+  background: var(--claim-offline);
 }
-/* 执行者 emoji 小标识（右下角） */
-.seg-owner {
-  position: absolute;
-  right: 1px;
-  bottom: 1px;
-  font-size: 11px;
-  line-height: 1;
-  border-radius: 50%;
-  background: var(--node-bg);
-  padding: 1px;
+.gn-presence--on { background: var(--claim-online); }
+.gn-avatar--empty {
+  width: 36px; height: 36px; border-radius: 50%; flex: 0 0 36px;
+  border: 1.5px dashed var(--border-strong);
+  color: var(--text-tertiary);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 600;
 }
 
-/* ── 右侧分段 ── */
-.seg-right {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 2px;
-  padding: 8px 10px;
-  text-align: left;
+/* 文字区 */
+.gn-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.gn-key {
+  font-size: var(--fs-node-key, 13px); font-weight: 600;
+  color: var(--text-primary); line-height: 1.2;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.node-name {
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.3;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.gn-sub {
+  font-size: var(--fs-meta, 11px); color: var(--text-secondary);
+  line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.node-status {
-  font-size: 11px;
-  line-height: 1.3;
+.gn-sub b { font-weight: 600; }
+.gn-dur { font-family: var(--font-mono); font-size: 10px; }
+
+/* 通道 4：类型字形 + attempt */
+.gn-side { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.gn-type { width: 15px; height: 15px; }
+.gn-attempt {
+  font-family: var(--font-mono); font-size: 10px;
+  color: var(--text-tertiary);
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 999px; padding: 0 5px; line-height: 14px;
 }
 
-/* ── 状态变体：色块 tint + 状态文字色 ── */
-.status-running { --seg-bg: var(--status-running-bg); --seg-color: var(--status-running); }
-.status-running .node-status { color: var(--text-running); }
-.status-waiting { --seg-bg: var(--status-waiting-bg); --seg-color: var(--status-waiting); }
-.status-waiting .node-status { color: var(--text-waiting); }
-.status-blocked { --seg-bg: var(--status-blocked-bg); --seg-color: var(--status-blocked); }
-.status-blocked .node-status { color: var(--text-blocked); }
-.status-succeeded { --seg-bg: var(--status-succeeded-bg); --seg-color: var(--status-succeeded); }
-.status-succeeded .node-status { color: var(--text-succeeded); }
-.status-failed { --seg-bg: var(--status-failed-bg); --seg-color: var(--status-failed); }
-.status-failed .node-status { color: var(--text-failed); }
-.status-idle { --seg-bg: var(--status-idle-bg); --seg-color: var(--status-idle); }
-.status-idle .node-status { color: var(--text-idle); }
-.status-cancelled { --seg-bg: var(--status-cancelled-bg); --seg-color: var(--status-cancelled); }
-.status-cancelled .node-status { color: var(--text-cancelled); }
+/* 结构节点 */
+.gn--struct { background: var(--surface); }
+.gn--struct .gn-stripe { background: var(--border-strong); }
+.gn-shape {
+  flex: 0 0 36px; width: 36px; height: 36px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-secondary);
+}
+.gn-shape svg { width: 22px; height: 22px; }
+.gn--struct.gn--waiting { background: var(--st-waiting-tint); }
+.gn--struct.gn--waiting .gn-stripe { background: var(--st-waiting-main); }
+.gn--struct.gn--waiting .gn-shape { color: var(--st-waiting-main); }
+.gn--struct.gn--succeeded .gn-stripe { background: var(--st-succeeded-main); }
+.gn--struct.gn--succeeded .gn-shape { color: var(--st-succeeded-main); }
 
-/* ── 认领状态：未认领 → 虚线边框 + 角标；struct → 中性实线 ── */
-.segmented-node.unclaimed {
-  border-style: dashed;
-  border-color: #94A3B8;
+/* 通道 6：呼吸（蓝缓 / 黄急） */
+@keyframes gn-pulse-running {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(37,99,235,0); }
+  50%      { box-shadow: 0 0 0 4px rgba(37,99,235,.18); }
 }
-.seg-badge {
-  position: absolute;
-  top: -7px;
-  right: -7px;
-  width: 15px;
-  height: 15px;
-  border-radius: 50%;
-  background: #DC2626;
-  color: #fff;
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 15px;
-  text-align: center;
-  z-index: 2;
+@keyframes gn-pulse-waiting {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(217,119,6,0); }
+  50%      { box-shadow: 0 0 0 5px rgba(217,119,6,.28); }
 }
-.segmented-node.struct {
-  border-color: #CBD5E1;
-}
+.gn--running.gn--alive { animation: gn-pulse-running 2s cubic-bezier(.4,0,.2,1) infinite; }
+.gn--waiting.gn--alive { animation: gn-pulse-waiting 1.2s cubic-bezier(.4,0,.2,1) infinite; }
 
-/* ── 活性动画：进行中呼吸；待审批更抢眼 ── */
-@keyframes seg-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.35); }
-  50% { box-shadow: 0 0 0 6px rgba(59, 130, 246, 0); }
+/* Handle：8px 圆点，hover 变状态主色 */
+.gn-handle {
+  width: 8px; height: 8px;
+  background: var(--surface); border: 1.5px solid var(--border-strong);
 }
-.segmented-node.status-running {
-  animation: seg-pulse 2s ease-in-out infinite;
-}
-@keyframes seg-pulse-wait {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.45); }
-  50% { box-shadow: 0 0 0 6px rgba(245, 158, 11, 0); }
-}
-.segmented-node.status-waiting {
-  animation: seg-pulse-wait 1.6s ease-in-out infinite;
-}
-
-/* ── 连接桩 ── */
-.segmented-node :deep(.vue-flow__handle) {
-  width: 8px;
-  height: 8px;
-  background: var(--node-border);
-  border: 2px solid var(--node-bg);
-  border-radius: 50%;
-}
-.segmented-node :deep(.vue-flow__handle:hover) {
-  background: var(--status-running);
-}
-
-/* ── 深色主题（Tim 评审：@media 不能混进选择器列表，拆两条独立规则） ── */
-/* ① Vue Flow .dark 类（显式切深色） */
-:where(.dark, .vue-flow-dark) .segmented-node {
-  --node-bg:      var(--vf-node-bg, #1A1B1E);
-  --node-border:  #2D2E33;
-  --text-primary: #E8E9EB;
-
-  --status-running-bg:   rgba(59, 130, 246, 0.12);
-  --status-waiting-bg:   rgba(245, 158, 11, 0.12);
-  --status-blocked-bg:   rgba(234, 88, 12, 0.12);
-  --status-succeeded-bg: rgba(16, 185, 129, 0.12);
-  --status-failed-bg:    rgba(239, 68, 68, 0.12);
-  --status-idle-bg:      rgba(148, 163, 184, 0.1);
-  --status-cancelled-bg: rgba(156, 163, 175, 0.1);
-
-  --text-running:   #60A5FA;
-  --text-waiting:   #FBBF24;
-  --text-blocked:   #FB923C;
-  --text-succeeded: #34D399;
-  --text-failed:    #F87171;
-  --text-idle:      #94A3B8;
-  --text-cancelled: #9CA3AF;
-}
-
-/* ② 系统深色模式偏好 */
-@media (prefers-color-scheme: dark) {
-  .segmented-node {
-    --node-bg:      var(--vf-node-bg, #1A1B1E);
-    --node-border:  #2D2E33;
-    --text-primary: #E8E9EB;
-
-    --status-running-bg:   rgba(59, 130, 246, 0.12);
-    --status-waiting-bg:   rgba(245, 158, 11, 0.12);
-    --status-blocked-bg:   rgba(234, 88, 12, 0.12);
-    --status-succeeded-bg: rgba(16, 185, 129, 0.12);
-    --status-failed-bg:    rgba(239, 68, 68, 0.12);
-    --status-idle-bg:      rgba(148, 163, 184, 0.1);
-    --status-cancelled-bg: rgba(156, 163, 175, 0.1);
-
-    --text-running:   #60A5FA;
-    --text-waiting:   #FBBF24;
-    --text-blocked:   #FB923C;
-    --text-succeeded: #34D399;
-    --text-failed:    #F87171;
-    --text-idle:      #94A3B8;
-    --text-cancelled: #9CA3AF;
-  }
-}
+.gn-handle:hover { border-color: currentColor; background: currentColor; }
 </style>
