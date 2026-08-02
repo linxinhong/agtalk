@@ -37,8 +37,8 @@ pub fn run_graph_gui() {
     build_gui_app(
         "index.html?view=graph".into(),
         "agtalk - 图工程".into(),
-        1100.0,
-        760.0,
+        1280.0,
+        800.0,
         true,
     )
 }
