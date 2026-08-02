@@ -1,7 +1,7 @@
 // 执行者身份工具：djb2 确定性头像映射 + 状态归组（设计系统 v2，DESIGN.md §2 Q2）
 // 同名同像；头像资源 public/avatars/avatar_NNN.png
 
-export const AVATAR_COUNT = 99
+export const AVATAR_COUNT = 180
 
 export function djb2(s: string): number {
   let h = 5381
@@ -9,11 +9,16 @@ export function djb2(s: string): number {
   return h
 }
 
-/** participant → 确定性头像 URL；空 participant 返回 null（渲染占位虚线圆） */
+/** participant → 确定性头像 URL；空 participant 返回 null（渲染占位虚线圆）。
+ *  资源集：public/avatars/img{1-5}_r{1-6}c{1-6}.png（5×6×6=180 张，用户自定义集）。 */
 export function avatarFor(participant?: string | null): string | null {
   if (!participant) return null
-  const n = (djb2(participant) % AVATAR_COUNT) + 1
-  return `avatars/avatar_${String(n).padStart(3, '0')}.png`
+  const n = (djb2(participant) % AVATAR_COUNT) + 1 // 1..180
+  const sheet = Math.floor((n - 1) / 36) + 1 // img1..img5
+  const idx = (n - 1) % 36 // 0..35
+  const r = Math.floor(idx / 6) + 1 // r1..r6
+  const c = (idx % 6) + 1 // c1..c6
+  return `avatars/img${sheet}_r${r}c${c}.png`
 }
 
 /** 12 个生命周期状态 → 7 个视觉组（与 tokens.css --st-* 对应） */
