@@ -123,6 +123,11 @@ agtalk graph node report --run <run-id> --node <node-key> --attempt <n> --blocke
 派发消息携带 `collab` 上下文（submitter/peers[预解析 address]/upstream/downstream/escalation/guidance），
 以及 `input_artifacts`（上游产物 store 路径）+ `input_summaries`（上游 result 摘要）。
 
+**input_artifacts 采用 store 直引（显式决策）**：产物存 `<config>/artifacts/<run>/<node>/`（禁 `..` 逃逸、单文件 ≤10MB、只复制 outputs.artifacts 声明项），下游只读引用。
+**GC 生命周期保证**：store 目录随 graph_run 删除而清理（run 活着不清理——下游在飞期间 input_artifacts 不会丢）。
+
+**worktree 代码链**：有 dependencies 的写节点，其 worktree 默认基于**上游 succeeded 节点的分支**创建（多上游不同分支时用 integration_target）；纯证据型下游可在 spec 节点声明 `workspace_base: "main"` 豁免。
+
 协作消息：`agtalk graph collab send --run <id> --node <key> --to <address> --kind ask --question "..." [--depth n]`
 - 元数据（run/node/kind/depth/from/to）由 daemon 落 `node_collab` 事件（可审计），正文点对点自由；
 - depth≥3 拒绝（防循环咨询，应转 escalation/blockers）；

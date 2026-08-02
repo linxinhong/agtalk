@@ -726,6 +726,11 @@ pub fn delete_run(state: &AppState, run_id: &str) -> Result<ServerMsg, ServerMsg
     tx.execute("DELETE FROM graph_runs WHERE id=?1", params![run_id])
         .map_err(sqlite_err)?;
     tx.commit().map_err(sqlite_err)?;
+    // GC：artifact store 目录随 run 删除清理（Tim 失败项1：GC 生命周期保证）
+    if let Ok(root) = crate::paths::artifact_store_root() {
+        let dir = root.join(run_id);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     Ok(ServerMsg::GraphRunDeleted {
         run_id: run_id.to_string(),
     })

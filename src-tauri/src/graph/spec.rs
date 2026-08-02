@@ -220,6 +220,10 @@ pub struct NodeSpec {
     /// 与 acceptance（机器校验）互补，供执行者与审查者对齐完成标准。
     #[serde(default)]
     pub completion_definition: Option<String>,
+    /// worktree 基线豁免（Tim e2e 失败项2）：默认下游写节点基于上游节点分支创建；
+    /// 显式声明（如 "main"）则跳过上游分支（纯证据型下游豁免）。
+    #[serde(default)]
+    pub workspace_base: Option<String>,
 }
 
 /// Graph Spec（docs/design_graph.md §三 图目标/节点/依赖/并发/重试/验收）。

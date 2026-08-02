@@ -89,7 +89,9 @@ pub(crate) fn dispatch_one(
                         .map_err(graph_err)?;
                         None
                     } else {
-                        let base = base.unwrap_or_else(|| "HEAD".into());
+                        // base 决策（Tim e2e 失败项2）：下游写节点默认基于上游节点分支创建
+                        // （保证代码链不断）；spec 显式 workspace_base 豁免；多上游用 integration_target
+                        let base = upstream_base(&conn, compiled, item, base.as_deref())?;
                         let ws = crate::graph::workspace::ensure_worktree(
                             &conn,
                             &item.graph_run_id,
@@ -192,6 +194,68 @@ pub(crate) fn dispatch_one(
 }
 
 /// 派发消息体（docs/graph-participant-protocol.md §5）。
+/** base 决策（Tim e2e 失败项2）：spec 豁免 > 单上游分支 > 多上游 integration_target > 默认。
+ *  上游 = 本节点依赖且已 succeeded 的节点（Edge.from=依赖者, to=被依赖者 → 前置 = from==node 的 to）。 */
+#[allow(clippy::result_large_err)]
+fn upstream_base(
+    conn: &rusqlite::Connection,
+    compiled: &CompiledGraph,
+    item: &DispatchItem,
+    default_base: Option<&str>,
+) -> Result<String, ServerMsg> {
+    // 1. spec 显式豁免
+    if let Some(spec_base) = compiled
+        .nodes
+        .iter()
+        .find(|n| n.id == item.node_key)
+        .and_then(|n| n.workspace_base.as_deref())
+    {
+        return Ok(spec_base.to_string());
+    }
+    // 2. 上游 succeeded 节点的 worktree 分支
+    let upstream: Vec<String> = compiled
+        .edges
+        .iter()
+        .filter(|e| e.from == item.node_key)
+        .map(|e| e.to.clone())
+        .collect();
+    if !upstream.is_empty() {
+        let mut branch = None;
+        for up in &upstream {
+            let b: Option<String> = conn
+                .query_row(
+                    "SELECT w.branch FROM workspaces w JOIN node_runs n ON n.workspace_id = w.id \
+                     WHERE n.graph_run_id=?1 AND n.node_key=?2 AND n.status='succeeded' \
+                     ORDER BY n.attempt DESC LIMIT 1",
+                    params![item.graph_run_id, up],
+                    |r| r.get(0),
+                )
+                .ok()
+                .flatten();
+            match (branch.as_ref(), b) {
+                (None, Some(b2)) => branch = Some(b2),
+                (Some(b1), Some(b2)) if b1 != &b2 => {
+                    // 多上游不同分支 → 用 integration_target（daemon 先合并的策略留 P2）
+                    let target: Option<String> = conn
+                        .query_row(
+                            "SELECT integration_target FROM graph_runs WHERE id=?1",
+                            params![item.graph_run_id],
+                            |r| r.get(0),
+                        )
+                        .ok()
+                        .flatten();
+                    return Ok(target.unwrap_or_else(|| default_base.unwrap_or("HEAD").to_string()));
+                }
+                _ => {}
+            }
+        }
+        if let Some(b) = branch {
+            return Ok(b);
+        }
+    }
+    Ok(default_base.unwrap_or("HEAD").to_string())
+}
+
 /** 协作上下文（Tim 评审补强）：submitter / peers（含预解析 address）/ upstream / downstream / escalation。
  * 注意锁纪律：内部 lookup 会拿 storage 锁——调用方（dispatch_one）此时无外层锁 ✓。 */
 fn build_collab(

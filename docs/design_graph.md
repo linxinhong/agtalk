@@ -224,6 +224,8 @@ failed ──(Scheduler: 允许重试的类型+未超次数)──► 新建 att
 
 重试参数：max_attempts + backoff 全部来自节点契约（spec），无无限重试。
 
+**worktree 基线（Tim e2e 失败项2 修复）**：写节点的 worktree 默认基于**上游 succeeded 节点分支**创建（`agtalk/<run>-<upstream-node>`），保证 write→test→review 代码链不断；多上游不同分支 → 用 integration_target（daemon 先合并留 P2）；纯证据型下游可用节点级 `workspace_base: "main"` 豁免。产物传递为 **artifact store 直引**（`<config>/artifacts/<run>/<node>/`，禁 `..`/10MB 上限），GC 随 graph_run 删除（run 存活期间不清理，保证下游在飞期不丢）。
+
 **执行质量字段（Tim 评审 P0 采纳）**：`out_of_scope`（语义级禁止，与 forbidden_paths 互补，渲染进派发 prompt）、`constraints`（通用约束）、`completion_definition`（自然语言完成声明，与 acceptance 互补）、`approval.timeout_action`（审批超时流转 approve/reject，缺省 reject，reconciler 在 lease 过期时执行）。result.json 信封补 `warnings`（半完成留证，node_warnings 事件）。
 
 ### 5.7 运行恢复（Reconciliation，P0 基础版）
