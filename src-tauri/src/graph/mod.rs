@@ -5,6 +5,7 @@
 
 pub mod analyze;
 pub mod approval;
+pub mod artifacts;
 pub mod compiler;
 pub mod dto;
 pub mod events;

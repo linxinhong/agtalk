@@ -103,9 +103,21 @@ pub(crate) fn dispatch_one(
                 }
             };
             let collab = build_collab(&state.storage, compiled, item);
-            let body =
-                serde_json::to_string(&dispatch_payload(compiled, item, ws_info.as_ref(), &collab))
-                    .map_err(json_err)?;
+            let inputs = crate::graph::artifacts::collect_upstream_inputs(
+                &state.storage,
+                compiled,
+                &item.graph_run_id,
+                &item.node_key,
+            )
+            .unwrap_or_default();
+            let body = serde_json::to_string(&dispatch_payload(
+                compiled,
+                item,
+                ws_info.as_ref(),
+                &collab,
+                &inputs,
+            ))
+            .map_err(json_err)?;
             let subject = format!("[graph] {}", item.node_key);
             let req = SendRequest {
                 to: &target.address,
@@ -272,12 +284,16 @@ fn dispatch_payload(
     item: &DispatchItem,
     ws_info: Option<&(String, String)>,
     collab: &serde_json::Value,
+    inputs: &(Vec<serde_json::Value>, Vec<serde_json::Value>),
 ) -> serde_json::Value {
     let spec_node = compiled
         .nodes
         .iter()
         .find(|n| n.id == item.node_key)
         .expect("execution_order 中的节点必在 nodes 中");
+    // M2：上游输入（产物 store 路径 + result 摘要）
+    let (input_artifacts, input_summaries) = inputs;
+
     serde_json::json!({
         "node_run": {
             "graph_run_id": item.graph_run_id,
@@ -295,6 +311,8 @@ fn dispatch_payload(
             "forbidden_paths": spec_node.forbidden_paths,
             "acceptance": spec_node.acceptance,
             "collab": collab,
+            "input_artifacts": input_artifacts,
+            "input_summaries": input_summaries,
             "timeout_seconds": spec_node.timeout_seconds,
             "outputs": spec_node.outputs,
         }

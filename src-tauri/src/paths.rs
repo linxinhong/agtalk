@@ -72,6 +72,12 @@ pub fn ensure_workspace_dir(current_dir: impl AsRef<Path>) -> Result<PathBuf, Pa
 }
 
 /// 数据库路径：<config_dir>/agtalk.db
+/// artifact store 根目录（M2：跨节点产物传递，daemon 统一管理 + GC）
+pub fn artifact_store_root() -> Result<std::path::PathBuf, String> {
+    let cfg = config_dir().map_err(|e| e.to_string())?;
+    Ok(cfg.join("artifacts"))
+}
+
 pub fn db_path() -> Result<PathBuf, PathsError> {
     Ok(config_dir()?.join("agtalk.db"))
 }

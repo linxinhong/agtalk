@@ -185,6 +185,22 @@ pub(crate) fn verify_and_advance(
                 None,
             )
             .map_err(graph_err)?;
+            // 节点结果文本（input_summaries 来源）
+            conn.execute(
+                "UPDATE node_runs SET result=?1 WHERE id=?2",
+                params![body.result, run.id],
+            )
+            .map_err(sqlite_err)?;
+            // M2：产物复制到 daemon artifact store（跨节点传递）
+            if let Err(e) = crate::graph::artifacts::store_run_artifacts(
+                &conn,
+                &body.run_id,
+                &body.node_key,
+                &run.id,
+                &body.output_artifacts,
+            ) {
+                eprintln!("[graph] artifact store 失败: {e}");
+            }
             // 产出物引用
             if !body.output_artifacts.is_empty() {
                 conn.execute(
