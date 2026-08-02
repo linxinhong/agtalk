@@ -102,8 +102,10 @@ pub(crate) fn dispatch_one(
                     }
                 }
             };
-            let body = serde_json::to_string(&dispatch_payload(compiled, item, ws_info.as_ref()))
-                .map_err(json_err)?;
+            let collab = build_collab(&state.storage, compiled, item);
+            let body =
+                serde_json::to_string(&dispatch_payload(compiled, item, ws_info.as_ref(), &collab))
+                    .map_err(json_err)?;
             let subject = format!("[graph] {}", item.node_key);
             let req = SendRequest {
                 to: &target.address,
@@ -178,10 +180,98 @@ pub(crate) fn dispatch_one(
 }
 
 /// 派发消息体（docs/graph-participant-protocol.md §5）。
+/** 协作上下文（Tim 评审补强）：submitter / peers（含预解析 address）/ upstream / downstream / escalation。
+ * 注意锁纪律：内部 lookup 会拿 storage 锁——调用方（dispatch_one）此时无外层锁 ✓。 */
+fn build_collab(
+    storage: &crate::storage::Storage,
+    compiled: &CompiledGraph,
+    item: &DispatchItem,
+) -> serde_json::Value {
+    // submitter（graph_runs 记录，V12）
+    let (submitter_name, submitter_address): (Option<String>, Option<String>) = {
+        let conn = storage.conn();
+        conn.query_row(
+            "SELECT submitter_name, submitter_address FROM graph_runs WHERE id=?1",
+            params![item.graph_run_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap_or((None, None))
+    };
+    let submitter = serde_json::json!({
+        "name": submitter_name.unwrap_or_default(),
+        "address": submitter_address.unwrap_or_default(),
+    });
+
+    // peers：图内其他有 participant 的节点（预解析 address，消歧不转嫁 agent——Tim 红线补强）
+    let mut peers = Vec::new();
+    for n in &compiled.nodes {
+        if n.id == item.node_key {
+            continue;
+        }
+        let Some(pname) = n.executor_requirements.participant.as_deref() else {
+            continue;
+        };
+        if pname == "auto" {
+            continue; // 未分配的执行者不算 peer
+        }
+        let address = crate::routing::lookup::lookup(storage, Some(pname))
+            .ok()
+            .and_then(|ms| {
+                ms.iter()
+                    .find(|m| m.left_at.is_none())
+                    .map(|m| m.address.clone())
+            })
+            .unwrap_or_default();
+        peers.push(serde_json::json!({
+            "name": pname,
+            "address": address,
+            "role": n.id,
+        }));
+    }
+
+    // upstream / downstream（Edge.from=依赖者, to=被依赖者，见 compiler.rs §边）
+    // upstream(本节点) = 本节点依赖的（from==本节点 的 to）；downstream = 依赖本节点的（to==本节点 的 from）
+    let upstream: Vec<String> = compiled
+        .edges
+        .iter()
+        .filter(|e| e.from == item.node_key)
+        .map(|e| e.to.clone())
+        .collect();
+    let downstream: Vec<String> = compiled
+        .edges
+        .iter()
+        .filter(|e| e.to == item.node_key)
+        .map(|e| e.from.clone())
+        .collect();
+
+    // escalation：图内有审批节点 → human
+    let escalation = if !compiled.required_approvals.is_empty() {
+        serde_json::json!({ "kind": "human", "note": "图内有审批节点（approval），需人类决策" })
+    } else {
+        serde_json::Value::Null
+    };
+
+    serde_json::json!({
+        "submitter": submitter,
+        "peers": peers,
+        "upstream": upstream,
+        "downstream": downstream,
+        "escalation": escalation,
+        "guidance": {
+            "find_whom": "任务歧义→submitter；缺上游信息→upstream 执行者；需批准/风险→escalation；无法继续→result blockers",
+            "no_infinite_wait": "咨询用 msg wait --timeout 60；超时一律转 blockers/escalation，禁止无限等",
+            "no_broadcast": "缺上游信息只问 upstream 执行者，不广播",
+            "no_loop": "同一问题不二次咨询同一对象；depth≥2 转 escalation 或 blockers",
+            "lease_renewal": "等待 collab 回复超过 60 秒必须 agtalk graph node heartbeat 续租，否则节点会因 lease 过期被判超时"
+        }
+    })
+}
+
 fn dispatch_payload(
     compiled: &CompiledGraph,
     item: &DispatchItem,
     ws_info: Option<&(String, String)>,
+    collab: &serde_json::Value,
 ) -> serde_json::Value {
     let spec_node = compiled
         .nodes
@@ -204,6 +294,7 @@ fn dispatch_payload(
             "write_paths": spec_node.write_paths,
             "forbidden_paths": spec_node.forbidden_paths,
             "acceptance": spec_node.acceptance,
+            "collab": collab,
             "timeout_seconds": spec_node.timeout_seconds,
             "outputs": spec_node.outputs,
         }

@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 
-pub const CURRENT_VERSION: u32 = 11;
+pub const CURRENT_VERSION: u32 = 12;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS _migrations (
@@ -242,6 +242,12 @@ const MIGRATE_V11: &str = r#"
 ALTER TABLE workspaces ADD COLUMN commit_hash TEXT DEFAULT NULL;
 "#;
 
+// V12：graph_runs 记录提交者（collab 上下文"任务歧义找提交者"）。
+const MIGRATE_V12: &str = r#"
+ALTER TABLE graph_runs ADD COLUMN submitter_name TEXT DEFAULT NULL;
+ALTER TABLE graph_runs ADD COLUMN submitter_address TEXT DEFAULT NULL;
+"#;
+
 pub fn run(conn: &mut Connection) -> Result<(), super::StorageError> {
     let tx = conn.transaction()?;
 
@@ -291,6 +297,9 @@ pub fn run(conn: &mut Connection) -> Result<(), super::StorageError> {
     }
     if version < 11 {
         tx.execute_batch(MIGRATE_V11)?;
+    }
+    if version < 12 {
+        tx.execute_batch(MIGRATE_V12)?;
     }
 
     tx.execute(

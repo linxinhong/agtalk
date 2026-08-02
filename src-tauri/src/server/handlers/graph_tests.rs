@@ -855,4 +855,83 @@ nodes:
         };
         assert_eq!(code, "graph_delete_non_terminal");
     }
+
+    #[test]
+    fn dispatch_message_contains_collab_context() {
+        // M1：派发消息含 collab（submitter / peers 预解析 address / upstream/downstream / guidance）
+        let state = test_state();
+        {
+            let conn = state.storage.conn();
+            for (addr, name) in [("a-addr", "agent-a"), ("b-addr", "agent-b")] {
+                conn.execute(
+                    "INSERT INTO mailboxes (address, name) VALUES (?1,?2)",
+                    params![addr, name],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO event_sequences (address) VALUES (?1)",
+                    params![addr],
+                )
+                .unwrap();
+            }
+        }
+        let yaml = r#"
+version: 1
+goal: "collab test"
+nodes:
+  - id: first
+    type: executor
+    outputs: { schema: s }
+    executor_requirements: { participant: agent-a }
+    workspace: w1
+    write_paths: [src/a]
+    acceptance: [{ type: path }]
+    timeout_seconds: 300
+  - id: second
+    type: executor
+    dependencies: [first]
+    outputs: { schema: s }
+    executor_requirements: { participant: agent-b }
+    workspace: w2
+    write_paths: [src/b]
+    acceptance: [{ type: path }]
+    timeout_seconds: 300
+"#;
+        let _ = submit_and_start(&state, &fake_session(), yaml).unwrap();
+        // 读派发消息（content_type=graph_dispatch）
+        let conn = state.storage.conn();
+        let body: String = conn
+        .query_row(
+            "SELECT body FROM messages WHERE content_type='graph_dispatch' ORDER BY created_at DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let collab = &v["node_run"]["collab"];
+        assert_eq!(
+            collab["submitter"]["name"], "sender",
+            "submitter 应记录提交者"
+        );
+        // peers：second 的执行者 agent-b，address 已预解析
+        let peers = collab["peers"].as_array().unwrap();
+        assert!(
+            peers
+                .iter()
+                .any(|p| p["name"] == "agent-b" && p["address"] == "b-addr"),
+            "peers 应含预解析 address 的 agent-b: {peers:?}"
+        );
+        // upstream/downstream
+        eprintln!("COLLAB: {}", serde_json::to_string(collab).unwrap());
+        assert_eq!(collab["downstream"], serde_json::json!(["second"]));
+        // guidance 存在（续租/超时规则）
+        assert!(collab["guidance"]["no_infinite_wait"]
+            .as_str()
+            .unwrap()
+            .contains("60"));
+        assert!(collab["guidance"]["lease_renewal"]
+            .as_str()
+            .unwrap()
+            .contains("heartbeat"));
+    }
 }

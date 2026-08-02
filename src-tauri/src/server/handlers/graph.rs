@@ -271,8 +271,8 @@ pub fn submit_and_start(
         let tx = conn.transaction().map_err(sqlite_err)?;
         tx.execute(
             "INSERT INTO graph_runs (id, goal, spec_snapshot, compiled_graph, status, \
-             repository, base_revision, integration_target, created_at) \
-             VALUES (?1,?2,?3,?4,'ready',?5,?6,?7,?8)",
+             repository, base_revision, integration_target, created_at, submitter_name, submitter_address) \
+             VALUES (?1,?2,?3,?4,'ready',?5,?6,?7,?8,?9,?10)",
             params![
                 run_id,
                 cg.goal,
@@ -281,7 +281,9 @@ pub fn submit_and_start(
                 cg.repository,
                 cg.base_revision,
                 cg.integration_target,
-                now
+                now,
+                from.name,
+                from.address
             ],
         )
         .map_err(sqlite_err)?;
