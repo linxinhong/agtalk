@@ -7,7 +7,6 @@ use reqwest::blocking::Client;
 use serde::Serialize;
 
 pub mod config;
-pub mod graph;
 pub mod id;
 pub mod mem;
 pub mod msg;
@@ -25,6 +24,10 @@ pub fn post(ctx: &Context, endpoint: &str, body: impl Serialize) -> Result<Serve
 
 pub fn get(ctx: &Context, endpoint: &str) -> Result<ServerMsg, CliError> {
     request(ctx, reqwest::Method::GET, endpoint, None)
+}
+
+pub fn delete(ctx: &Context, endpoint: &str) -> Result<ServerMsg, CliError> {
+    request(ctx, reqwest::Method::DELETE, endpoint, None)
 }
 
 pub fn patch(ctx: &Context, endpoint: &str, body: impl Serialize) -> Result<ServerMsg, CliError> {

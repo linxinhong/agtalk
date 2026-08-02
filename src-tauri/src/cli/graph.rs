@@ -125,8 +125,7 @@ pub fn logs(ctx: &Context, run_id: &str, since: Option<i64>, json: bool) -> Resu
 /// 打补丁：读取 spec（resolve_spec 目录约定）后替换图定义。
 /// 物理删除运行（HTTP DELETE）。
 fn delete(ctx: &Context, run_id: &str, json: bool) -> Result<(), CliError> {
-    let msg = client::graph::delete_graph_run(ctx, run_id)
-        .map_err(|e| CliError::new("graph_delete_failed", e))?;
+    let msg = client::delete(ctx, &format!("/api/v1/graph/runs/{}", run_id))?;
     print_server_msg(json, &msg);
     Ok(())
 }
