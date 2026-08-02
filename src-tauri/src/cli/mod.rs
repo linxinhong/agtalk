@@ -537,7 +537,17 @@ fn run(cli: Cli, json: bool) -> Result<(), CliError> {
                 client::run::run(ctx, file, json)
             }
             Commands::Graph { cmd } => {
-                let ctx = Context::current(as_name).map_err(CliError::from)?;
+                // Analyze / GenNames 是纯本地命令（只读 spec/生成名字），不需要解析身份——
+                // 多 session 目录（identity_ambiguous）也能直接使用。
+                let ctx = if matches!(
+                    cmd,
+                    crate::cli::commands::GraphCmd::Analyze { .. }
+                        | crate::cli::commands::GraphCmd::GenNames { .. }
+                ) {
+                    Context::for_local_spec().map_err(CliError::from)?
+                } else {
+                    Context::current(as_name).map_err(CliError::from)?
+                };
                 graph::dispatch(ctx, cmd, json)
             }
         },

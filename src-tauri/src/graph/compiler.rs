@@ -234,6 +234,27 @@ pub fn compile(spec: &GraphSpec) -> CompileResult {
         .map(|n| n.id.clone())
         .collect();
 
+    // ---- 7.5 模板占位符检测（warning）：spec 可能是未填写的模板，防误提交 ----
+    let has_template_marker = spec.goal.contains("REPLACE_ME")
+        || spec.goal.contains('<')
+        || spec
+            .nodes
+            .iter()
+            .any(|n| n.write_paths.iter().any(|w| w.contains("REPLACE_ME")))
+        || spec.nodes.iter().any(|n| {
+            n.executor_requirements
+                .participant
+                .as_deref()
+                .is_some_and(|p| p.contains('<') || p == "REPLACE_ME")
+        });
+    if has_template_marker {
+        warnings.push(issue(
+            "spec_template_not_filled",
+            "spec 含模板占位符（REPLACE_ME / <...>）——这是未填写的模板，提交前请填写 goal 与 write_paths",
+            None,
+        ));
+    }
+
     // ---- 8. 孤立节点（warning）：无入边也无出边，不参与图主流程 ----
     // （DAG 中非入口节点必可达；真正需要提示的是“悬空”节点）
     let has_incoming: BTreeSet<&str> = edges.iter().map(|e| e.to.as_str()).collect();

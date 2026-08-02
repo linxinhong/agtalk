@@ -336,3 +336,48 @@ fn unbounded_retries_warns() {
     assert!(r.valid);
     assert!(warn_codes(&r).contains(&"unbounded_retries"));
 }
+
+#[test]
+fn template_spec_warns_not_filled() {
+    let yaml = r#"
+version: 1
+goal: "S 级任务：<一句话描述修改目标>"
+nodes:
+  - id: implement
+    type: executor
+    outputs: { schema: s }
+    executor_requirements: { participant: ds-worker-a }
+    workspace: w-impl
+    write_paths: [src/REPLACE_ME]
+    acceptance: [{ type: path }]
+    timeout_seconds: 900
+"#;
+    let r = compile_yaml(yaml);
+    assert!(r.valid, "模板结构合法应编译通过（仅警告）");
+    assert!(
+        warn_codes(&r).contains(&"spec_template_not_filled"),
+        "应警告模板未填写"
+    );
+    #[test]
+    fn template_spec_warns_not_filled() {
+        let yaml = r#"
+version: 1
+goal: "S 级任务：<一句话描述修改目标>"
+nodes:
+  - id: implement
+    type: executor
+    outputs: { schema: s }
+    executor_requirements: { participant: ds-worker-a }
+    workspace: w-impl
+    write_paths: [src/REPLACE_ME]
+    acceptance: [{ type: path }]
+    timeout_seconds: 900
+"#;
+        let r = compile_yaml(yaml);
+        assert!(r.valid, "模板结构合法应编译通过（仅警告）");
+        assert!(
+            warn_codes(&r).contains(&"spec_template_not_filled"),
+            "应警告模板未填写"
+        );
+    }
+}

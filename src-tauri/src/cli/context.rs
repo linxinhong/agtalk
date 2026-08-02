@@ -165,6 +165,20 @@ impl Context {
 
     /// 用于 `join`：不依赖 agents.json 中已注册的条目。
     /// 若当前目录没有 `.agtalk`，会自动创建。
+    /// 纯本地 spec 上下文（analyze / gen-names 用）：只拼路径，不做任何
+    /// 写操作（不 ensure workspace）也不读 daemon 配置——多 session / 只读目录都能用。
+    pub fn for_local_spec() -> Result<Self, String> {
+        let current_dir = env::current_dir().map_err(|e| e.to_string())?;
+        Ok(Self {
+            dot_agtalk: current_dir.join(".agtalk"),
+            address: String::new(),
+            name: String::new(),
+            pid: 0,
+            start_time: 0,
+            base_url: String::new(),
+        })
+    }
+
     pub fn pre_join() -> Result<Self, String> {
         let current_dir = env::current_dir().map_err(|e| e.to_string())?;
         let dot_agtalk = ensure_workspace_dir(&current_dir).map_err(|e| e.to_string())?;
