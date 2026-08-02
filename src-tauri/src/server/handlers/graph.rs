@@ -126,6 +126,18 @@ pub async fn graph_run_control_handler(
     respond(control_run(&state, &run_id, &body.action))
 }
 
+pub async fn graph_collab_send_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<CollabSendBody>,
+) -> (StatusCode, Json<ServerMsg>) {
+    let from = match super::authenticate_req(&state, &headers) {
+        Ok(f) => f,
+        Err(e) => return json_response(e),
+    };
+    respond(collab_send(&state, &from, &body))
+}
+
 pub async fn graph_run_delete_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -717,6 +729,97 @@ pub fn delete_run(state: &AppState, run_id: &str) -> Result<ServerMsg, ServerMsg
     Ok(ServerMsg::GraphRunDeleted {
         run_id: run_id.to_string(),
     })
+}
+
+/** collab 请求体（proto ClientMsg::GraphCollabSend 的字段镜像，供 axum 直接反序列化）。 */
+#[derive(serde::Deserialize)]
+pub struct CollabSendBody {
+    pub graph_run_id: String,
+    pub node_key: String,
+    pub to_address: String,
+    pub kind: String,
+    pub question: String,
+    #[serde(default)]
+    pub depth: u32,
+    #[serde(default)]
+    pub context_artifacts: Vec<String>,
+}
+
+/** M3：节点协作消息（Tim 评审）——graph_collab 走 graph 自包含端点。
+ *  元数据（run/node/kind/depth）落 node_collab 事件可审计；消息正文 body 自由（点对点）。 */
+#[allow(clippy::result_large_err)]
+pub fn collab_send(
+    state: &AppState,
+    from: &AuthenticatedSession,
+    req: &CollabSendBody,
+) -> Result<ServerMsg, ServerMsg> {
+    // 校验图存在
+    {
+        let conn = state.storage.conn();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM graph_runs WHERE id=?1",
+                params![req.graph_run_id],
+                |r| r.get(0),
+            )
+            .map_err(sqlite_err)?;
+        if n == 0 {
+            return Err(err("graph_run_not_found", "GraphRun 不存在"));
+        }
+    }
+    // depth 防循环（Tim 补强）：≥3 拒绝（应转 escalation/blockers）
+    if req.depth >= 3 {
+        return Err(err(
+            "graph_collab_depth_limit",
+            "collab depth≥3：请转 escalation 或 result blockers（防循环咨询）",
+        ));
+    }
+    let subject = format!(
+        "[collab] {} {} {} {}",
+        req.graph_run_id, req.node_key, req.kind, req.depth
+    );
+    let body = serde_json::json!({
+        "graph_run_id": req.graph_run_id,
+        "node": req.node_key,
+        "kind": req.kind,
+        "depth": req.depth,
+        "question": req.question,
+        "context_artifacts": req.context_artifacts,
+        "from": { "name": from.name, "address": from.address },
+    });
+    let send_req = crate::routing::SendRequest {
+        to: &req.to_address,
+        to_name: "",
+        from: &from.address,
+        from_name: &from.name,
+        body: &serde_json::to_string(&body).map_err(json_err)?,
+        content_type: "graph_collab",
+        reply_to_id: None,
+        subject: Some(&subject),
+        metadata: "{}",
+        more_coming: false,
+    };
+    let msg = crate::routing::send::send(&state.storage, send_req)
+        .map_err(|e| err("graph_collab_send_failed", e.to_string()))?;
+    // 留证（node_collab 事件）
+    {
+        let conn = state.storage.conn();
+        events::append(
+            &conn,
+            &req.graph_run_id,
+            "node_collab",
+            Some(&req.node_key),
+            &serde_json::json!({
+                "kind": req.kind,
+                "to": req.to_address,
+                "depth": req.depth,
+                "message_id": msg.id,
+                "question": req.question,
+            }),
+        )
+        .map_err(graph_err)?;
+    }
+    Ok(ServerMsg::GraphCollabSent { message_id: msg.id })
 }
 
 /// 运行控制：cancel / pause / resume。

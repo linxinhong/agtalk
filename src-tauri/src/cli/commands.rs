@@ -73,6 +73,11 @@ pub(crate) enum GraphCmd {
     Cancel { run_id: String },
     /// 物理删除运行（仅 terminal 状态，级联清理全部关联数据）
     Delete { run_id: String },
+    /// 节点协作消息（M3）：向图内节点执行者咨询/移交，node_collab 事件留证
+    Collab {
+        #[command(subcommand)]
+        cmd: GraphCollabCmd,
+    },
     /// 生成随机执行者名字（2 字中文代号，供 spec 的 participant 使用）
     GenNames {
         /// 生成数量（默认 3）
@@ -97,6 +102,25 @@ pub(crate) enum GraphCmd {
     },
     /// 拉起图工程管理界面（M4 预留）
     Gui { run_id: Option<String> },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum GraphCollabCmd {
+    /// 发送协作咨询消息（to 用 address，来自派发消息 collab.peers）
+    Send {
+        #[arg(long)]
+        run: String,
+        #[arg(long)]
+        node: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long, default_value = "ask")]
+        kind: String,
+        #[arg(long)]
+        question: String,
+        #[arg(long, default_value_t = 0)]
+        depth: u32,
+    },
 }
 
 #[derive(Subcommand)]

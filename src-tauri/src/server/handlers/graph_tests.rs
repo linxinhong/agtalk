@@ -4,8 +4,8 @@ mod tests {
     use crate::identity::auth::AuthenticatedSession;
     use crate::proto::ServerMsg;
     use crate::server::handlers::graph::{
-        apply_heartbeat, apply_result, control_run, delete_run, patch_run, show_run,
-        submit_and_start, NodeBody,
+        apply_heartbeat, apply_result, collab_send, control_run, delete_run, patch_run, show_run,
+        submit_and_start, CollabSendBody, NodeBody,
     };
     use crate::server::state::AppState;
     use crate::storage::Storage;
@@ -933,5 +933,86 @@ nodes:
             .as_str()
             .unwrap()
             .contains("heartbeat"));
+    }
+
+    #[test]
+    fn collab_send_records_event_and_message() {
+        let state = test_state();
+        {
+            let conn = state.storage.conn();
+            conn.execute(
+                "INSERT INTO mailboxes (address, name) VALUES ('x-addr', 'agent-x')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO event_sequences (address) VALUES ('x-addr')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO graph_runs (id, goal, spec_snapshot, compiled_graph, status) \
+             VALUES ('g-cb', 'g', '{}', '{}', 'ready')",
+                [],
+            )
+            .unwrap();
+        }
+        let req = CollabSendBody {
+            graph_run_id: "g-cb".into(),
+            node_key: "write".into(),
+            to_address: "x-addr".into(),
+            kind: "ask".into(),
+            question: "接口签名确认？".into(),
+            depth: 0,
+            context_artifacts: vec![],
+        };
+        let msg = collab_send(&state, &fake_session(), &req).unwrap();
+        assert!(matches!(msg, ServerMsg::GraphCollabSent { .. }));
+        // 事件留证 + 消息投递
+        let conn = state.storage.conn();
+        let ev: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM graph_events WHERE graph_run_id='g-cb' AND event_type='node_collab'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+        assert_eq!(ev, 1, "应有 node_collab 事件");
+        let msgs: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE content_type='graph_collab' AND to_address='x-addr'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+        assert_eq!(msgs, 1, "collab 消息应投递");
+    }
+
+    #[test]
+    fn collab_depth_limit_rejected() {
+        let state = test_state();
+        {
+            let conn = state.storage.conn();
+            conn.execute(
+                "INSERT INTO graph_runs (id, goal, spec_snapshot, compiled_graph, status) \
+             VALUES ('g-cb2', 'g', '{}', '{}', 'ready')",
+                [],
+            )
+            .unwrap();
+        }
+        let req = CollabSendBody {
+            graph_run_id: "g-cb2".into(),
+            node_key: "write".into(),
+            to_address: "x-addr".into(),
+            kind: "ask".into(),
+            question: "q".into(),
+            depth: 3,
+            context_artifacts: vec![],
+        };
+        let err = collab_send(&state, &fake_session(), &req).unwrap_err();
+        let ServerMsg::Error { code, .. } = err else {
+            panic!("应拒绝")
+        };
+        assert_eq!(code, "graph_collab_depth_limit");
     }
 }

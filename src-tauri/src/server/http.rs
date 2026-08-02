@@ -91,6 +91,10 @@ pub fn routes(state: AppState) -> Router {
             delete(graph::graph_run_delete_handler),
         )
         .route(
+            "/api/v1/graph/collab/send",
+            post(graph::graph_collab_send_handler),
+        )
+        .route(
             "/api/v1/graph/events/stream",
             get(graph_events_stream_handler),
         )

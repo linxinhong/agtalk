@@ -351,6 +351,17 @@ pub enum ClientMsg {
         #[serde(default)]
         since: Option<i64>,
     },
+    GraphCollabSend {
+        graph_run_id: String,
+        node_key: String,
+        to_address: String,
+        kind: String,
+        question: String,
+        #[serde(default)]
+        depth: u32,
+        #[serde(default)]
+        context_artifacts: Vec<String>,
+    },
     GraphRunControl {
         run_id: String,
         action: String,
@@ -572,6 +583,9 @@ pub enum ServerMsg {
         attempt: u32,
         status: String,
         message: String,
+    },
+    GraphCollabSent {
+        message_id: String,
     },
     GraphRunDeleted {
         run_id: String,

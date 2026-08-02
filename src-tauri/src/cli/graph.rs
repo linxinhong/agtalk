@@ -39,6 +39,16 @@ pub(crate) fn dispatch(ctx: Context, cmd: GraphCmd, json: bool) -> Result<(), Cl
             } => report_blocker(&ctx, &run_id, &node_key, attempt, &blocker, json),
         },
         GraphCmd::Delete { run_id } => delete(&ctx, &run_id, json),
+        GraphCmd::Collab { cmd } => match cmd {
+            super::GraphCollabCmd::Send {
+                run,
+                node,
+                to,
+                kind,
+                question,
+                depth,
+            } => collab_send(&ctx, &run, &node, &to, &kind, &question, depth, json),
+        },
         GraphCmd::GenNames { n } => gen_names(&ctx, n, json),
         GraphCmd::Analyze { spec } => analyze(&ctx, &spec, json),
         GraphCmd::Gui { run_id } => {
@@ -127,6 +137,34 @@ pub fn logs(ctx: &Context, run_id: &str, since: Option<i64>, json: bool) -> Resu
 /// 物理删除运行（HTTP DELETE）。
 fn delete(ctx: &Context, run_id: &str, json: bool) -> Result<(), CliError> {
     let msg = client::delete(ctx, &format!("/api/v1/graph/runs/{}", run_id))?;
+    print_server_msg(json, &msg);
+    Ok(())
+}
+
+/// 发送节点协作消息（M3，POST /api/v1/graph/collab/send）。
+fn collab_send(
+    ctx: &Context,
+    run: &str,
+    node: &str,
+    to: &str,
+    kind: &str,
+    question: &str,
+    depth: u32,
+    json: bool,
+) -> Result<(), CliError> {
+    let msg = client::post(
+        ctx,
+        "/api/v1/graph/collab/send",
+        serde_json::json!({
+            "graph_run_id": run,
+            "node_key": node,
+            "to_address": to,
+            "kind": kind,
+            "question": question,
+            "depth": depth,
+            "context_artifacts": [],
+        }),
+    )?;
     print_server_msg(json, &msg);
     Ok(())
 }

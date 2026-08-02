@@ -603,6 +603,10 @@ fn print_text_server_msg(msg: &ServerMsg) {
             println!("node      : {} (attempt {})", node_key, attempt);
             println!("message   : {}", message);
         }
+        ServerMsg::GraphCollabSent { message_id } => {
+            println!("message_id: {message_id}");
+            println!("协作消息已发送（node_collab 事件已留证）");
+        }
         ServerMsg::GraphRunDeleted { run_id } => {
             println!("run_id    : {run_id}");
             println!("已删除（级联清理节点/事件/工作区等全部关联数据）");
