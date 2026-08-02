@@ -44,6 +44,9 @@ pub struct NodeBody {
     pub verification_claims: Vec<crate::graph::dto::GraphClaim>,
     #[serde(default)]
     pub blockers: Vec<String>,
+    /// 半完成警告（Tim 评审 P0-3）：如"遗留 TODO""有已知限制"，daemon 留证不阻塞。
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -429,6 +432,17 @@ pub fn apply_result(
                 None,
             )
             .map_err(graph_err)?;
+            // P0-3：result warnings 留证（半完成状态，事件可见不阻塞）
+            if !body.warnings.is_empty() {
+                events::append(
+                    &conn,
+                    &body.run_id,
+                    "node_warnings",
+                    Some(&body.node_key),
+                    &serde_json::json!({ "warnings": body.warnings }),
+                )
+                .map_err(graph_err)?;
+            }
             let _ = converge_graph_run(&conn, &body.run_id).map_err(graph_err)?;
         }
         push_new_graph_events(state, &body.run_id, since);

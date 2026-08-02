@@ -102,7 +102,8 @@ agtalk graph node report --run <run-id> --node <node-key> --attempt <n> --blocke
   "verification_claims": [
     { "command": "cargo test -p backend", "exit_code": 0, "stdout_ref": "file:///.../test.log", "summary": "42 passed" }
   ],
-  "blockers": []
+  "blockers": [],
+  "warnings": ["遗留 TODO：错误处理边界未覆盖"]
 }
 ```
 
@@ -115,6 +116,7 @@ agtalk graph node report --run <run-id> --node <node-key> --attempt <n> --blocke
 | `output_artifacts` | 按派发消息声明 | 节点产出物引用（uri + checksum），daemon 校验存在性与一致性 |
 | `verification_claims` | 建议填 | 你执行过的验证（test/build/lint）与退出码，daemon 结构化留证；**P0 信任你的自证，但会抽查**，造假会被发现并记入运行审计 |
 | `blockers` | 否 | 未解决的阻塞（填了则节点按 blocked 处理） |
+| `warnings` | 否 | 半完成警告（遗留 TODO/已知限制），daemon 留证（node_warnings 事件），不阻塞 |
 
 ## 7. 超时、重试与 attempt 语义
 

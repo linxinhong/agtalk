@@ -200,6 +200,7 @@ nodes:
                 output_artifacts: vec![],
                 verification_claims: vec![],
                 blockers: vec![],
+                warnings: vec![],
             },
         )
         .unwrap();
@@ -228,6 +229,7 @@ nodes:
                     summary: "ok".into(),
                 }],
                 blockers: vec![],
+                warnings: vec![],
             },
         )
         .unwrap();
@@ -299,6 +301,7 @@ nodes:
                 output_artifacts: vec![],
                 verification_claims: vec![],
                 blockers: vec![],
+                warnings: vec![],
             },
         )
         .unwrap();
@@ -314,6 +317,7 @@ nodes:
                 output_artifacts: vec![],
                 verification_claims: vec![],
                 blockers: vec!["需要人类决策".into()],
+                warnings: vec![],
             },
         )
         .unwrap();
@@ -365,6 +369,7 @@ nodes:
                 output_artifacts: vec![],
                 verification_claims: vec![],
                 blockers: vec![],
+                warnings: vec![],
             },
         )
         .unwrap();
@@ -382,6 +387,7 @@ nodes:
                 output_artifacts: vec![],
                 verification_claims: vec![],
                 blockers: vec![],
+                warnings: vec![],
             },
         )
         .unwrap();
@@ -496,6 +502,7 @@ nodes:
                 output_artifacts: vec![],
                 verification_claims: vec![],
                 blockers: vec![],
+                warnings: vec![],
             },
         )
         .unwrap();
@@ -511,6 +518,7 @@ nodes:
                 output_artifacts: vec![],
                 verification_claims: vec![],
                 blockers: vec![],
+                warnings: vec![],
             },
         )
         .unwrap();
@@ -543,6 +551,7 @@ nodes:
                 output_artifacts: vec![],
                 verification_claims: vec![],
                 blockers: vec![],
+                warnings: vec![],
             },
         )
         .unwrap();
@@ -566,6 +575,7 @@ nodes:
                 }],
                 verification_claims: vec![],
                 blockers: vec![],
+                warnings: vec![],
             },
         )
         .unwrap();

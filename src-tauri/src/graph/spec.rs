@@ -144,6 +144,20 @@ pub struct ApprovalSpec {
     pub message: String,
     #[serde(default)]
     pub options: Vec<String>,
+    /// 超时后按此流转；缺省 Reject（安全默认：不自动放行）。
+    #[serde(default)]
+    pub timeout_action: TimeoutAction,
+}
+
+/// 审批超时后的流转（Tim 评审 P0-4：审批超时不再无定义）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeoutAction {
+    /// 超时视为通过。
+    Approve,
+    /// 超时视为拒绝（默认）。
+    #[default]
+    Reject,
 }
 
 /// 单个节点的契约（docs/design_graph.md §三 Typed Node 契约）。
@@ -195,6 +209,17 @@ pub struct NodeSpec {
     pub gate_condition: Option<String>,
     #[serde(default)]
     pub estimated_duration: Option<f64>,
+    /// 语义级禁止（Tim 评审 P0-1）：如"不得引入新依赖""不得改动数据库 schema"。
+    /// 与 forbidden_paths（路径级）互补；渲染进派发 prompt 防跑偏。
+    #[serde(default)]
+    pub out_of_scope: Vec<String>,
+    /// 通用自然语言约束（P0-1）：如"保持向后兼容""优先使用现有 util"。
+    #[serde(default)]
+    pub constraints: Vec<String>,
+    /// 自然语言完成声明（P0-2）：如"实现完成后运行 cargo test 且全部通过"。
+    /// 与 acceptance（机器校验）互补，供执行者与审查者对齐完成标准。
+    #[serde(default)]
+    pub completion_definition: Option<String>,
 }
 
 /// Graph Spec（docs/design_graph.md §三 图目标/节点/依赖/并发/重试/验收）。

@@ -28,7 +28,7 @@ pub fn reconcile_all(storage: &Storage) -> Result<usize, crate::graph::Error> {
         let mut stmt = conn
             .prepare(
                 "SELECT id, graph_run_id, version FROM node_runs \
-                 WHERE status IN ('leased','dispatched','running','verifying') \
+                 WHERE status IN ('leased','dispatched','running','verifying','waiting_approval') \
                    AND lease_expires_at IS NOT NULL AND lease_expires_at < ?1",
             )
             .map_err(crate::graph::Error::Sqlite)?;
@@ -112,6 +112,36 @@ pub fn reconcile_all(storage: &Storage) -> Result<usize, crate::graph::Error> {
                     handled += 1;
                 }
             }
+        } else if from == crate::graph::state::NodeRunStatus::WaitingApproval {
+            // 审批超时（Tim 评审 P0-4）：按 approval.timeout_action 流转（缺省 reject）
+            let conn = storage.conn();
+            let action = approval_timeout_action(&conn, &graph_run_id, &node_id)?;
+            let out = if action == "approve" {
+                crate::graph::state::transition(
+                    &conn,
+                    &node_id,
+                    version,
+                    crate::graph::state::NodeRunStatus::WaitingApproval,
+                    crate::graph::state::NodeRunStatus::Succeeded,
+                    None,
+                    None,
+                    None,
+                )
+            } else {
+                crate::graph::state::transition(
+                    &conn,
+                    &node_id,
+                    version,
+                    crate::graph::state::NodeRunStatus::WaitingApproval,
+                    crate::graph::state::NodeRunStatus::Failed,
+                    Some("approval_timeout"),
+                    Some("审批超时未响应，按 timeout_action 拒绝"),
+                    None,
+                )
+            };
+            let _ = out?;
+            let _ = crate::graph::state::converge_graph_run(&conn, &graph_run_id)?;
+            handled += 1;
         }
     }
 
@@ -253,6 +283,42 @@ fn send_probe(
     )
     .map_err(crate::graph::Error::Sqlite)?;
     Ok(true)
+}
+
+/// 读取节点的审批超时动作（compiled_graph 的 approval.timeout_action；缺省 reject）。
+fn approval_timeout_action(
+    conn: &Connection,
+    graph_run_id: &str,
+    node_id: &str,
+) -> Result<String, crate::graph::Error> {
+    let node_key: String = conn
+        .query_row(
+            "SELECT node_key FROM node_runs WHERE id=?1",
+            params![node_id],
+            |r| r.get(0),
+        )
+        .map_err(crate::graph::Error::Sqlite)?;
+    let cg_json: String = conn
+        .query_row(
+            "SELECT compiled_graph FROM graph_runs WHERE id=?1",
+            params![graph_run_id],
+            |r| r.get(0),
+        )
+        .map_err(crate::graph::Error::Sqlite)?;
+    let Ok(cg) = serde_json::from_str::<crate::graph::compiler::CompiledGraph>(&cg_json) else {
+        return Ok("reject".into()); // 解析失败 → 安全默认拒绝
+    };
+    let action = cg.nodes.iter().find(|n| n.id == node_key).and_then(|n| {
+        n.approval
+            .as_ref()
+            .map(|a| a.timeout_action == crate::graph::spec::TimeoutAction::Approve)
+    });
+    Ok(if action.unwrap_or(false) {
+        "approve"
+    } else {
+        "reject"
+    }
+    .into())
 }
 
 /// 节点的 (node_key, attempt)。
@@ -672,5 +738,64 @@ nodes:
                 .unwrap();
             assert_eq!(status2, "timed_out", "grace 内无心跳应超时");
         }
+    }
+
+    #[test]
+    fn waiting_approval_expires_to_failed_by_default() {
+        // 审批超时（P0-4）：compiled_graph 无 timeout_action → 默认 reject → Failed(approval_timeout)
+        let storage = Storage::open_in_memory().unwrap();
+        let id = {
+            let conn = storage.conn();
+            conn.execute(
+                "INSERT INTO graph_runs (id, goal, spec_snapshot, compiled_graph, status) \
+             VALUES ('g-ap', 'g', '{}', '{}', 'running')",
+                [],
+            )
+            .unwrap();
+            let (id, _) =
+                create_node_run(&conn, "g-ap", "ap", NodeType::Approval, 1, None, None).unwrap();
+            conn.execute(
+                "UPDATE node_runs SET status='waiting_approval', lease_expires_at=?1 WHERE id=?2",
+                params![unix_now() - 10.0, id],
+            )
+            .unwrap();
+            id
+        };
+        let n = reconcile_all(&storage).unwrap();
+        assert!(n >= 1, "审批超时应被处理");
+        let conn = storage.conn();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM node_runs WHERE id=?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "failed", "默认 reject → failed");
+        let ft: String = conn
+            .query_row(
+                "SELECT failure_type FROM node_runs WHERE id=?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ft, "approval_timeout");
+    }
+
+    #[test]
+    fn approval_timeout_action_parses_approve() {
+        // helper：compiled_graph 配置 approve → 返回 approve
+        let storage = Storage::open_in_memory().unwrap();
+        let conn = storage.conn();
+        conn.execute(
+        "INSERT INTO graph_runs (id, goal, spec_snapshot, compiled_graph, status) \
+         VALUES ('g-ap2', 'g', '{}', ?1, 'running')",
+        params![r#"{"goal":"g","repository":null,"base_revision":null,"integration_target":null,"max_concurrency":2,"nodes":[{"id":"ap","type":"approval","timeout_seconds":300,"approval":{"message":"m","options":[],"timeout_action":"approve"}}],"edges":[],"execution_order":["ap"],"parallel_groups":[["ap"]],"required_approvals":["ap"],"resource_conflicts":[],"conflict_pairs":[]}"#],
+    )
+    .unwrap();
+        let (nid, _) =
+            create_node_run(&conn, "g-ap2", "ap", NodeType::Approval, 1, None, None).unwrap();
+        let action = approval_timeout_action(&conn, "g-ap2", &nid).unwrap();
+        assert_eq!(action, "approve");
     }
 }

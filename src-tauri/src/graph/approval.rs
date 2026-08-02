@@ -9,6 +9,7 @@
 
 use crate::graph::compiler::CompiledGraph;
 use crate::graph::events;
+use crate::graph::reconciler::unix_now;
 use crate::graph::scheduler::{tick, DispatchItem};
 use crate::graph::state::{converge_graph_run, get_node_run, transition, NodeRunStatus};
 use crate::identity::auth::AuthenticatedSession;
@@ -99,6 +100,18 @@ pub fn dispatch_approval(
         None,
     )
     .map_err(graph_err)?;
+    // 审批等待时限：lease_expires_at = 派发 + timeout_seconds（reconciler 超时后按 timeout_action 流转）
+    let approval_timeout = compiled
+        .nodes
+        .iter()
+        .find(|n| n.id == item.node_key)
+        .map(|n| n.timeout_seconds as f64)
+        .unwrap_or(300.0);
+    conn.execute(
+        "UPDATE node_runs SET lease_expires_at=?1 WHERE id=?2",
+        params![unix_now() + approval_timeout, item.node_run_id],
+    )
+    .map_err(sqlite_err)?;
     conn.execute(
         "INSERT INTO graph_node_assignments (id, node_run_id, message_id, kind) \
          VALUES (?1,?2,?3,'approval')",

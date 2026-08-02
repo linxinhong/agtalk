@@ -224,6 +224,8 @@ failed ──(Scheduler: 允许重试的类型+未超次数)──► 新建 att
 
 重试参数：max_attempts + backoff 全部来自节点契约（spec），无无限重试。
 
+**执行质量字段（Tim 评审 P0 采纳）**：`out_of_scope`（语义级禁止，与 forbidden_paths 互补，渲染进派发 prompt）、`constraints`（通用约束）、`completion_definition`（自然语言完成声明，与 acceptance 互补）、`approval.timeout_action`（审批超时流转 approve/reject，缺省 reject，reconciler 在 lease 过期时执行）。result.json 信封补 `warnings`（半完成留证，node_warnings 事件）。
+
 ### 5.7 运行恢复（Reconciliation，P0 基础版）
 
 daemon 启动时对 `status in (running/paused)` 的 GraphRun：

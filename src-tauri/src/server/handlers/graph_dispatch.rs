@@ -198,6 +198,9 @@ fn dispatch_payload(
             "workspace": ws_info
                 .map(|(path, branch)| serde_json::json!({ "path": path, "branch": branch })),
             "read_paths": spec_node.read_paths,
+            "out_of_scope": spec_node.out_of_scope,
+            "constraints": spec_node.constraints,
+            "completion_definition": spec_node.completion_definition,
             "write_paths": spec_node.write_paths,
             "forbidden_paths": spec_node.forbidden_paths,
             "acceptance": spec_node.acceptance,
