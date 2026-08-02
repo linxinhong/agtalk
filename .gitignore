@@ -12,3 +12,6 @@ __pycache__/
 extension/node_modules/
 extension/.output/
 extension/.wxt/
+
+# 工具运行时目录
+.reasonix/
