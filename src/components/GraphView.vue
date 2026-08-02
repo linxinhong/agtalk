@@ -372,4 +372,15 @@ const inspectorNode = computed(() =>
     display: none;
   }
 }
+@media (max-width: 760px) {
+  .gv-main {
+    grid-template-columns: 1fr;
+  }
+  .gv-main > :first-child {
+    display: none;
+  }
+  .cv-meta {
+    display: none;
+  }
+}
 </style>

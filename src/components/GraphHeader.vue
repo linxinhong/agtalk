@@ -98,4 +98,15 @@ const FILTERS: { key: string; label: string }[] = [
 .btn:disabled { opacity: .5; cursor: default; }
 .btn--danger { color: var(--st-failed-deep); border-color: var(--st-failed-soft); }
 .btn--danger:hover:not(:disabled) { background: var(--st-failed-tint); border-color: var(--st-failed-main); }
+
+/* 窄屏自适应 */
+@media (max-width: 900px) {
+  .hint { display: none; }
+  .top { gap: 8px; padding: 0 10px; }
+}
+@media (max-width: 700px) {
+  .crumb { max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .logo { font-size: 12px; }
+  .filters { display: none; }
+}
 </style>

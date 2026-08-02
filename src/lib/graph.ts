@@ -1,6 +1,18 @@
 // 图工程管理界面：daemon API 封装（经 Tauri 命令桥，human token 在 Rust 侧）。
-import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+
+/** 环境安全 invoke：浏览器预览（无 Tauri）时抛友好错误而非裸 TypeError */
+function safeInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  const w = window as unknown as {
+    __TAURI__?: { core?: { invoke: (c: string, a?: unknown) => Promise<unknown> } }
+  }
+  if (!w.__TAURI__?.core?.invoke) {
+    return Promise.reject(
+      new Error('当前环境不支持 Tauri 命令（浏览器预览模式）——图数据不可用，请用 pnpm tauri dev 或 agtalk graph gui 打开'),
+    )
+  }
+  return w.__TAURI__.core.invoke(cmd, args) as Promise<T>
+}
 
 export interface GraphRunSummary {
   id: string
@@ -105,33 +117,33 @@ export type GraphServerMsg =
   | GraphError
 
 export const graphList = (status?: string) =>
-  invoke<GraphServerMsg>('gui_graph_list', status ? { status } : {})
+  safeInvoke<GraphServerMsg>('gui_graph_list', status ? { status } : {})
 
 export const graphShow = (runId: string) =>
-  invoke<GraphServerMsg>('gui_graph_show', { runId })
+  safeInvoke<GraphServerMsg>('gui_graph_show', { runId })
 
 export const graphEvents = (runId: string, since?: number) =>
-  invoke<GraphServerMsg>('gui_graph_events', { runId, since })
+  safeInvoke<GraphServerMsg>('gui_graph_events', { runId, since })
 
 export const graphSubmit = (spec: string) =>
-  invoke<GraphServerMsg>('gui_graph_submit', { spec })
+  safeInvoke<GraphServerMsg>('gui_graph_submit', { spec })
 
 export const graphCancel = (runId: string) =>
-  invoke<GraphServerMsg>('gui_graph_cancel', { runId })
+  safeInvoke<GraphServerMsg>('gui_graph_cancel', { runId })
 
 /** 运行控制（pause / resume / cancel） */
 export const graphControl = (runId: string, action: string) =>
-  invoke<GraphServerMsg>('gui_graph_control', { runId, action })
+  safeInvoke<GraphServerMsg>('gui_graph_control', { runId, action })
 
 /** 节点接管提示词（Tim 设计稿方案二：GUI 复制按钮） */
 export const nodePrompt = (runId: string, nodeKey: string) =>
-  invoke<string>('gui_node_prompt', { runId, nodeKey })
+  safeInvoke<string>('gui_node_prompt', { runId, nodeKey })
 
 export const graphStreamStart = (runId: string) =>
-  invoke<void>('gui_graph_stream_start', { runId })
+  safeInvoke<void>('gui_graph_stream_start', { runId })
 
 export const graphStreamStop = (runId: string) =>
-  invoke<void>('gui_graph_stream_stop', { runId })
+  safeInvoke<void>('gui_graph_stream_stop', { runId })
 
 /** Rust 侧 SSE 订阅 → Tauri event。payload: { run_id, id, data } */
 export interface GraphStreamEvent {
@@ -140,8 +152,13 @@ export interface GraphStreamEvent {
   data: string
 }
 
-/** 订阅 GraphEvent 实时推送（返回取消函数）。 */
-export const onGraphEvent = (cb: (e: GraphStreamEvent) => void) =>
-  listen<GraphStreamEvent>('graph-event', (event) => cb(event.payload))
+/** 订阅 GraphEvent 实时推送（返回取消函数）；浏览器预览模式返回 noop。 */
+export const onGraphEvent = async (cb: (e: GraphStreamEvent) => void): Promise<GraphEventUnlisten> => {
+  const w = window as unknown as { __TAURI__?: { core?: unknown } }
+  if (!w.__TAURI__) {
+    return () => undefined // 浏览器预览：不订阅，静默降级
+  }
+  return listen<GraphStreamEvent>('graph-event', (event) => cb(event.payload))
+}
 
 export type GraphEventUnlisten = UnlistenFn
