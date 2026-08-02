@@ -255,10 +255,21 @@ pub fn gui_node_prompt(run_id: String, node_key: String) -> Result<String, Strin
     // 读 participant 的本地 session（GUI 启动目录的 .agtalk/<name>/session.json）
     let ctx =
         crate::cli::context::Context::pre_join().map_err(|e| format!("无法定位 workspace: {e}"))?;
+    let session_path = ctx.dot_agtalk.join(participant).join("session.json");
+    if !session_path.exists() {
+        // 执行者未注册（如 participant=auto 随机分配的名字）→ 返回"接管引导"而非报错：
+        // 复制到剪贴板后，接收方可直接按引导 join 并接管该节点。
+        let guide = format!(
+            "节点执行者「{participant}」尚未注册（可能为图提交时自动分配）。\n\
+             请先执行：agtalk id join {participant}\n\
+             然后执行：agtalk --as {participant} msg read 接收节点任务，并按协议闭环回复。"
+        );
+        return Ok(guide);
+    }
     let session =
         crate::identity::session_file::read(&ctx.dot_agtalk, participant).map_err(|e| {
             format!(
-                "participant '{participant}' 的 session 不在当前 workspace（{}）: {e}",
+                "participant '{participant}' 的 session 读取失败（{}）: {e}",
                 ctx.dot_agtalk.display()
             )
         })?;
