@@ -1,17 +1,21 @@
 // 图工程管理界面：daemon API 封装（经 Tauri 命令桥，human token 在 Rust 侧）。
+import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+
+/** Tauri 2 环境检测：window.__TAURI__ 默认不注入（需 withGlobalTauri），
+ * 正确标志是 __TAURI_INTERNALS__（Tauri 2 运行时总是注入）。 */
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+}
 
 /** 环境安全 invoke：浏览器预览（无 Tauri）时抛友好错误而非裸 TypeError */
 function safeInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  const w = window as unknown as {
-    __TAURI__?: { core?: { invoke: (c: string, a?: unknown) => Promise<unknown> } }
-  }
-  if (!w.__TAURI__?.core?.invoke) {
+  if (!isTauri()) {
     return Promise.reject(
       new Error('当前环境不支持 Tauri 命令（浏览器预览模式）——图数据不可用，请用 pnpm tauri dev 或 agtalk graph gui 打开'),
     )
   }
-  return w.__TAURI__.core.invoke(cmd, args) as Promise<T>
+  return invoke<T>(cmd, args)
 }
 
 export interface GraphRunSummary {
@@ -154,8 +158,7 @@ export interface GraphStreamEvent {
 
 /** 订阅 GraphEvent 实时推送（返回取消函数）；浏览器预览模式返回 noop。 */
 export const onGraphEvent = async (cb: (e: GraphStreamEvent) => void): Promise<GraphEventUnlisten> => {
-  const w = window as unknown as { __TAURI__?: { core?: unknown } }
-  if (!w.__TAURI__) {
+  if (!isTauri()) {
     return () => undefined // 浏览器预览：不订阅，静默降级
   }
   return listen<GraphStreamEvent>('graph-event', (event) => cb(event.payload))
