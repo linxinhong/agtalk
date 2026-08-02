@@ -73,6 +73,12 @@ pub(crate) enum GraphCmd {
     Cancel { run_id: String },
     /// 物理删除运行（仅 terminal 状态，级联清理全部关联数据）
     Delete { run_id: String },
+    /// 生成随机执行者名字（2 字中文代号，供 spec 的 participant 使用）
+    GenNames {
+        /// 生成数量（默认 3）
+        #[arg(default_value_t = 3)]
+        n: usize,
+    },
     /// 图成本分析（docs/graph-engineering-survey.md §5）：本地评估，不建图
     Analyze {
         /// spec 名字或 YAML 文件路径（同 submit 解析规则）

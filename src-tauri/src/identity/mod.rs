@@ -6,6 +6,7 @@ pub mod browser_session;
 pub mod history;
 pub mod human_session;
 pub mod mailbox;
+pub mod namegen;
 pub mod prompt;
 pub mod relations;
 pub mod session_file;

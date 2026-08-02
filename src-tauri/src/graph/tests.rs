@@ -133,14 +133,23 @@ fn missing_timeout_rejected() {
 }
 
 #[test]
-fn executor_without_participant_rejected() {
+fn executor_without_participant_allowed_with_auto_warning() {
+    // participant 缺省/auto → 编译通过（daemon 提交时自动分配随机执行者），warning 提示
     let yaml = three_node_dag().replace(
         "    executor_requirements: { participant: backend-agent }\n",
         "",
     );
     let r = compile_yaml(&yaml);
-    assert!(!r.valid);
-    assert!(err_codes(&r).contains(&"participant_required"));
+    assert!(r.valid, "缺 participant 不应编译失败（auto 分配）");
+    assert!(warn_codes(&r).contains(&"auto_participant"));
+
+    let yaml2 = three_node_dag().replace(
+        "    executor_requirements: { participant: backend-agent }\n",
+        "    executor_requirements: { participant: auto }\n",
+    );
+    let r2 = compile_yaml(&yaml2);
+    assert!(r2.valid);
+    assert!(warn_codes(&r2).contains(&"auto_participant"));
 }
 
 #[test]

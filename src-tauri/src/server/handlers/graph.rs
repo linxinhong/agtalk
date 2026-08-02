@@ -239,7 +239,26 @@ pub fn submit_and_start(
             warnings: issues(&compiled.warnings),
         });
     }
-    let cg = compiled.compiled.clone().expect("valid 编译必有 compiled");
+    // participant=auto / 缺省 → 自动分配随机执行者名（2 字中文代号，GUI 头像按 djb2 自动映射）
+    let mut compiled = compiled;
+    let mut cg = compiled.compiled.clone().expect("valid 编译必有 compiled");
+    for node in &mut cg.nodes {
+        let need = match node.executor_requirements.participant.as_deref() {
+            Some(p) => p == "auto",
+            None => node.node_type == crate::graph::spec::NodeType::Executor,
+        };
+        if need {
+            let name = crate::identity::namegen::random_agent_name();
+            node.executor_requirements.participant = Some(name.clone());
+            compiled
+                .warnings
+                .push(crate::graph::compiler::CompileIssue {
+                    code: "auto_assigned",
+                    message: format!("节点 '{}' 自动分配执行者：{}", node.id, name),
+                    node: Some(node.id.clone()),
+                });
+        }
+    }
     let run_id = uuid::Uuid::new_v4().to_string();
     let now = unix_now();
     let since = graph_max_event_id(state, &run_id);

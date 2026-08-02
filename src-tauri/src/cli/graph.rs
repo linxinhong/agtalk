@@ -39,6 +39,7 @@ pub(crate) fn dispatch(ctx: Context, cmd: GraphCmd, json: bool) -> Result<(), Cl
             } => report_blocker(&ctx, &run_id, &node_key, attempt, &blocker, json),
         },
         GraphCmd::Delete { run_id } => delete(&ctx, &run_id, json),
+        GraphCmd::GenNames { n } => gen_names(&ctx, n, json),
         GraphCmd::Analyze { spec } => analyze(&ctx, &spec, json),
         GraphCmd::Gui { run_id } => {
             let _ = run_id; // M4：启动图工程管理界面（?view=graph），run 选择在 GUI 内进行
@@ -127,6 +128,20 @@ pub fn logs(ctx: &Context, run_id: &str, since: Option<i64>, json: bool) -> Resu
 fn delete(ctx: &Context, run_id: &str, json: bool) -> Result<(), CliError> {
     let msg = client::delete(ctx, &format!("/api/v1/graph/runs/{}", run_id))?;
     print_server_msg(json, &msg);
+    Ok(())
+}
+
+/// 生成随机执行者名字（本地，不走 daemon）。
+fn gen_names(ctx: &Context, n: usize, json: bool) -> Result<(), CliError> {
+    let _ = ctx;
+    let names = crate::identity::namegen::random_agent_names(n);
+    if json {
+        println!("{}", serde_json::json!({ "names": names }));
+        return Ok(());
+    }
+    for name in &names {
+        println!("{name}");
+    }
     Ok(())
 }
 

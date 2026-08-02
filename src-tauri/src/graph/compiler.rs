@@ -367,13 +367,22 @@ fn contract_check(n: &NodeSpec, errors: &mut Vec<CompileIssue>, warnings: &mut V
         }
     }
 
-    // Executor 特有契约：participant 必填（Deterministic 允许无 participant，M1 扩展 Runtime 执行）。
-    if n.node_type == NodeType::Executor && n.executor_requirements.participant.is_none() {
-        errors.push(issue(
-            "participant_required",
-            format!("executor 节点 '{id}' 必须声明 executor_requirements.participant"),
-            Some(id.clone()),
-        ));
+    // Executor 特有契约：participant 必填 或 显式 `auto`（daemon 提交时自动分配随机执行者名）。
+    // 省略 participant 时给出 warning（将按 auto 处理），不再报错。
+    if n.node_type == NodeType::Executor {
+        match n.executor_requirements.participant.as_deref() {
+            Some("auto") => warnings.push(issue(
+                "auto_participant",
+                format!("executor 节点 '{id}' 声明 participant=auto，提交时将自动分配执行者"),
+                Some(id.clone()),
+            )),
+            Some(_) => {}
+            None => warnings.push(issue(
+                "auto_participant",
+                format!("executor 节点 '{id}' 未声明 participant，提交时将自动分配执行者（或显式写 auto）"),
+                Some(id.clone()),
+            )),
+        }
     }
 
     // 安全：写节点建议声明 forbidden_paths
