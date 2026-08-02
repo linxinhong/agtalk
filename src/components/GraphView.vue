@@ -7,6 +7,11 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { VueFlow, useVueFlow, MarkerType } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
+import { MiniMap } from '@vue-flow/minimap'
+// 配套样式必须显式引入（v2 重构遗漏 → Controls 无样式/缩略图消失）
+import '@vue-flow/core/dist/style.css'
+import '@vue-flow/controls/dist/style.css'
+import '@vue-flow/minimap/dist/style.css'
 import dagre from '@dagrejs/dagre'
 
 import ProjectRail from '../components/ProjectRail.vue'
@@ -31,6 +36,23 @@ import {
 
 const nodeTypes = { agtalk: SegmentedNode as any }
 const { fitView } = useVueFlow()
+
+// MiniMap 配色（跟随设计系统 tokens；未认领用灰色）
+const ST_MAIN: Record<string, string> = {
+  idle: 'var(--st-idle-main)',
+  running: 'var(--st-running-main)',
+  waiting: 'var(--st-waiting-main)',
+  blocked: 'var(--st-blocked-main)',
+  succeeded: 'var(--st-succeeded-main)',
+  failed: 'var(--st-failed-main)',
+  cancelled: 'var(--st-cancelled-main)',
+}
+function miniColor(n: { data?: { group?: string } }): string {
+  const g = n.data?.group
+  return ST_MAIN[g ?? ''] ?? 'var(--st-idle-main)'
+}
+const miniMask = 'rgba(0,0,0,0.12)'
+const miniStroke = 'var(--border-strong)'
 
 // ---- 状态 ----
 interface RailRun {
@@ -312,6 +334,14 @@ const inspectorNode = computed(() =>
         >
           <Background :gap="20" :size="1" pattern-color="var(--canvas-dot)" />
           <Controls position="bottom-left" />
+          <MiniMap
+            position="bottom-right"
+            pannable
+            zoomable
+            :node-color="miniColor"
+            :mask-color="miniMask"
+            :node-stroke-color="miniStroke"
+          />
           <div v-if="active.runId" class="cv-meta">
             {{ active.runId }} · {{ nodes.length }} 节点
           </div>
