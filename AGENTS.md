@@ -214,6 +214,7 @@ Tauri 2 是 agtalk 的桌面外壳。**GUI 是薄客户端**，所有逻辑走 d
 - 直接 `cargo build`（不经 tauri CLI）**必须**开 `--features custom-protocol`，否则二进制连 devUrl(localhost) 而非内嵌 dist，**GUI 白屏**。
 - **统一构建入口 `./scripts/build.sh`**（自动补 custom-protocol）：开发/交付一律走它，禁止裸 `cargo build -p agtalk` 交付。快捷键 `cargo bd`（.cargo/config.toml alias）。Makefile 的 `build`/`release`/`deploy` 均经 build.sh。
 - 注意：对源码做了任何修改后，都要重新 `./scripts/build.sh` 并重启 daemon，交付给用户前确认二进制是 custom-protocol 构建。
+- **安装二进制用 `install`，禁止 `cp` 到 `~/.local/bin/`**：macOS 26 的 `cp` 会复制 `com.apple.provenance` xattr，带该标记的二进制 exec 会被拒（SIGKILL / Killed: 9）。`install` 不复制 xattr（Makefile deploy 已用 install）。若已误用 cp：`xattr -d com.apple.provenance ~/.local/bin/agtalk` 后重启 daemon。
 - `pnpm tauri dev` 不开此特性（走 dev server 热重载）。
 - 这是 agtalk-office 踩过的坑（本项目也踩过两次），注释必须保留在 Cargo.toml。
 
