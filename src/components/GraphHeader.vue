@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue';
 /**
  * GraphHeader · 顶栏：面包屑（工程/运行/仓库）+ 状态筛选 + 运行操作
  * 主操作用墨色，危险操作用失败色描边——彩色只属于状态。
@@ -14,7 +15,10 @@ interface HeaderProps {
   filter?: string
   loading?: boolean
 }
-defineProps<HeaderProps>();
+const props = defineProps<HeaderProps>();
+/** 仓库短名（路径最后段），全路径放 title */
+const repoShort = computed(() => props.repo?.split('/').pop() || props.repo || '');
+
 const emit = defineEmits(['filter', 'refresh', 'pause', 'resume', 'cancel']);
 
 const FILTERS: { key: string; label: string }[] = [
@@ -34,7 +38,7 @@ const FILTERS: { key: string; label: string }[] = [
       <b>{{ project }}</b>
       <span class="sep">/</span>
       <span class="mono">{{ runId }}</span>
-      <template v-if="repo"><span class="sep">·</span>{{ repo }}</template>
+      <template v-if="repo"><span class="sep">·</span><span :title="repo">{{ repoShort }}</span></template>
     </span>
 
     <nav class="filters">
@@ -65,16 +69,36 @@ const FILTERS: { key: string; label: string }[] = [
   height: 48px; padding: 0 16px; box-sizing: border-box;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
+  flex-wrap: nowrap; /* 窄宽度不换行，靠截断 */
 }
 .logo { font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
 .logo i { width: 18px; height: 18px; border-radius: 5px; background: var(--ink); }
 
-.crumb { font-size: 12px; color: var(--text-secondary); }
+.crumb {
+  font-size: 12px; color: var(--text-secondary);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.crumb .mono {
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+  display: inline-block;
+  vertical-align: bottom;
+}
 .crumb b { color: var(--text-primary); font-weight: 600; }
 .crumb .sep { margin: 0 6px; color: var(--text-tertiary); }
 .mono { font-family: var(--font-mono); }
 
-.filters { display: flex; gap: 4px; margin-left: 8px; }
+.filters {
+  display: flex; gap: 4px; margin-left: 8px;
+  flex-shrink: 1; min-width: 0;
+  overflow-x: auto; white-space: nowrap;
+  scrollbar-width: none;
+}
 .filters span {
   font-size: 11px; padding: 4px 10px; border-radius: 999px;
   color: var(--text-secondary); cursor: pointer;
@@ -83,7 +107,7 @@ const FILTERS: { key: string; label: string }[] = [
 .filters span:hover { background: var(--surface-2); }
 .filters span.on { background: var(--ink); color: var(--text-inverse); }
 
-.actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.actions { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
 .hint { font-size: 11px; color: var(--text-tertiary); margin-right: 4px; }
 
 .btn {
