@@ -199,6 +199,64 @@ agtalk tool doctor
 
 ---
 
+## 图工程（Graph Engineering）
+
+把长任务拆成可分解/可隔离/可并行/可验证/可恢复的执行图（架构见 `docs/design_graph.md`）。
+
+### 1. 最小可运行 spec（`.agtalk/graph/<name>.yaml`）
+
+```yaml
+version: 1
+goal: "写代码 → 专家评审"
+nodes:
+  - id: write
+    type: executor                       # executor=agent 执行；deterministic=命令；join=汇聚；gate=分叉；approval=人类审批
+    outputs: { schema: source-diff }
+    executor_requirements: { participant: alan }   # 指定执行者；或用 auto（提交时自动分配随机中文名）
+    workspace: w-code
+    write_paths: [src/demo]              # 只能写这里（越界被门禁拒绝）
+    acceptance: [{ type: path, rule: changed_within_write_paths }]
+    timeout_seconds: 600
+  - id: review
+    type: executor
+    dependencies: [write]                # 等 write 成功才派发
+    outputs: { schema: review-report }
+    executor_requirements: { participant: Tim }
+    workspace: w-review
+    write_paths: [docs/reviews]
+    acceptance: [{ type: path, rule: changed_within_write_paths }]
+    timeout_seconds: 600
+```
+
+### 2. 构建与提交
+
+```bash
+agtalk graph analyze <name>        # 先本地校验（结构/契约/占位符），无需身份
+agtalk --as <你> graph submit <name>   # 提交并开始派发；缺 participant 的节点可写 auto
+agtalk --as <你> graph status <run-id> # 看节点状态
+agtalk --as <你> graph logs <run-id>   # 事件流（谁派发给了谁）
+```
+
+### 3. 执行你被派发的节点（参与者职责）
+
+```bash
+agtalk msg read                    # 收到 graph_dispatch 消息（含 worktree 路径）
+# 在消息里的 workspace.path 完成工作（写路径必须 ⊆ write_paths）
+agtalk --as <你> graph node heartbeat --run <run-id> --node <key> --attempt 1   # 长任务续租
+agtalk --as <你> graph node result --run <run-id> --node <key> --attempt 1 --file result.json
+# result.json: { "result": "...", "changed_files": [...], "output_artifacts": [], "verification_claims": [], "blockers": [] }
+```
+
+### 4. 规则速记
+
+- **路由只认 UUID**，participant 用 name（daemon 消歧）；auto 的名字是"待认领"，需有人 `agtalk id join <名字>` 才在线。
+- **验收门禁**：路径白名单 + artifact checksum + schema；验证是 agent 自证 + daemon 抽查（不 spawn 命令）。
+- **恢复**：daemon 重启自动 reconcile；lease 过期先探测（msg），grace 内无心跳才超时；失败可自动重试（retry_policy）或进修复子图（on_failure）。
+- **人类审批**：approval 节点会发 msg 给人类，等批准/拒绝。
+- **代价**：简单任务（<5 分钟、无并行、无验证、无审批）不要上图，单 agent 更快（`graph analyze` 会告诉你值不值得）。
+
+---
+
 ## 工作循环模板
 
 ```
