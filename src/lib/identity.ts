@@ -14,7 +14,7 @@ export function djb2(s: string): number {
 export function avatarFor(participant?: string | null): string | null {
   if (!participant) return null
   const n = (djb2(participant) % AVATAR_COUNT) + 1 // 1..180
-  return `avatars/avatar_${String(n).padStart(3, '0')}.png`
+  return `/avatars/avatar_${String(n).padStart(3, '0')}.png` // 绝对路径（tauri custom-protocol 根）
 }
 
 /** 12 个生命周期状态 → 7 个视觉组（与 tokens.css --st-* 对应） */
