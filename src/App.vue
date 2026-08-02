@@ -9,6 +9,11 @@ import GraphView from './components/GraphView.vue'
 const params = new URLSearchParams(window.location.search)
 const isPopup = params.has('popup')
 const isGraph = params.get('view') === 'graph'
+
+// 强制浅色主题：GUI 固定浅色（设计系统暖石灰浅色），不跟随系统深色模式。
+// tokens.css 的 @media (prefers-color-scheme: dark) 用 :root:not(.light):not(.dark)
+// 选择器——加 .light 类即排除深色路径。
+document.documentElement.classList.add('light')
 </script>
 
 <template>
