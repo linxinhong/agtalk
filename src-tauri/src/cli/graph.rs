@@ -142,6 +142,7 @@ fn delete(ctx: &Context, run_id: &str, json: bool) -> Result<(), CliError> {
 }
 
 /// 发送节点协作消息（M3，POST /api/v1/graph/collab/send）。
+#[allow(clippy::too_many_arguments)]
 fn collab_send(
     ctx: &Context,
     run: &str,
