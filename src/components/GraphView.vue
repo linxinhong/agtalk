@@ -5,7 +5,6 @@
 
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { VueFlow, useVueFlow, MarkerType } from '@vue-flow/core'
-import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
 // 配套样式必须显式引入（v2 重构遗漏 → Controls 无样式/缩略图消失）
@@ -61,12 +60,7 @@ interface RailRun {
   createdAt: string
   repository: string | null
 }
-interface RailProject {
-  name: string
-  repo: string
-  runs: RailRun[]
-}
-const projects = ref<RailProject[]>([])
+const runs = ref<RailRun[]>([])
 const active = ref({ project: '', runId: '', repo: '', status: 'idle' })
 const filter = ref('all')
 const nodes = ref<any[]>([])
@@ -86,22 +80,15 @@ function fmtTime(ts: number): string {
   if (diff < 3600) return `${Math.floor(diff / 60)}m`
   return d.toLocaleDateString()
 }
-function buildProjects(runs: GraphRunSummary[]): RailProject[] {
-  const byRepo = new Map<string, RailProject>()
-  for (const r of runs) {
-    const repo = r.repository || '本地'
-    const name = repo.split('/').pop() || repo
-    if (!byRepo.has(repo)) byRepo.set(repo, { name, repo, runs: [] })
-    byRepo.get(repo)!.runs.push({
-      id: r.id,
-      status: statusGroupOf(r.status),
-      createdAt: fmtTime(r.created_at),
-      repository: repo,
-    })
-  }
-  const list = [...byRepo.values()]
-  // 每工程 runs 按时间倒序（首个即最新）
-  for (const p of list) p.runs.sort((a, b) => b.id.localeCompare(a.id))
+function buildRuns(runs: GraphRunSummary[]): RailRun[] {
+  // 扁平列表（按时间倒序，最新在前），直接显示 run id
+  const list = runs.map((r) => ({
+    id: r.id,
+    status: statusGroupOf(r.status),
+    createdAt: fmtTime(r.created_at),
+    repository: r.repository,
+  }))
+  list.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
   return list
 }
 
@@ -112,11 +99,11 @@ async function loadProjects() {
   try {
     const msg = await graphList(undefined)
     if (msg.type === 'graph_run_list') {
-      projects.value = buildProjects(msg.runs)
+      runs.value = buildRuns(msg.runs)
       // 默认选中最新运行
-      const first = projects.value[0]?.runs[0]
+      const first = runs.value[0]
       if (first && !active.value.runId) {
-        await selectRun({ project: projects.value[0], run: first })
+        await selectRun({ run: first })
       }
     } else if (msg.type === 'error') {
       loadError.value = msg.message
@@ -191,8 +178,8 @@ function layoutGraph(detail: { nodes: GraphNodeDetail[]; edges: { from: string; 
   }))
 }
 
-async function selectRun({ project, run }: { project: RailProject; run: RailRun }) {
-  active.value = { project: project.name, runId: run.id, repo: project.repo, status: run.status }
+async function selectRun({ run }: { run: RailRun }) {
+  active.value = { project: run.repository ?? '', runId: run.id, repo: run.repository ?? '', status: run.status }
   selectedNode.value = null
   loadError.value = ''
   try {
@@ -267,7 +254,7 @@ async function doControl(action: string) {
   try {
     const msg = await graphControl(active.value.runId, action)
     if (msg.type === 'error') loadError.value = msg.message
-    else await selectRun({ project: { name: active.value.project, repo: active.value.repo, runs: [] }, run: { id: active.value.runId, status: 'idle', createdAt: '', repository: active.value.repo } })
+    else await selectRun({ run: { id: active.value.runId, status: 'idle', createdAt: '', repository: active.value.repo } })
   } catch (e) {
     loadError.value = String(e)
   }
@@ -320,7 +307,7 @@ const inspectorNode = computed(() =>
     <div v-if="loadError" class="err-bar">⚠ {{ loadError }}</div>
 
     <div class="gv-main">
-      <ProjectRail :projects="projects" :active-run-id="active.runId" @select="selectRun" />
+      <ProjectRail :runs="runs" :active-run-id="active.runId" @select="selectRun" />
 
       <div class="gv-canvas">
         <VueFlow
@@ -332,7 +319,6 @@ const inspectorNode = computed(() =>
           fit-view-on-init
           @node-click="onNodeClick"
         >
-          <Background :gap="20" :size="1" pattern-color="var(--canvas-dot)" />
           <Controls position="bottom-left" />
           <MiniMap
             position="bottom-right"
