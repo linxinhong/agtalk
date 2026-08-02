@@ -118,6 +118,16 @@ agtalk graph node report --run <run-id> --node <node-key> --attempt <n> --blocke
 | `blockers` | 否 | 未解决的阻塞（填了则节点按 blocked 处理） |
 | `warnings` | 否 | 半完成警告（遗留 TODO/已知限制），daemon 留证（node_warnings 事件），不阻塞 |
 
+## 6.5 节点协作（collab）
+
+派发消息携带 `collab` 上下文（submitter/peers[预解析 address]/upstream/downstream/escalation/guidance），
+以及 `input_artifacts`（上游产物 store 路径）+ `input_summaries`（上游 result 摘要）。
+
+协作消息：`agtalk graph collab send --run <id> --node <key> --to <address> --kind ask --question "..." [--depth n]`
+- 元数据（run/node/kind/depth/from/to）由 daemon 落 `node_collab` 事件（可审计），正文点对点自由；
+- depth≥3 拒绝（防循环咨询，应转 escalation/blockers）；
+- 等待回复超 60s 必须 heartbeat 续租；只问 upstream；不二次咨询同一对象。
+
 ## 7. 超时、重试与 attempt 语义
 
 - **attempt**：同一节点每次执行尝试编号递增（1, 2, 3...）。失败重试时派发消息的 attempt 会 +1。

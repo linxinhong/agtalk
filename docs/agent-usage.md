@@ -247,6 +247,23 @@ agtalk --as <你> graph node result --run <run-id> --node <key> --attempt 1 --fi
 # result.json: { "result": "...", "changed_files": [...], "output_artifacts": [], "verification_claims": [], "blockers": [] }
 ```
 
+### 3.5 节点协作（M3：找谁/怎么问）
+
+执行节点时遇到问题，派发消息的 `collab` 字段告诉你找谁：
+
+- **任务歧义** → 问 `collab.submitter`（提交者）
+- **缺上游信息** → 问 `collab.upstream` 对应执行者（`collab.peers` 里有预解析 address）
+- **需批准/风险决策** → 走 `collab.escalation`（人类审批）
+- **无法继续** → result 里填 `blockers` 上报
+
+```bash
+# 咨询图内节点执行者（to 用派发消息里 peers 的 address；深度≥3 会被拒，防循环）
+agtalk --as <你> graph collab send --run <run-id> --node <你> --to <peer-address>   --kind ask --question "接口签名确认？"
+# 回复方用 msg read 收（content_type=graph_collab），msg reply 回复
+```
+
+**节奏规则（派发消息 guidance 里有）**：咨询用 `msg wait --timeout 60`，超时转 blockers；等待期间 >60s 必须 heartbeat 续租（否则节点超时）；只问 upstream 不广播；同一问题不二次咨询同一对象。
+
 ### 4. 规则速记
 
 - **路由只认 UUID**，participant 用 name（daemon 消歧）；auto 的名字是"待认领"，需有人 `agtalk id join <名字>` 才在线。
