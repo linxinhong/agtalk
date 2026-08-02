@@ -38,6 +38,7 @@ pub(crate) fn dispatch(ctx: Context, cmd: GraphCmd, json: bool) -> Result<(), Cl
                 blocker,
             } => report_blocker(&ctx, &run_id, &node_key, attempt, &blocker, json),
         },
+        GraphCmd::Delete { run_id } => delete(&ctx, &run_id, json),
         GraphCmd::Analyze { spec } => analyze(&ctx, &spec, json),
         GraphCmd::Gui { run_id } => {
             let _ = run_id; // M4：启动图工程管理界面（?view=graph），run 选择在 GUI 内进行
@@ -122,6 +123,14 @@ pub fn logs(ctx: &Context, run_id: &str, since: Option<i64>, json: bool) -> Resu
 }
 
 /// 打补丁：读取 spec（resolve_spec 目录约定）后替换图定义。
+/// 物理删除运行（HTTP DELETE）。
+fn delete(ctx: &Context, run_id: &str, json: bool) -> Result<(), CliError> {
+    let msg = client::graph::delete_graph_run(ctx, run_id)
+        .map_err(|e| CliError::new("graph_delete_failed", e))?;
+    print_server_msg(json, &msg);
+    Ok(())
+}
+
 /// 图成本分析（不建图）：解析 + 编译 + 评估，输出"值得/不值得上图"建议。
 fn analyze(ctx: &Context, spec: &Path, json: bool) -> Result<(), CliError> {
     let path = resolve_spec(ctx, spec)?;

@@ -135,6 +135,10 @@ export const graphSubmit = (spec: string) =>
 export const graphCancel = (runId: string) =>
   safeInvoke<GraphServerMsg>('gui_graph_cancel', { runId })
 
+/** 物理删除运行（仅 terminal；级联清理） */
+export const graphDelete = (runId: string) =>
+  safeInvoke<GraphServerMsg>('gui_graph_delete', { runId })
+
 /** 运行控制（pause / resume / cancel） */
 export const graphControl = (runId: string, action: string) =>
   safeInvoke<GraphServerMsg>('gui_graph_control', { runId, action })

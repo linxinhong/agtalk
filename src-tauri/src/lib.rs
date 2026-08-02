@@ -58,6 +58,7 @@ fn build_gui_app(url: String, title: String, width: f64, height: f64, resizable:
             commands::gui_graph_submit,
             commands::gui_graph_cancel,
             commands::gui_graph_control,
+            commands::gui_graph_delete,
             commands::gui_graph_stream_start,
             commands::gui_graph_stream_stop,
             commands::gui_node_prompt

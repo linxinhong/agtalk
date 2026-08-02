@@ -20,6 +20,7 @@ import SegmentedNode from '../components/SegmentedNode.vue'
 import { statusGroupOf } from '../lib/identity'
 import {
   graphControl,
+  graphDelete,
   graphEvents,
   graphList,
   graphShow,
@@ -249,6 +250,26 @@ const filteredNodes = computed(() => {
   return nodes.value.map((n) => ({ ...n, hidden: n.data.group !== filter.value }))
 })
 
+/** 删除运行（确认后级联清理，刷新列表） */
+async function doDelete(runId: string) {
+  if (!window.confirm(`确定删除运行 ${runId.slice(0, 8)}…？\n将级联清理该图全部关联数据，不可恢复。`)) return
+  try {
+    const msg = await graphDelete(runId)
+    if (msg.type === 'error') {
+      loadError.value = msg.message
+    } else {
+      if (active.value.runId === runId) {
+        active.value.runId = ''
+        nodes.value = []
+        edges.value = []
+      }
+      await loadProjects()
+    }
+  } catch (e) {
+    loadError.value = String(e)
+  }
+}
+
 async function doControl(action: string) {
   if (!active.value.runId) return
   try {
@@ -307,7 +328,7 @@ const inspectorNode = computed(() =>
     <div v-if="loadError" class="err-bar">⚠ {{ loadError }}</div>
 
     <div class="gv-main">
-      <ProjectRail :runs="runs" :active-run-id="active.runId" @select="selectRun" />
+      <ProjectRail :runs="runs" :active-run-id="active.runId" @select="selectRun" @delete="doDelete" />
 
       <div class="gv-canvas">
         <VueFlow

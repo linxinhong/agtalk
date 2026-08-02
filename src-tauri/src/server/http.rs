@@ -6,7 +6,7 @@ use crate::transport::sse::events_stream;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::Sse;
-use axum::routing::{get, patch, post};
+use axum::routing::{delete, get, patch, post};
 use axum::Router;
 use std::convert::Infallible;
 use tokio_stream::Stream;
@@ -85,6 +85,10 @@ pub fn routes(state: AppState) -> Router {
         .route(
             "/api/v1/graph/runs/:id/patch",
             post(graph::graph_run_patch_handler),
+        )
+        .route(
+            "/api/v1/graph/runs/:id",
+            delete(graph::graph_run_delete_handler),
         )
         .route(
             "/api/v1/graph/events/stream",

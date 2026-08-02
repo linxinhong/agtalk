@@ -359,6 +359,9 @@ pub enum ClientMsg {
         run_id: String,
         spec: String,
     },
+    GraphRunDelete {
+        run_id: String,
+    },
     GraphNodeHeartbeat {
         run_id: String,
         node_key: String,
@@ -569,6 +572,9 @@ pub enum ServerMsg {
         attempt: u32,
         status: String,
         message: String,
+    },
+    GraphRunDeleted {
+        run_id: String,
     },
     GraphRunControlOk {
         run_id: String,

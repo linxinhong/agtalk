@@ -4,7 +4,8 @@ mod tests {
     use crate::identity::auth::AuthenticatedSession;
     use crate::proto::ServerMsg;
     use crate::server::handlers::graph::{
-        apply_heartbeat, apply_result, patch_run, show_run, submit_and_start, NodeBody,
+        apply_heartbeat, apply_result, control_run, delete_run, patch_run, show_run,
+        submit_and_start, NodeBody,
     };
     use crate::server::state::AppState;
     use crate::storage::Storage;
@@ -737,5 +738,111 @@ nodes:
             !by_key("offline").participant_online,
             "离线 participant 应报 offline"
         );
+    }
+
+    #[test]
+    fn delete_run_removes_cascading_data() {
+        let state = test_state();
+        {
+            let conn = state.storage.conn();
+            conn.execute(
+                "INSERT INTO mailboxes (address, name) VALUES ('x-addr', 'agent-x')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO event_sequences (address) VALUES ('x-addr')",
+                [],
+            )
+            .unwrap();
+        }
+        let yaml = r#"
+version: 1
+goal: "delete test"
+nodes:
+  - id: only
+    type: executor
+    outputs: { schema: s }
+    executor_requirements: { participant: agent-x }
+    workspace: w1
+    write_paths: [src/x]
+    acceptance: [{ type: path }]
+    timeout_seconds: 300
+"#;
+        let run_id = match submit_and_start(&state, &fake_session(), yaml).unwrap() {
+            ServerMsg::GraphRunCreated { run_id, .. } => run_id,
+            _ => panic!(),
+        };
+        // cancel 后（terminal）才可删
+        let _ = control_run(&state, &run_id, "cancel").unwrap();
+        let msg = delete_run(&state, &run_id).unwrap();
+        assert!(matches!(msg, ServerMsg::GraphRunDeleted { .. }));
+        // 级联：node_runs / graph_events 已清空
+        let conn = state.storage.conn();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM node_runs WHERE graph_run_id=?1",
+                params![run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0, "node_runs 应级联删除");
+        let e: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM graph_events WHERE graph_run_id=?1",
+                params![run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(e, 0, "graph_events 应级联删除");
+        let g: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM graph_runs WHERE id=?1",
+                params![run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(g, 0, "graph_runs 应删除");
+    }
+
+    #[test]
+    fn delete_run_rejects_non_terminal() {
+        let state = test_state();
+        {
+            let conn = state.storage.conn();
+            conn.execute(
+                "INSERT INTO mailboxes (address, name) VALUES ('x-addr', 'agent-x')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO event_sequences (address) VALUES ('x-addr')",
+                [],
+            )
+            .unwrap();
+        }
+        let yaml = r#"
+version: 1
+goal: "delete running test"
+nodes:
+  - id: only
+    type: executor
+    outputs: { schema: s }
+    executor_requirements: { participant: agent-x }
+    workspace: w1
+    write_paths: [src/x]
+    acceptance: [{ type: path }]
+    timeout_seconds: 300
+"#;
+        let run_id = match submit_and_start(&state, &fake_session(), yaml).unwrap() {
+            ServerMsg::GraphRunCreated { run_id, .. } => run_id,
+            _ => panic!(),
+        };
+        // 未 cancel（ready/非 terminal）→ 拒绝
+        let err = delete_run(&state, &run_id).unwrap_err();
+        let ServerMsg::Error { code, .. } = err else {
+            panic!("应返回错误")
+        };
+        assert_eq!(code, "graph_delete_non_terminal");
     }
 }

@@ -272,6 +272,19 @@ pub fn gui_node_prompt(run_id: String, node_key: String) -> Result<String, Strin
     Ok(text)
 }
 
+/// 物理删除运行（级联清理，仅 terminal 状态）。
+#[tauri::command]
+pub fn gui_graph_delete(run_id: String) -> Result<serde_json::Value, String> {
+    let base = gui_base_url()?;
+    let msg = graph_request(
+        reqwest::Method::DELETE,
+        &base,
+        &format!("/api/v1/graph/runs/{}", run_id),
+        None,
+    )?;
+    serde_json::to_value(msg).map_err(|e| e.to_string())
+}
+
 /// 运行控制（pause / resume / cancel）。
 #[tauri::command]
 pub fn gui_graph_control(run_id: String, action: String) -> Result<serde_json::Value, String> {

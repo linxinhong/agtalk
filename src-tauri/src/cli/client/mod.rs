@@ -7,6 +7,7 @@ use reqwest::blocking::Client;
 use serde::Serialize;
 
 pub mod config;
+pub mod graph;
 pub mod id;
 pub mod mem;
 pub mod msg;

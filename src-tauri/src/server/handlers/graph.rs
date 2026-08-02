@@ -123,6 +123,17 @@ pub async fn graph_run_control_handler(
     respond(control_run(&state, &run_id, &body.action))
 }
 
+pub async fn graph_run_delete_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(run_id): Path<String>,
+) -> (StatusCode, Json<ServerMsg>) {
+    if let Err(e) = super::authenticate_req(&state, &headers) {
+        return json_response(e);
+    }
+    respond(delete_run(&state, &run_id))
+}
+
 pub async fn graph_run_patch_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -600,6 +611,76 @@ pub fn patch_run(state: &AppState, run_id: &str, spec_yaml: &str) -> Result<Serv
         run_id: run_id.to_string(),
         action: "patch".into(),
         status: "patched".into(),
+    })
+}
+
+/// 物理删除 GraphRun（级联清理子表）。仅 terminal 状态（cancelled/completed/failed）可删；
+/// 运行中需先 cancel。删除后不可恢复。
+#[allow(clippy::result_large_err)]
+pub fn delete_run(state: &AppState, run_id: &str) -> Result<ServerMsg, ServerMsg> {
+    let conn = state.storage.conn();
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM graph_runs WHERE id=?1",
+            params![run_id],
+            |r| r.get(0),
+        )
+        .map_err(sqlite_err)?;
+    if !matches!(status.as_str(), "cancelled" | "completed" | "failed") {
+        return Err(err(
+            "graph_delete_non_terminal",
+            format!("图状态 {status} 不能删除（请先 cancel）"),
+        ));
+    }
+    // 级联删除（FK 无 CASCADE，按依赖序清理子表）
+    let tx = conn.unchecked_transaction().map_err(sqlite_err)?;
+    for node_id in {
+        let mut stmt = tx
+            .prepare("SELECT id FROM node_runs WHERE graph_run_id=?1")
+            .map_err(sqlite_err)?;
+        let rows: Vec<String> = stmt
+            .query_map(params![run_id], |r| r.get(0))
+            .map_err(sqlite_err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sqlite_err)?;
+        rows
+    } {
+        tx.execute(
+            "DELETE FROM graph_node_assignments WHERE node_run_id=?1",
+            params![node_id],
+        )
+        .map_err(sqlite_err)?;
+        tx.execute(
+            "DELETE FROM verifications WHERE node_run_id=?1",
+            params![node_id],
+        )
+        .map_err(sqlite_err)?;
+    }
+    tx.execute(
+        "DELETE FROM node_runs WHERE graph_run_id=?1",
+        params![run_id],
+    )
+    .map_err(sqlite_err)?;
+    tx.execute(
+        "DELETE FROM artifacts WHERE graph_run_id=?1",
+        params![run_id],
+    )
+    .map_err(sqlite_err)?;
+    tx.execute(
+        "DELETE FROM workspaces WHERE graph_run_id=?1",
+        params![run_id],
+    )
+    .map_err(sqlite_err)?;
+    tx.execute(
+        "DELETE FROM graph_events WHERE graph_run_id=?1",
+        params![run_id],
+    )
+    .map_err(sqlite_err)?;
+    tx.execute("DELETE FROM graph_runs WHERE id=?1", params![run_id])
+        .map_err(sqlite_err)?;
+    tx.commit().map_err(sqlite_err)?;
+    Ok(ServerMsg::GraphRunDeleted {
+        run_id: run_id.to_string(),
     })
 }
 

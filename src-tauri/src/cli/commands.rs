@@ -71,6 +71,8 @@ pub(crate) enum GraphCmd {
     },
     /// 取消运行
     Cancel { run_id: String },
+    /// 物理删除运行（仅 terminal 状态，级联清理全部关联数据）
+    Delete { run_id: String },
     /// 图成本分析（docs/graph-engineering-survey.md §5）：本地评估，不建图
     Analyze {
         /// spec 名字或 YAML 文件路径（同 submit 解析规则）

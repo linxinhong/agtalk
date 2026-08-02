@@ -15,7 +15,7 @@ interface RailRun {
   repository: string | null
 }
 const props = defineProps<{ runs: RailRun[]; activeRunId?: string }>();
-const emit = defineEmits(['select']);
+const emit = defineEmits(['select', 'delete']);
 
 const query = ref('');
 
@@ -47,6 +47,11 @@ const filtered = computed(() => {
         <i class="r-dot" :style="{ background: `var(--st-${r.status}-main)` }"></i>
         <span class="r-id" :title="r.repository ?? ''">{{ r.id }}</span>
         <span class="r-time">{{ r.createdAt }}</span>
+        <button
+          class="run-del"
+          title="删除（仅已结束的图；级联清理）"
+          @click.stop="emit('delete', r.id)"
+        >×</button>
       </div>
       <p v-if="!filtered.length" class="rail-empty">无匹配的运行</p>
     </div>
@@ -143,6 +148,27 @@ const filtered = computed(() => {
   font-size: 10px;
   color: var(--text-tertiary);
   flex-shrink: 0;
+}
+.run-del {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: all 150ms;
+}
+.run:hover .run-del {
+  opacity: 1;
+}
+.run-del:hover {
+  background: var(--st-failed-tint);
+  color: var(--st-failed-deep);
 }
 .rail-empty {
   padding: 16px 14px;
